@@ -23,78 +23,119 @@ body {
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: rgb(var(--background));
+  color: #FFFFFF;
+  background: #0F0818;
   font-family: 'Inter', sans-serif;
 }
 
-@layer base {
-  body {
-    @apply bg-background text-white;
-  }
-  
-  h1 {
-    @apply text-3xl font-bold mb-4;
-  }
-  
-  h2 {
-    @apply text-2xl font-bold mb-3;
-  }
-  
-  h3 {
-    @apply text-xl font-bold mb-2;
-  }
+/* Base Styles with direct CSS (as fallback for Tailwind) */
+h1 {
+  font-size: 1.875rem;
+  line-height: 2.25rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
 }
 
-@layer components {
-  .container-custom {
-    @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8;
-  }
+h2 {
+  font-size: 1.5rem;
+  line-height: 2rem;
+  font-weight: 700;
+  margin-bottom: 0.75rem;
+}
 
-  .card {
-    @apply bg-background-50 border border-background-100 rounded-lg p-6;
-  }
+h3 {
+  font-size: 1.25rem;
+  line-height: 1.75rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
 
-  .button-primary {
-    @apply bg-primary hover:bg-primary-600 text-white font-bold py-2 px-4 rounded transition-all duration-200;
-  }
+/* Component Styles with direct CSS (as fallback for Tailwind) */
+.container-custom {
+  max-width: 80rem;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
 
-  .button-secondary {
-    @apply bg-secondary hover:bg-secondary-600 text-white font-bold py-2 px-4 rounded transition-all duration-200;
-  }
+.card {
+  background-color: #1D1029;
+  border: 1px solid #2B183A;
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+}
 
-  .button-outline {
-    @apply border border-primary text-primary hover:bg-primary hover:text-white font-bold py-2 px-4 rounded transition-all duration-200;
-  }
+.button-primary {
+  background-color: #8A2BE2;
+  color: white;
+  font-weight: 700;
+  padding: 0.5rem 1rem;
+  border-radius: 0.25rem;
+  transition: all 0.2s;
+}
 
-  .input-field {
-    @apply bg-background-100 border border-background-200 text-white rounded-md px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
-  }
+.button-primary:hover {
+  background-color: #7923BE;
+}
 
-  .glass-effect {
-    @apply bg-background-50/60 backdrop-blur-sm border border-white/10 rounded-lg;
-  }
+.button-secondary {
+  background-color: #6C0BA9;
+  color: white;
+  font-weight: 700;
+  padding: 0.5rem 1rem;
+  border-radius: 0.25rem;
+  transition: all 0.2s;
+}
 
-  .gradient-text {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-accent;
-  }
+.button-secondary:hover {
+  background-color: #5A0990;
+}
 
-  .grid-pattern-bg {
-    background-size: 20px 20px;
-    @apply bg-grid-pattern;
-  }
+.button-outline {
+  border: 1px solid #8A2BE2;
+  color: #8A2BE2;
+  font-weight: 700;
+  padding: 0.5rem 1rem;
+  border-radius: 0.25rem;
+  transition: all 0.2s;
+}
+
+.button-outline:hover {
+  background-color: #8A2BE2;
+  color: white;
+}
+
+.input-field {
+  background-color: #2B183A;
+  border: 1px solid #39204B;
+  color: white;
+  border-radius: 0.375rem;
+  padding: 0.5rem 1rem;
+}
+
+.input-field:focus {
+  outline: none;
+  border-color: #8A2BE2;
+}
+
+.glass-effect {
+  background-color: rgba(29, 16, 41, 0.6);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.5rem;
 }
 
 .node-status-online {
-  @apply text-green-500;
+  color: #10B981;
 }
 
 .node-status-offline {
-  @apply text-red-500;
+  color: #EF4444;
 }
 
 .node-status-pending {
-  @apply text-yellow-500;
+  color: #F59E0B;
 }
 
 /* Custom scrollbar */
@@ -103,15 +144,16 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  @apply bg-background-100;
+  background: #2B183A;
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-primary-700 rounded-full;
+  background: #681B9A;
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-primary-600;
+  background: #7923BE;
 }
 
 /* Animation for "connecting" status */
