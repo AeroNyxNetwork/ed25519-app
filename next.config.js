@@ -5,9 +5,42 @@ const nextConfig = {
   images: {
     domains: ['api.aeronyx.network'],
   },
-  // The environment variables will be automatically included
-  // by Next.js if they start with NEXT_PUBLIC_
-  // No need to explicitly define them here
+  // Improve asset handling with trailing slashes
+  trailingSlash: true,
+  // Optimize CSS and JS asset loading
+  optimizeFonts: true,
+  // Add custom headers for better caching
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=31536000, immutable',
+          },
+        ],
+      },
+      {
+        source: '/:path*.js',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=31536000, immutable',
+          },
+        ],
+      },
+      {
+        source: '/:path*.css',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=31536000, immutable',
+          },
+        ],
+      },
+    ]
+  },
   // Add API route rewrites if using Next.js API routes as a proxy
   async rewrites() {
     return [
