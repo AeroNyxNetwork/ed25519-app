@@ -5,10 +5,9 @@ const nextConfig = {
   images: {
     domains: ['api.aeronyx.network'],
   },
-  env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
-    NEXT_PUBLIC_NETWORK_ID: process.env.NEXT_PUBLIC_NETWORK_ID,
-  },
+  // The environment variables will be automatically included
+  // by Next.js if they start with NEXT_PUBLIC_
+  // No need to explicitly define them here
   // Add API route rewrites if using Next.js API routes as a proxy
   async rewrites() {
     return [
