@@ -176,6 +176,7 @@ export default function NodeList({ nodes }) {
     </div>
   );
 }
+}
                       <div className="w-full bg-background-200 rounded-full h-2">
                         <div 
                           className="bg-primary-400 rounded-full h-2" 
