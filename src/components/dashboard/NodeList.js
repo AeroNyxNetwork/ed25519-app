@@ -110,6 +110,53 @@ export default function NodeList({ nodes }) {
                         <span className="text-gray-400">CPU ({node.resources.cpu.total})</span>
                         <span>{node.resources.cpu.usage}%</span>
                       </div>
+                      <div className="w-full bg-background-200 rounded-full h-2">
+                        <div 
+                          className="bg-primary-400 rounded-full h-2" 
+                          style={{ width: `${node.resources.cpu.usage}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-gray-400">Memory ({node.resources.memory.total})</span>
+                        <span>{node.resources.memory.usage}%</span>
+                      </div>
+                      <div className="w-full bg-background-200 rounded-full h-2">
+                        <div 
+                          className="bg-secondary-400 rounded-full h-2" 
+                          style={{ width: `${node.resources.memory.usage}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-gray-400">Storage ({node.resources.storage.total})</span>
+                        <span>{node.resources.storage.usage}%</span>
+                      </div>
+                      <div className="w-full bg-background-200 rounded-full h-2">
+                        <div 
+                          className="bg-accent rounded-full h-2" 
+                          style={{ width: `${node.resources.storage.usage}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-gray-400">Bandwidth ({node.resources.bandwidth.total})</span>
+                        <span>{node.resources.bandwidth.usage}%</span>
+                      </div>
+                      <div className="w-full bg-background-200 rounded-full h-2">
+                        <div 
+                          className="bg-purple-500 rounded-full h-2" 
+                          style={{ width: `${node.resources.bandwidth.usage}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 
                 {/* Controls and Actions */}
@@ -176,51 +223,3 @@ export default function NodeList({ nodes }) {
     </div>
   );
 }
-}
-                      <div className="w-full bg-background-200 rounded-full h-2">
-                        <div 
-                          className="bg-primary-400 rounded-full h-2" 
-                          style={{ width: `${node.resources.cpu.usage}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span className="text-gray-400">Memory ({node.resources.memory.total})</span>
-                        <span>{node.resources.memory.usage}%</span>
-                      </div>
-                      <div className="w-full bg-background-200 rounded-full h-2">
-                        <div 
-                          className="bg-secondary-400 rounded-full h-2" 
-                          style={{ width: `${node.resources.memory.usage}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span className="text-gray-400">Storage ({node.resources.storage.total})</span>
-                        <span>{node.resources.storage.usage}%</span>
-                      </div>
-                      <div className="w-full bg-background-200 rounded-full h-2">
-                        <div 
-                          className="bg-accent rounded-full h-2" 
-                          style={{ width: `${node.resources.storage.usage}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span className="text-gray-400">Bandwidth ({node.resources.bandwidth.total})</span>
-                        <span>{node.resources.bandwidth.usage}%</span>
-                      </div>
-                      <div className="w-full bg-background-200 rounded-full h-2">
-                        <div 
-                          className="bg-purple-500 rounded-full h-2" 
-                          style={{ width: `${node.resources.bandwidth.usage}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                  </div>
