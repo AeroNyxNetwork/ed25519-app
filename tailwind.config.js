@@ -4,6 +4,8 @@ module.exports = {
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
+    // Add more specific paths to be thorough
+    './src/**/*.{js,ts,jsx,tsx,mdx}',
   ],
   theme: {
     extend: {
@@ -61,5 +63,11 @@ module.exports = {
       },
     },
   },
+  // Explicitly mark all Tailwind components and utilities to be included
+  safelist: [
+    {
+      pattern: /^(bg|text|border|grid|flex|p|m|w|h|rounded|shadow|transition|transform|opacity)-/,
+    },
+  ],
   plugins: [],
 }
