@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function NodeStatusCard({ name, status, deviceId, uptime, earnings, cpu, memory }) {
+export default function NodeStatusCard({ name, status, deviceId, uptime, earnings, cpu, memory, type = 'general' }) {
   // Status styling
   const getStatusColor = (status) => {
     switch (status) {
@@ -27,15 +27,59 @@ export default function NodeStatusCard({ name, status, deviceId, uptime, earning
         return 'Unknown';
     }
   };
+  
+  // Node type icon and badge color
+  const getNodeTypeBadge = (type) => {
+    switch (type) {
+      case 'compute':
+        return {
+          color: 'bg-primary-900/30 text-primary-400 border border-primary-800',
+          label: 'Compute'
+        };
+      case 'storage':
+        return {
+          color: 'bg-secondary-900/30 text-secondary-400 border border-secondary-800',
+          label: 'Storage'
+        };
+      case 'ai':
+        return {
+          color: 'bg-purple-900/30 text-purple-400 border border-purple-800',
+          label: 'AI Training'
+        };
+      case 'onion':
+        return {
+          color: 'bg-yellow-900/30 text-yellow-400 border border-yellow-800',
+          label: 'Onion Routing'
+        };
+      case 'privacy':
+        return {
+          color: 'bg-green-900/30 text-green-400 border border-green-800',
+          label: 'Privacy'
+        };
+      default:
+        return {
+          color: 'bg-accent-900/30 text-accent border border-accent-800',
+          label: 'General'
+        };
+    }
+  };
+
+  const typeBadge = getNodeTypeBadge(type);
 
   return (
     <div className="card glass-effect">
-      <div className="flex justify-between items-start mb-3">
+      <div className="flex justify-between items-start mb-2">
         <h3 className="font-bold text-lg">{name}</h3>
         <div className="flex items-center">
           <span className={`inline-block w-2 h-2 rounded-full ${getStatusColor(status)} mr-2`}></span>
           <span className="text-sm text-gray-300">{getStatusText(status)}</span>
         </div>
+      </div>
+      
+      <div className="mb-1">
+        <span className={`text-xs px-2 py-1 rounded-md ${typeBadge.color} inline-block mb-2`}>
+          {typeBadge.label}
+        </span>
       </div>
       
       <div className="mb-4">
