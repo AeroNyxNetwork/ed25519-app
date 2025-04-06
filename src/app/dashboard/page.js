@@ -7,16 +7,63 @@ import { useWallet } from '../../components/wallet/WalletProvider';
 import NodeStatusCard from '../../components/dashboard/NodeStatusCard';
 import Link from 'next/link';
 
-// Mock data for dashboard display
+// Enhanced mock data for dashboard display
 const mockData = {
   stats: {
-    totalNodes: 3,
+    totalNodes: 4,
     activeNodes: 2,
     pendingNodes: 1,
+    offlineNodes: 1,
     totalEarnings: 1245.78,
     networkContribution: '0.0023%',
     resourceUtilization: 78
-  }
+  },
+  nodes: [
+    {
+      id: 'aero-node-1a2b3c',
+      name: 'Node Alpha',
+      status: 'online',
+      type: 'general',
+      deviceId: 'aero-node-1a2b3c',
+      uptime: '14 days, 7 hours',
+      earnings: 542.12,
+      cpu: 65,
+      memory: 48
+    },
+    {
+      id: 'aero-node-4d5e6f',
+      name: 'Node Beta',
+      status: 'online',
+      type: 'compute',
+      deviceId: 'aero-node-4d5e6f',
+      uptime: '7 days, 3 hours',
+      earnings: 286.45,
+      cpu: 32,
+      memory: 56
+    },
+    {
+      id: 'aero-node-7g8h9i',
+      name: 'Onion Router',
+      status: 'pending',
+      type: 'onion',
+      deviceId: 'aero-node-7g8h9i',
+      uptime: '0 days, 0 hours',
+      earnings: 0,
+      cpu: 0,
+      memory: 0
+    },
+    {
+      id: 'aero-node-j0k1l2',
+      name: 'Privacy Guardian',
+      status: 'offline',
+      type: 'privacy',
+      deviceId: 'aero-node-j0k1l2',
+      uptime: '0 days, 0 hours',
+      earnings: 417.23,
+      cpu: 0,
+      memory: 0
+    }
+  ]
 };
 
 export default function Dashboard() {
@@ -108,14 +155,28 @@ export default function Dashboard() {
             </div>
 
             {/* Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
               <div className="card glass-effect">
                 <h3 className="text-gray-400 text-sm mb-1">Total Nodes</h3>
                 <div className="flex items-end gap-2">
-                  <span className="text-4xl font-bold">{dashboardData.stats.totalNodes}</span>
-                  <div className="text-xs text-gray-400 mb-1 flex items-center">
-                    <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1"></span>
-                    {dashboardData.stats.activeNodes} Active
+                  <span className="text-3xl font-bold">{dashboardData.stats.totalNodes}</span>
+                </div>
+              </div>
+              
+              <div className="card glass-effect">
+                <h3 className="text-gray-400 text-sm mb-1">Node Status</h3>
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-green-500"></span>
+                    <span className="text-sm">{dashboardData.stats.activeNodes} Active</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-yellow-500"></span>
+                    <span className="text-sm">{dashboardData.stats.pendingNodes} Pending</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-red-500"></span>
+                    <span className="text-sm">{dashboardData.stats.offlineNodes} Offline</span>
                   </div>
                 </div>
               </div>
@@ -123,7 +184,7 @@ export default function Dashboard() {
               <div className="card glass-effect">
                 <h3 className="text-gray-400 text-sm mb-1">Total Earnings</h3>
                 <div className="flex items-end gap-2">
-                  <span className="text-4xl font-bold">{dashboardData.stats.totalEarnings}</span>
+                  <span className="text-3xl font-bold">{dashboardData.stats.totalEarnings}</span>
                   <div className="text-xs text-gray-400 mb-1">AeroNyx</div>
                 </div>
               </div>
@@ -131,7 +192,7 @@ export default function Dashboard() {
               <div className="card glass-effect">
                 <h3 className="text-gray-400 text-sm mb-1">Network Contribution</h3>
                 <div className="flex items-end gap-2">
-                  <span className="text-4xl font-bold">{dashboardData.stats.networkContribution}</span>
+                  <span className="text-3xl font-bold">{dashboardData.stats.networkContribution}</span>
                   <div className="text-xs text-gray-400 mb-1">of Global Resources</div>
                 </div>
               </div>
@@ -161,36 +222,20 @@ export default function Dashboard() {
                 </Link>
               </div>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                <NodeStatusCard 
-                  name="Node Alpha"
-                  status="online"
-                  deviceId="aero-node-1a2b3c"
-                  uptime="14 days, 7 hours"
-                  earnings={542.12}
-                  cpu={65}
-                  memory={48}
-                />
-                
-                <NodeStatusCard 
-                  name="Node Beta"
-                  status="online"
-                  deviceId="aero-node-4d5e6f"
-                  uptime="7 days, 3 hours"
-                  earnings={286.45}
-                  cpu={32}
-                  memory={56}
-                />
-                
-                <NodeStatusCard 
-                  name="Node Gamma"
-                  status="pending"
-                  deviceId="aero-node-7g8h9i"
-                  uptime="0 days, 0 hours"
-                  earnings={0}
-                  cpu={0}
-                  memory={0}
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {dashboardData.nodes.map(node => (
+                  <NodeStatusCard 
+                    key={node.id}
+                    name={node.name}
+                    status={node.status}
+                    deviceId={node.deviceId}
+                    uptime={node.uptime}
+                    earnings={node.earnings}
+                    cpu={node.cpu}
+                    memory={node.memory}
+                    type={node.type}
+                  />
+                ))}
               </div>
             </div>
           </>
