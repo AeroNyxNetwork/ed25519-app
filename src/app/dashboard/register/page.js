@@ -14,6 +14,9 @@ export default function RegisterNode() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [registrationCode, setRegistrationCode] = useState('');
+  const [showNodeTypeInfo, setShowNodeTypeInfo] = useState(false);
+  const [selectedNodeTypeInfo, setSelectedNodeTypeInfo] = useState('');
+  const [gpuFeatureAvailable, setGpuFeatureAvailable] = useState(false);
   const [nodeInfo, setNodeInfo] = useState({
     name: '',
     type: 'general',
@@ -24,6 +27,16 @@ export default function RegisterNode() {
       bandwidth: true
     }
   });
+
+  // Node type descriptions
+  const nodeTypeDescriptions = {
+    general: "General purpose nodes provide a balanced mix of CPU, memory, storage, and bandwidth resources to the network. Suitable for most use cases.",
+    compute: "Compute optimized nodes focus on providing high CPU and memory resources for computational tasks like data processing and simulations.",
+    storage: "Storage optimized nodes provide large amounts of secure storage capacity to the network. Ideal for data redundancy and distributed storage.",
+    ai: "AI Training nodes are equipped with specialized hardware for machine learning workloads. Requires high computational capacity.",
+    onion: "Onion routing nodes help facilitate anonymous communication in the network. These nodes don't require a public IP address and focus on routing encrypted traffic.",
+    privacy: "Privacy network nodes help encrypt and protect sensitive data across the network. They focus on implementing privacy-preserving protocols and techniques."
+  };
 
   // Check wallet connection on page load
   useEffect(() => {
@@ -38,9 +51,21 @@ export default function RegisterNode() {
       ...prev,
       [name]: value
     }));
+
+    // Show node type info when type changes
+    if (name === 'type') {
+      setSelectedNodeTypeInfo(nodeTypeDescriptions[value]);
+      setShowNodeTypeInfo(true);
+    }
   };
 
   const handleResourceToggle = (resource) => {
+    if (resource === 'gpu' && !gpuFeatureAvailable) {
+      // Show an info message that GPU support is coming soon
+      setError("GPU support is coming soon and not currently available.");
+      return;
+    }
+
     setNodeInfo(prev => ({
       ...prev,
       resources: {
@@ -55,14 +80,27 @@ export default function RegisterNode() {
     setError(null);
     
     try {
-      // In a real app, this would be an API call
+      // Request wallet signature to verify the request
+      const message = `Register AeroNyx Node: ${nodeInfo.name}\nType: ${nodeInfo.type}\nTimestamp: ${Date.now()}`;
+      
+      // Get signature from wallet
+      const signature = await wallet.provider.request({
+        method: 'personal_sign',
+        params: [message, wallet.address]
+      });
+      
+      // In a real app, this would be an API call including the signature
       // const response = await fetch('/api/nodes/register', {
       //   method: 'POST',
       //   headers: {
       //     'Content-Type': 'application/json',
       //     'Authorization': `Bearer ${wallet.address}`
       //   },
-      //   body: JSON.stringify(nodeInfo)
+      //   body: JSON.stringify({
+      //     ...nodeInfo,
+      //     signature,
+      //     message
+      //   })
       // });
       
       // if (!response.ok) {
@@ -180,7 +218,20 @@ export default function RegisterNode() {
                   <option value="compute">Compute Optimized</option>
                   <option value="storage">Storage Optimized</option>
                   <option value="ai">AI Training</option>
+                  <option value="onion">Onion Routing</option>
+                  <option value="privacy">Privacy Network</option>
                 </select>
+                
+                {showNodeTypeInfo && (
+                  <div className="mt-2 p-3 bg-background-100 border border-background-200 rounded-md text-sm text-gray-300">
+                    <div className="flex items-start">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-primary mr-2 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                      </svg>
+                      <span>{selectedNodeTypeInfo}</span>
+                    </div>
+                  </div>
+                )}
               </div>
               
               <div>
@@ -204,7 +255,7 @@ export default function RegisterNode() {
                   </div>
                   
                   <div 
-                    className={`p-3 rounded-md cursor-pointer border ${nodeInfo.resources.gpu ? 'border-primary bg-primary/20' : 'border-background-200 bg-background-100'}`}
+                    className={`p-3 rounded-md cursor-pointer border ${nodeInfo.resources.gpu ? 'border-primary bg-primary/20' : 'border-background-200 bg-background-100'} ${!gpuFeatureAvailable ? 'opacity-50' : ''}`}
                     onClick={() => handleResourceToggle('gpu')}
                   >
                     <div className="flex items-center gap-2">
@@ -215,6 +266,9 @@ export default function RegisterNode() {
                         className="h-4 w-4 text-primary"
                       />
                       <span>GPU</span>
+                      {!gpuFeatureAvailable && (
+                        <span className="text-xs text-yellow-500 ml-1">(Coming Soon)</span>
+                      )}
                     </div>
                   </div>
                   
@@ -269,7 +323,7 @@ export default function RegisterNode() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    Generating...
+                    Signing & Generating...
                   </>
                 ) : 'Generate Registration Code'}
               </button>
@@ -332,7 +386,7 @@ export default function RegisterNode() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    Processing...
+                    Processing Transaction...
                   </>
                 ) : 'Confirm On-Chain Registration'}
               </button>
