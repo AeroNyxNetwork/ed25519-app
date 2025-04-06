@@ -2,7 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
-  optimizeCss: true,
+  optimizeCss: false,
   images: {
     domains: ['api.aeronyx.network'],
   },
@@ -18,7 +18,7 @@ const nextConfig = {
   productionBrowserSourceMaps: false,
   // Ensure proper loading of CSS
   experimental: {
-    optimizeCss: true,
+    optimizeCss: false,
   },
   // Simple rewrites if needed but commented out for static export
   // async rewrites() {
