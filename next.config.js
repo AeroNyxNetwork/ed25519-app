@@ -2,21 +2,19 @@
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
-  optimizeCss: false,
+  // Remove the duplicate 'optimizeCss' at the top level as it's already in experimental
   images: {
+    // Combine the images configuration to avoid duplication
     domains: ['api.aeronyx.network'],
+    unoptimized: true, // This is needed for static export
   },
-  // Output as a static export for maximum compatibility
+  // Keep the static export option since you're generating generateStaticParams
   output: 'export',
-  // Fix for static export
-  images: {
-    unoptimized: true,
-  },
   // Improve asset handling with trailing slashes
   trailingSlash: true,
   // Disable sourcemaps in production for better performance
   productionBrowserSourceMaps: false,
-  // Ensure proper loading of CSS
+  // Ensure proper loading of CSS - this is the correct place for optimizeCss
   experimental: {
     optimizeCss: false,
   },
