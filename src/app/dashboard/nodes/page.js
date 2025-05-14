@@ -6,6 +6,7 @@ import Header from '../../../components/layout/Header';
 import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
 import NodeList from '../../../components/dashboard/NodeList';
+import BlockchainIntegrationModule from '../../../components/dashboard/BlockchainIntegrationModule';
 
 // Mock data for nodes
 const mockNodes = [
@@ -23,7 +24,8 @@ const mockNodes = [
       memory: { total: '16 GB', usage: 48 },
       storage: { total: '500 GB', usage: 32 },
       bandwidth: { total: '1 Gbps', usage: 27 }
-    }
+    },
+    blockchainIntegrations: []
   },
   {
     id: 'aero-node-4d5e6f',
@@ -39,7 +41,15 @@ const mockNodes = [
       memory: { total: '32 GB', usage: 56 },
       storage: { total: '1 TB', usage: 18 },
       bandwidth: { total: '1 Gbps', usage: 41 }
-    }
+    },
+    blockchainIntegrations: [
+      {
+        blockchain: 'solana',
+        status: 'active',
+        estimatedRewards: 8.5,
+        validatorKey: '7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2'
+      }
+    ]
   },
   {
     id: 'aero-node-7g8h9i',
@@ -55,7 +65,8 @@ const mockNodes = [
       memory: { total: '8 GB', usage: 0 },
       storage: { total: '2 TB', usage: 0 },
       bandwidth: { total: '500 Mbps', usage: 0 }
-    }
+    },
+    blockchainIntegrations: []
   },
   {
     id: 'aero-node-j0k1l2',
@@ -71,7 +82,8 @@ const mockNodes = [
       memory: { total: '12 GB', usage: 0 },
       storage: { total: '250 GB', usage: 0 },
       bandwidth: { total: '750 Mbps', usage: 0 }
-    }
+    },
+    blockchainIntegrations: []
   }
 ];
 
@@ -82,6 +94,13 @@ export default function NodesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [showBlockchainModal, setShowBlockchainModal] = useState(false);
+  const [blockchainStats, setBlockchainStats] = useState({
+    totalNodes: 0,
+    blockchainNodes: 0,
+    potentialEarnings: 0
+  });
 
   // Check wallet connection on page load
   useEffect(() => {
@@ -105,6 +124,23 @@ export default function NodesPage() {
         // Using mock data for now
         setTimeout(() => {
           setNodes(mockNodes);
+          
+          // Calculate blockchain stats
+          const totalNodes = mockNodes.length;
+          const blockchainNodes = mockNodes.filter(node => 
+            node.blockchainIntegrations && node.blockchainIntegrations.length > 0
+          ).length;
+          
+          // Calculate estimated potential earnings (simplified model)
+          const onlineNodes = mockNodes.filter(node => node.status === 'online' && node.blockchainIntegrations.length === 0);
+          const potentialEarnings = onlineNodes.length * 12.5; // Simplified estimate of $12.5/month per node
+          
+          setBlockchainStats({
+            totalNodes,
+            blockchainNodes,
+            potentialEarnings
+          });
+          
           setIsLoading(false);
         }, 1000);
       } catch (error) {
@@ -131,6 +167,12 @@ export default function NodesPage() {
     online: nodes.filter(node => node.status === 'online').length,
     offline: nodes.filter(node => node.status === 'offline').length,
     pending: nodes.filter(node => node.status === 'pending').length
+  };
+  
+  // Handle node selection for blockchain integration
+  const handleNodeSelect = (node) => {
+    setSelectedNode(node);
+    setShowBlockchainModal(true);
   };
 
   if (!wallet.connected) {
@@ -189,6 +231,99 @@ export default function NodesPage() {
             <div className="text-2xl font-bold text-yellow-500">{nodeStats.pending}</div>
           </div>
         </div>
+        
+        {/* Blockchain Integration Module */}
+        <div className="mb-8">
+          <div className="card glass-effect overflow-hidden">
+            <div className="flex flex-col md:flex-row">
+              {/* Stats and Info */}
+              <div className="p-6 md:w-1/2">
+                <div className="flex items-center gap-2 mb-3">
+                  <svg viewBox="0 0 24 24" className="h-6 w-6 text-primary" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M4 5C4 4.44772 4.44772 4 5 4H19C19.5523 4 20 4.44772 20 5V7C20 7.55228 19.5523 8 19 8H5C4.44772 8 4 7.55228 4 7V5Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M4 13C4 12.4477 4.44772 12 5 12H11C11.5523 12 12 12.4477 12 13V19C12 19.5523 11.5523 20 11 20H5C4.44772 20 4 19.5523 4 19V13Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M16 13C16 12.4477 16.4477 12 17 12H19C19.5523 12 20 12.4477 20 13V19C20 19.5523 19.5523 20 19 20H17C16.4477 20 16 19.5523 16 19V13Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  <h2 className="text-xl font-bold">Blockchain Integration</h2>
+                </div>
+                
+                <p className="text-gray-300 mb-6">
+                  Supercharge your AeroNyx nodes by integrating with leading blockchains. Unlock additional revenue streams and contribute to decentralized networks.
+                </p>
+                
+                <div className="space-y-5 mb-6">
+                  <div className="flex justify-between items-center">
+                    <div className="text-sm">
+                      <div className="text-gray-400">Nodes with blockchain integrations</div>
+                      <div className="flex items-center gap-1">
+                        <div className="font-bold text-lg">{blockchainStats.blockchainNodes}</div>
+                        <div className="text-xs text-gray-400">of {blockchainStats.totalNodes}</div>
+                      </div>
+                    </div>
+                    
+                    <div className="h-10 w-10 rounded-full bg-background-100 flex items-center justify-center">
+                      <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center text-xs font-bold">
+                        {Math.round((blockchainStats.blockchainNodes / blockchainStats.totalNodes) * 100)}%
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <div className="text-sm text-gray-400 mb-1">Potential additional monthly earnings</div>
+                    <div className="text-2xl font-bold">${blockchainStats.potentialEarnings.toFixed(2)}</div>
+                  </div>
+                </div>
+                
+                <button
+                  onClick={() => setShowBlockchainModal(true)}
+                  className="button-primary w-full py-3"
+                >
+                  Explore Blockchain Integration
+                </button>
+              </div>
+              
+              {/* Blockchain Logos */}
+              <div className="md:w-1/2 bg-gradient-to-br from-background-100 via-background-50 to-background-100 p-6 flex flex-col justify-between">
+                <div>
+                  <div className="text-sm text-gray-400 mb-4">Compatible with leading blockchains</div>
+                  
+                  <div className="grid grid-cols-3 gap-4 mb-8">
+                    <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
+                      <img src="/images/solana-logo.svg" alt="Solana" className="h-8 mb-2" />
+                      <div className="text-xs font-medium text-center">Solana</div>
+                    </div>
+                    
+                    <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
+                      <img src="/images/monad-logo.svg" alt="Monad" className="h-8 mb-2" />
+                      <div className="text-xs font-medium text-center">Monad</div>
+                    </div>
+                    
+                    <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
+                      <div className="h-8 mb-2 flex items-center justify-center text-gray-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                      </div>
+                      <div className="text-xs font-medium text-center text-gray-400">Coming Soon</div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-500" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 5.757a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464A1 1 0 106.464 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zM5 10a1 1 0 01-1 1H3a1 1 0 110-2h1a1 1 0 011 1zM8 16v-1h4v1a2 2 0 11-4 0zM12 14c.015-.34.208-.646.477-.859a4 4 0 10-4.954 0c.27.213.462.519.476.859h4.002z" />
+                    </svg>
+                    <h4 className="font-bold">Pro tip</h4>
+                  </div>
+                  <p className="text-xs text-gray-300">
+                    Nodes with blockchain integrations report 35% higher total earnings on average. Validators on multiple networks create resilient, diversified income streams.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* Filter and Search */}
         <div className="flex flex-col md:flex-row gap-4 mb-6">
@@ -242,7 +377,10 @@ export default function NodesPage() {
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
           </div>
         ) : filteredNodes.length > 0 ? (
-          <NodeList nodes={filteredNodes} />
+          <NodeList 
+            nodes={filteredNodes} 
+            onBlockchainIntegrate={handleNodeSelect}
+          />
         ) : (
           <div className="card glass-effect p-8 text-center">
             <h3 className="text-xl font-bold mb-4">No Nodes Found</h3>
@@ -266,6 +404,15 @@ export default function NodesPage() {
           </div>
         )}
       </main>
+      
+      {/* Blockchain Integration Modal */}
+      {showBlockchainModal && (
+        <BlockchainIntegrationModule 
+          isOpen={showBlockchainModal}
+          onClose={() => setShowBlockchainModal(false)}
+          selectedNode={selectedNode}
+        />
+      )}
       
       <footer className="bg-background-100 border-t border-background-200 py-4">
         <div className="container-custom">
