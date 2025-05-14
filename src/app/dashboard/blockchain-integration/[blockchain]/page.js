@@ -6,6 +6,15 @@ import Header from '../../../../components/layout/Header';
 import { useWallet } from '../../../../components/wallet/WalletProvider';
 import Link from 'next/link';
 
+// Add this function to generate static params for the blockchains
+export async function generateStaticParams() {
+  // Pre-generate pages for these blockchain types
+  return [
+    { blockchain: 'solana' },
+    { blockchain: 'monad' }
+  ];
+}
+
 export default function BlockchainIntegrationPage() {
   const { wallet } = useWallet();
   const router = useRouter();
