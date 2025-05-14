@@ -22,15 +22,15 @@ export default function RegisterNode() {
   const [selectedNodeTypeInfo, setSelectedNodeTypeInfo] = useState('');
   const [gpuFeatureAvailable, setGpuFeatureAvailable] = useState(false);
   const [availableNodeTypes, setAvailableNodeTypes] = useState([]);
-  const [nodeTypeMap, setNodeTypeMap] = useState({});
   const [availableResources, setAvailableResources] = useState([]);
   const [signatureMessage, setSignatureMessage] = useState('');
   const [signature, setSignature] = useState('');
   const [debugMode, setDebugMode] = useState(false);
+  const [apiResponse, setApiResponse] = useState(null);
   
   const [nodeInfo, setNodeInfo] = useState({
     name: '',
-    type: 'general',
+    type: 'general', // Default to 'general' as defined in your AeroNyxNodeType model
     resources: {
       cpu: true,
       gpu: false,
@@ -39,7 +39,7 @@ export default function RegisterNode() {
     }
   });
 
-  // Node type descriptions
+  // Node type descriptions (fallback if not provided by API)
   const nodeTypeDescriptions = {
     general: "General purpose nodes provide a balanced mix of CPU, memory, storage, and bandwidth resources to the network. Suitable for most use cases.",
     compute: "Compute optimized nodes focus on providing high CPU and memory resources for computational tasks like data processing and simulations.",
@@ -55,20 +55,10 @@ export default function RegisterNode() {
       try {
         // Fetch node types
         const nodeTypesResponse = await nodeRegistrationService.getNodeTypes();
+        console.log("Node types response:", nodeTypesResponse);
+        
         if (nodeTypesResponse.success && nodeTypesResponse.data) {
           setAvailableNodeTypes(nodeTypesResponse.data);
-          
-          // Create a mapping from node type keys (like "general") to their actual IDs
-          const typeMap = {};
-          nodeTypesResponse.data.forEach(type => {
-            // Extract the key from the type name or use the ID directly
-            const key = type.name.toLowerCase().replace(/\s+/g, '_');
-            typeMap[key] = type.id;
-            
-            // Also store with the original ID as key for direct matching
-            typeMap[type.id] = type.id;
-          });
-          setNodeTypeMap(typeMap);
           
           // Default to the first node type if available
           if (nodeTypesResponse.data.length > 0) {
@@ -119,8 +109,7 @@ export default function RegisterNode() {
         setSelectedNodeTypeInfo(nodeType.description);
       } else {
         // Fallback to our predefined descriptions if node type description not available
-        const typeKey = Object.keys(nodeTypeMap).find(key => nodeTypeMap[key] === value);
-        setSelectedNodeTypeInfo(nodeTypeDescriptions[typeKey] || '');
+        setSelectedNodeTypeInfo(nodeTypeDescriptions[value] || '');
       }
       setShowNodeTypeInfo(true);
     }
@@ -183,13 +172,15 @@ export default function RegisterNode() {
         {
           name: nodeInfo.name,
           type: nodeInfo.type,
-          resources: resourcesPayload,
-          nodeTypeMap: nodeTypeMap // Pass the node type map
+          resources: resourcesPayload
         },
         wallet.address,
         signature,
         message
       );
+      
+      // Store API response for debugging
+      setApiResponse(createResponse);
       
       if (createResponse.success && createResponse.data) {
         // Store node ID and reference code
@@ -339,6 +330,7 @@ export default function RegisterNode() {
                       <option key={type.id} value={type.id}>{type.name}</option>
                     ))
                   ) : (
+                    // Fallback options if API fails
                     <>
                       <option value="general">General Purpose</option>
                       <option value="compute">Compute Optimized</option>
@@ -458,7 +450,7 @@ export default function RegisterNode() {
             </div>
             
             {/* Debug section */}
-            {process.env.NODE_ENV === 'development' && (
+            {process.env.NODE_ENV !== 'production' && (
               <div className="mt-4 p-3 bg-gray-900 rounded-md">
                 <div className="flex items-center mb-2">
                   <input
@@ -476,11 +468,15 @@ export default function RegisterNode() {
                     <div className="mb-2 text-gray-400">Available Node Types:</div>
                     <pre className="text-gray-300">{JSON.stringify(availableNodeTypes, null, 2)}</pre>
                     
-                    <div className="mb-2 mt-3 text-gray-400">Node Type Map:</div>
-                    <pre className="text-gray-300">{JSON.stringify(nodeTypeMap, null, 2)}</pre>
-                    
                     <div className="mb-2 mt-3 text-gray-400">Current Node Info:</div>
                     <pre className="text-gray-300">{JSON.stringify(nodeInfo, null, 2)}</pre>
+                    
+                    {apiResponse && (
+                      <>
+                        <div className="mb-2 mt-3 text-gray-400">Last API Response:</div>
+                        <pre className="text-gray-300">{JSON.stringify(apiResponse, null, 2)}</pre>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -585,6 +581,7 @@ export default function RegisterNode() {
                 onClick={() => {
                   setStep(1);
                   setRegistrationCode('');
+                  setApiResponse(null);
                   setNodeInfo({
                     name: '',
                     type: availableNodeTypes.length > 0 ? availableNodeTypes[0].id : 'general',
