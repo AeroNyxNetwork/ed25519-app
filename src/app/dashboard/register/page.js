@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import Header from '../../../components/layout/Header';
 import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
+import nodeRegistrationService from '../../../lib/api/nodeRegistration';
+import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
 
 export default function RegisterNode() {
   const { wallet } = useWallet();
@@ -14,9 +16,16 @@ export default function RegisterNode() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [registrationCode, setRegistrationCode] = useState('');
+  const [referenceCode, setReferenceCode] = useState('');
+  const [nodeId, setNodeId] = useState(null);
   const [showNodeTypeInfo, setShowNodeTypeInfo] = useState(false);
   const [selectedNodeTypeInfo, setSelectedNodeTypeInfo] = useState('');
   const [gpuFeatureAvailable, setGpuFeatureAvailable] = useState(false);
+  const [availableNodeTypes, setAvailableNodeTypes] = useState([]);
+  const [availableResources, setAvailableResources] = useState([]);
+  const [signatureMessage, setSignatureMessage] = useState('');
+  const [signature, setSignature] = useState('');
+  
   const [nodeInfo, setNodeInfo] = useState({
     name: '',
     type: 'general',
@@ -37,6 +46,34 @@ export default function RegisterNode() {
     onion: "Onion routing nodes help facilitate anonymous communication in the network. These nodes don't require a public IP address and focus on routing encrypted traffic.",
     privacy: "Privacy network nodes help encrypt and protect sensitive data across the network. They focus on implementing privacy-preserving protocols and techniques."
   };
+
+  // Fetch available node types and resources on load
+  useEffect(() => {
+    async function fetchNodeTypesAndResources() {
+      try {
+        // Fetch node types
+        const nodeTypesResponse = await nodeRegistrationService.getNodeTypes();
+        if (nodeTypesResponse.success && nodeTypesResponse.data) {
+          setAvailableNodeTypes(nodeTypesResponse.data);
+        }
+        
+        // Fetch node resources
+        const nodeResourcesResponse = await nodeRegistrationService.getNodeResources();
+        if (nodeResourcesResponse.success && nodeResourcesResponse.data) {
+          setAvailableResources(nodeResourcesResponse.data);
+          
+          // Check if GPU resources are available
+          const gpuResource = nodeResourcesResponse.data.find(r => r.id === 'gpu');
+          setGpuFeatureAvailable(gpuResource && gpuResource.is_available);
+        }
+      } catch (err) {
+        console.error('Failed to fetch node types or resources:', err);
+        // Don't show error to user, just use the default types
+      }
+    }
+    
+    fetchNodeTypesAndResources();
+  }, []);
 
   // Check wallet connection on page load
   useEffect(() => {
@@ -75,47 +112,88 @@ export default function RegisterNode() {
     }));
   };
 
-  const generateRegistrationCode = async () => {
+  const generateSignatureMessage = async () => {
     setLoading(true);
     setError(null);
     
     try {
-      // Request wallet signature to verify the request
-      const message = `Register AeroNyx Node: ${nodeInfo.name}\nType: ${nodeInfo.type}\nTimestamp: ${Date.now()}`;
+      // Get signature message from the API
+      const response = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       
-      // Get signature from wallet
-      const signature = await wallet.provider.request({
-        method: 'personal_sign',
-        params: [message, wallet.address]
+      if (response.success && response.data) {
+        // Format the message for better readability
+        const formattedMessage = formatMessageForSigning(response.data.message);
+        setSignatureMessage(response.data.message);
+        
+        // Get signature from wallet
+        const sig = await signMessage(wallet.provider, formattedMessage, wallet.address);
+        setSignature(sig);
+        
+        // Proceed to create the node
+        await createNode(response.data.message, sig);
+      } else {
+        throw new Error(response.message || 'Failed to generate signature message');
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to sign message');
+      setLoading(false);
+    }
+  };
+  
+  const createNode = async (message, signature) => {
+    try {
+      // Transform resources object to match API format
+      const resourcesPayload = {};
+      Object.keys(nodeInfo.resources).forEach(key => {
+        resourcesPayload[key] = nodeInfo.resources[key];
       });
       
-      // In a real app, this would be an API call including the signature
-      // const response = await fetch('/api/nodes/register', {
-      //   method: 'POST',
-      //   headers: {
-      //     'Content-Type': 'application/json',
-      //     'Authorization': `Bearer ${wallet.address}`
-      //   },
-      //   body: JSON.stringify({
-      //     ...nodeInfo,
-      //     signature,
-      //     message
-      //   })
-      // });
+      // Create the node
+      const createResponse = await nodeRegistrationService.createNode(
+        {
+          name: nodeInfo.name,
+          type: nodeInfo.type,
+          resources: resourcesPayload
+        },
+        wallet.address,
+        signature,
+        message
+      );
       
-      // if (!response.ok) {
-      //   throw new Error('Failed to generate registration code');
-      // }
+      if (createResponse.success && createResponse.data) {
+        // Store node ID and reference code
+        setNodeId(createResponse.data.id);
+        setReferenceCode(createResponse.data.reference_code);
+        
+        // Generate registration code
+        await generateRegistrationCode(createResponse.data.id, message, signature);
+      } else {
+        throw new Error(createResponse.message || 'Failed to create node');
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to create node');
+      setLoading(false);
+    }
+  };
+
+  const generateRegistrationCode = async (nodeId, message, signature) => {
+    try {
+      // Generate registration code
+      const codeResponse = await nodeRegistrationService.generateRegistrationCode(
+        nodeId,
+        wallet.address,
+        signature,
+        message,
+        1 // Default blockchain network ID
+      );
       
-      // const data = await response.json();
-      // setRegistrationCode(data.registrationCode);
-      
-      // Simulating API response for demo
-      setTimeout(() => {
-        setRegistrationCode(`AERO-${wallet.address.substring(2, 8)}-${Date.now().toString(36).toUpperCase()}`);
+      if (codeResponse.success && codeResponse.data) {
+        setRegistrationCode(codeResponse.data.registration_code);
         setLoading(false);
         setStep(2);
-      }, 2000);
+      } else {
+        throw new Error(codeResponse.message || 'Failed to generate registration code');
+      }
     } catch (err) {
       setError(err.message || 'Failed to generate registration code');
       setLoading(false);
@@ -127,14 +205,18 @@ export default function RegisterNode() {
     setError(null);
     
     try {
-      // In a real app, this would trigger a blockchain transaction
-      // And then verify the transaction completed successfully
+      // Check node status
+      const statusResponse = await nodeRegistrationService.checkNodeStatus(
+        referenceCode,
+        wallet.address
+      );
       
-      // Simulating transaction delay for demo
-      setTimeout(() => {
+      if (statusResponse.success) {
         setLoading(false);
         setStep(3);
-      }, 2000);
+      } else {
+        throw new Error(statusResponse.message || 'Failed to verify node status');
+      }
     } catch (err) {
       setError(err.message || 'Failed to complete registration');
       setLoading(false);
@@ -214,12 +296,20 @@ export default function RegisterNode() {
                   className="input-field w-full"
                   required
                 >
-                  <option value="general">General Purpose</option>
-                  <option value="compute">Compute Optimized</option>
-                  <option value="storage">Storage Optimized</option>
-                  <option value="ai">AI Training</option>
-                  <option value="onion">Onion Routing</option>
-                  <option value="privacy">Privacy Network</option>
+                  {availableNodeTypes.length > 0 ? (
+                    availableNodeTypes.map(type => (
+                      <option key={type.id} value={type.id}>{type.name}</option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="general">General Purpose</option>
+                      <option value="compute">Compute Optimized</option>
+                      <option value="storage">Storage Optimized</option>
+                      <option value="ai">AI Training</option>
+                      <option value="onion">Onion Routing</option>
+                      <option value="privacy">Privacy Network</option>
+                    </>
+                  )}
                 </select>
                 
                 {showNodeTypeInfo && (
@@ -313,7 +403,7 @@ export default function RegisterNode() {
             
             <div className="flex justify-end">
               <button
-                onClick={generateRegistrationCode}
+                onClick={generateSignatureMessage}
                 disabled={!nodeInfo.name || loading}
                 className={`button-primary ${!nodeInfo.name || loading ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
@@ -356,6 +446,11 @@ export default function RegisterNode() {
                   This code is valid for 24 hours and can only be used once. Keep it confidential as it's linked to your wallet.
                 </p>
               </div>
+              
+              <div className="bg-background-100 p-4 rounded-md font-mono mb-4">
+                <p className="mb-2 text-gray-400">Node Reference Code:</p>
+                <code className="text-white">{referenceCode}</code>
+              </div>
             </div>
             
             <div className="mb-6">
@@ -364,7 +459,7 @@ export default function RegisterNode() {
                 <li>Install the AeroNyx Node software on your server</li>
                 <li>Run the setup command with your registration code</li>
                 <li>Your server will collect system information and register with the network</li>
-                <li>Complete the registration by signing the on-chain transaction</li>
+                <li>Complete the registration by confirming below after setup is complete</li>
               </ol>
             </div>
             
@@ -386,9 +481,9 @@ export default function RegisterNode() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    Processing Transaction...
+                    Verifying Registration...
                   </>
-                ) : 'Confirm On-Chain Registration'}
+                ) : 'Confirm Registration'}
               </button>
             </div>
           </div>
