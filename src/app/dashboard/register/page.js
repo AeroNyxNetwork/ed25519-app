@@ -22,9 +22,11 @@ export default function RegisterNode() {
   const [selectedNodeTypeInfo, setSelectedNodeTypeInfo] = useState('');
   const [gpuFeatureAvailable, setGpuFeatureAvailable] = useState(false);
   const [availableNodeTypes, setAvailableNodeTypes] = useState([]);
+  const [nodeTypeMap, setNodeTypeMap] = useState({});
   const [availableResources, setAvailableResources] = useState([]);
   const [signatureMessage, setSignatureMessage] = useState('');
   const [signature, setSignature] = useState('');
+  const [debugMode, setDebugMode] = useState(false);
   
   const [nodeInfo, setNodeInfo] = useState({
     name: '',
@@ -55,6 +57,26 @@ export default function RegisterNode() {
         const nodeTypesResponse = await nodeRegistrationService.getNodeTypes();
         if (nodeTypesResponse.success && nodeTypesResponse.data) {
           setAvailableNodeTypes(nodeTypesResponse.data);
+          
+          // Create a mapping from node type keys (like "general") to their actual IDs
+          const typeMap = {};
+          nodeTypesResponse.data.forEach(type => {
+            // Extract the key from the type name or use the ID directly
+            const key = type.name.toLowerCase().replace(/\s+/g, '_');
+            typeMap[key] = type.id;
+            
+            // Also store with the original ID as key for direct matching
+            typeMap[type.id] = type.id;
+          });
+          setNodeTypeMap(typeMap);
+          
+          // Default to the first node type if available
+          if (nodeTypesResponse.data.length > 0) {
+            setNodeInfo(prev => ({
+              ...prev,
+              type: nodeTypesResponse.data[0].id
+            }));
+          }
         }
         
         // Fetch node resources
@@ -91,7 +113,15 @@ export default function RegisterNode() {
 
     // Show node type info when type changes
     if (name === 'type') {
-      setSelectedNodeTypeInfo(nodeTypeDescriptions[value]);
+      // Find the node type by ID from availableNodeTypes
+      const nodeType = availableNodeTypes.find(type => type.id === value);
+      if (nodeType && nodeType.description) {
+        setSelectedNodeTypeInfo(nodeType.description);
+      } else {
+        // Fallback to our predefined descriptions if node type description not available
+        const typeKey = Object.keys(nodeTypeMap).find(key => nodeTypeMap[key] === value);
+        setSelectedNodeTypeInfo(nodeTypeDescriptions[typeKey] || '');
+      }
       setShowNodeTypeInfo(true);
     }
   };
@@ -121,7 +151,7 @@ export default function RegisterNode() {
       const response = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       
       if (response.success && response.data) {
-        // Format the message for better readability
+        // Format the message for better readability - keep the original message
         const formattedMessage = formatMessageForSigning(response.data.message);
         setSignatureMessage(response.data.message);
         
@@ -153,7 +183,8 @@ export default function RegisterNode() {
         {
           name: nodeInfo.name,
           type: nodeInfo.type,
-          resources: resourcesPayload
+          resources: resourcesPayload,
+          nodeTypeMap: nodeTypeMap // Pass the node type map
         },
         wallet.address,
         signature,
@@ -168,7 +199,14 @@ export default function RegisterNode() {
         // Generate registration code
         await generateRegistrationCode(createResponse.data.id, message, signature);
       } else {
-        throw new Error(createResponse.message || 'Failed to create node');
+        let errorMessage = createResponse.message || 'Failed to create node';
+        
+        // Check for specific error messages related to node_type_id
+        if (createResponse.errors && createResponse.errors.node_type_id) {
+          errorMessage = `Node type error: ${createResponse.errors.node_type_id.join(', ')}`;
+        }
+        
+        throw new Error(errorMessage);
       }
     } catch (err) {
       setError(err.message || 'Failed to create node');
@@ -418,6 +456,35 @@ export default function RegisterNode() {
                 ) : 'Generate Registration Code'}
               </button>
             </div>
+            
+            {/* Debug section */}
+            {process.env.NODE_ENV === 'development' && (
+              <div className="mt-4 p-3 bg-gray-900 rounded-md">
+                <div className="flex items-center mb-2">
+                  <input
+                    type="checkbox"
+                    id="debugMode"
+                    checked={debugMode}
+                    onChange={() => setDebugMode(!debugMode)}
+                    className="mr-2"
+                  />
+                  <label htmlFor="debugMode" className="text-sm text-gray-400">Debug Mode</label>
+                </div>
+                
+                {debugMode && (
+                  <div className="text-xs font-mono overflow-x-auto">
+                    <div className="mb-2 text-gray-400">Available Node Types:</div>
+                    <pre className="text-gray-300">{JSON.stringify(availableNodeTypes, null, 2)}</pre>
+                    
+                    <div className="mb-2 mt-3 text-gray-400">Node Type Map:</div>
+                    <pre className="text-gray-300">{JSON.stringify(nodeTypeMap, null, 2)}</pre>
+                    
+                    <div className="mb-2 mt-3 text-gray-400">Current Node Info:</div>
+                    <pre className="text-gray-300">{JSON.stringify(nodeInfo, null, 2)}</pre>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -520,7 +587,7 @@ export default function RegisterNode() {
                   setRegistrationCode('');
                   setNodeInfo({
                     name: '',
-                    type: 'general',
+                    type: availableNodeTypes.length > 0 ? availableNodeTypes[0].id : 'general',
                     resources: {
                       cpu: true,
                       gpu: false,
