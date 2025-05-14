@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 
-export default function NodeList({ nodes }) {
+export default function NodeList({ nodes, onBlockchainIntegrate }) {
   const [expandedNode, setExpandedNode] = useState(null);
 
   // Format date to local string
@@ -118,6 +118,8 @@ export default function NodeList({ nodes }) {
     <div className="space-y-4">
       {nodes.map((node) => {
         const nodeTypeInfo = getNodeTypeIcon(node.type);
+        const hasBlockchainIntegrations = node.blockchainIntegrations && node.blockchainIntegrations.length > 0;
+        
         return (
           <div key={node.id} className="card glass-effect">
             <div 
@@ -137,6 +139,18 @@ export default function NodeList({ nodes }) {
                     <span className={`text-xs px-2 py-1 rounded ${getStatusBadge(node.status)}`}>
                       {node.status.charAt(0).toUpperCase() + node.status.slice(1)}
                     </span>
+                    
+                    {/* Blockchain indicator badge */}
+                    {hasBlockchainIntegrations && (
+                      <span className="text-xs px-2 py-1 rounded bg-blue-900/30 text-blue-400 border border-blue-800 flex items-center gap-1">
+                        <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M13 16H11V18H13V16Z" fill="currentColor"/>
+                          <path d="M13 8H11V14H13V8Z" fill="currentColor"/>
+                          <path fillRule="evenodd" clipRule="evenodd" d="M4 4H20V20H4V4ZM2 4C2 2.89543 2.89543 2 4 2H20C21.1046 2 22 2.89543 22 4V20C22 21.1046 21.1046 22 20 22H4C2.89543 22 2 21.1046 2 20V4Z" fill="currentColor"/>
+                        </svg>
+                        <span>Blockchain</span>
+                      </span>
+                    )}
                   </div>
                   <div className={`text-xs mt-1 ${nodeTypeInfo.color}`}>
                     {node.type.charAt(0).toUpperCase() + node.type.slice(1)} Node
@@ -234,7 +248,7 @@ export default function NodeList({ nodes }) {
                   {/* Controls and Actions */}
                   <div>
                     <h4 className="font-bold mb-3">Node Controls</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                       <button 
                         className={`py-2 px-4 rounded-md flex items-center justify-center gap-2 ${node.status === 'online' ? 'bg-red-900/30 text-red-500 border border-red-800 hover:bg-red-900/50' : 'bg-green-900/30 text-green-500 border border-green-800 hover:bg-green-900/50'}`}
                         disabled={node.status === 'pending'}
@@ -276,6 +290,103 @@ export default function NodeList({ nodes }) {
                         </svg>
                         Details
                       </button>
+                    </div>
+                    
+                    {/* Blockchain section */}
+                    <div className="mt-4 pt-4 border-t border-background-200">
+                      <h4 className="font-bold mb-3 flex items-center gap-2">
+                        <svg viewBox="0 0 24 24" className="h-5 w-5 text-blue-400" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M4 5C4 4.44772 4.44772 4 5 4H19C19.5523 4 20 4.44772 20 5V7C20 7.55228 19.5523 8 19 8H5C4.44772 8 4 7.55228 4 7V5Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                          <path d="M4 13C4 12.4477 4.44772 12 5 12H11C11.5523 12 12 12.4477 12 13V19C12 19.5523 11.5523 20 11 20H5C4.44772 20 4 19.5523 4 19V13Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                          <path d="M16 13C16 12.4477 16.4477 12 17 12H19C19.5523 12 20 12.4477 20 13V19C20 19.5523 19.5523 20 19 20H17C16.4477 20 16 19.5523 16 19V13Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        Blockchain Integration
+                      </h4>
+                      
+                      {hasBlockchainIntegrations ? (
+                        <div>
+                          {/* Show existing blockchain integrations */}
+                          <div className="space-y-3 mb-4">
+                            {node.blockchainIntegrations.map((integration, idx) => (
+                              <div key={idx} className="p-3 rounded-lg bg-background-100 border border-background-200 flex justify-between items-center">
+                                <div className="flex items-center gap-3">
+                                  <img 
+                                    src={`/images/${integration.blockchain}-logo.svg`} 
+                                    alt={integration.blockchain} 
+                                    className="h-6 w-6" 
+                                  />
+                                  <div>
+                                    <div className="font-medium">{integration.blockchain.charAt(0).toUpperCase() + integration.blockchain.slice(1)}</div>
+                                    <div className="text-xs text-gray-400 font-mono truncate" style={{maxWidth: '200px'}}>
+                                      {integration.validatorKey}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <div className="text-xs px-2 py-1 rounded-full bg-green-900/30 text-green-400 border border-green-800">
+                                    {integration.status}
+                                  </div>
+                                  <div className="text-sm font-medium">${integration.estimatedRewards}/mo</div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          
+                          <button 
+                            className="py-2 px-4 rounded-md bg-blue-900/30 text-blue-400 border border-blue-800 hover:bg-blue-900/50 flex items-center justify-center gap-2 w-full"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onBlockchainIntegrate(node);
+                            }}
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                              <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                            </svg>
+                            Add More Blockchain Integration
+                          </button>
+                        </div>
+                      ) : (
+                        <div>
+                          {/* Show blockchain integration CTA */}
+                          <div className="p-4 rounded-lg bg-gradient-to-r from-blue-900/30 to-purple-900/30 border border-blue-800 mb-4">
+                            <p className="text-sm text-gray-300 mb-2">
+                              Supercharge your node with blockchain validation capabilities to earn additional rewards while supporting decentralized networks.
+                            </p>
+                            <div className="flex gap-2 items-center text-xs text-gray-400 mb-4">
+                              <span className="flex items-center gap-1">
+                                <svg viewBox="0 0 24 24" className="h-4 w-4 text-green-500" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                  <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                </svg>
+                                Diversified revenue
+                              </span>
+                              <span className="flex items-center gap-1">
+                                <svg viewBox="0 0 24 24" className="h-4 w-4 text-green-500" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                  <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                </svg>
+                                Maximize resources
+                              </span>
+                              <span className="flex items-center gap-1">
+                                <svg viewBox="0 0 24 24" className="h-4 w-4 text-green-500" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                  <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                </svg>
+                                Network governance
+                              </span>
+                            </div>
+                            <button 
+                              className="py-2 px-4 rounded-md bg-blue-700 hover:bg-blue-600 text-white flex items-center justify-center gap-2 w-full"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onBlockchainIntegrate(node);
+                              }}
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clipRule="evenodd" />
+                              </svg>
+                              Integrate Blockchain
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     
                     <div className="mt-6">
