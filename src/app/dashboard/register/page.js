@@ -510,10 +510,6 @@ export default function RegisterNode() {
                 </p>
               </div>
               
-              <div className="bg-background-100 p-4 rounded-md font-mono mb-4">
-                <p className="mb-2 text-gray-400">Node Reference Code:</p>
-                <code className="text-white">{referenceCode}</code>
-              </div>
             </div>
             
             <div className="mb-6">
