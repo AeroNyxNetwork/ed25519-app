@@ -34,7 +34,8 @@ export async function signMessage(provider, message, address) {
  * @returns {string} Formatted message
  */
 export function formatMessageForSigning(message) {
-  return `AeroNyx Node Registration\n\n${message}\n\nSign this message to verify your wallet ownership.`;
+  // Return the message as is to match exactly what the backend expects
+  return message;
 }
 
 /**
