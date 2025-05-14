@@ -59,6 +59,8 @@ const nodeRegistrationService = {
    * @returns {Promise<Object>} Node creation response
    */
   createNode: async (nodeData, walletAddress, signature, message) => {
+    // We're using the type directly as node_type_id based on AeroNyxNodeType model
+    // where id is a CharField with values like 'general', 'compute', etc.
     const payload = {
       name: nodeData.name,
       wallet_address: walletAddress,
