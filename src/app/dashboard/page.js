@@ -1,25 +1,13 @@
 /**
- * Enhanced AeroNyx Dashboard Page with Real API Integration and World-Class Features
+ * AeroNyx Dashboard Page - Production Ready
  * 
  * File Path: src/app/dashboard/page.js
  * 
- * This component provides a world-class dashboard interface that integrates
- * with real API endpoints while incorporating sophisticated financial metrics,
- * predictive analytics, and professional-grade visualizations that meet
- * institutional standards.
+ * Production-ready dashboard focusing on node management without financial metrics.
+ * Implements comprehensive caching and performance optimizations.
  * 
- * Features:
- * - Real-time API integration with enhanced error handling
- * - Professional financial metrics (APY, ROI, Risk Scores)
- * - Predictive analytics and optimization recommendations
- * - Multi-view dashboard (Overview, Detailed, Analytics)
- * - Achievement system and gamification elements
- * - Responsive design with micro-interactions
- * - Performance monitoring and caching
- * 
- * @version 3.0.0
+ * @version 2.0.0
  * @author AeroNyx Development Team
- * @since 2025-01-01
  */
 
 'use client';
@@ -29,67 +17,144 @@ import { useRouter } from 'next/navigation';
 import Header from '../../components/layout/Header';
 import { useWallet } from '../../components/wallet/WalletProvider';
 import NodeStatusCard from '../../components/dashboard/NodeStatusCard';
-import MetricsOverview from '../../components/dashboard/MetricsOverview';
 import Link from 'next/link';
 import nodeRegistrationService from '../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../lib/utils/walletSignature';
 
-/**
- * Constants for configuration and timing
- */
-const REFRESH_INTERVALS = {
-  DASHBOARD_DATA: 30 * 1000,     // 30 seconds for dashboard overview
-  PERFORMANCE_METRICS: 60 * 1000  // 1 minute for performance data
-};
-
+// Configuration constants
 const CACHE_DURATION = {
-  DASHBOARD_OVERVIEW: 5 * 60 * 1000,  // 5 minutes
+  DASHBOARD_DATA: 5 * 60 * 1000,    // 5 minutes
+  SIGNATURE: 10 * 60 * 1000         // 10 minutes
 };
 
-const ERROR_MESSAGES = {
-  WALLET_NOT_CONNECTED: 'Wallet connection required',
-  SIGNATURE_FAILED: 'Authentication signature failed',
-  API_UNAVAILABLE: 'AeroNyx services temporarily unavailable',
-  NETWORK_ERROR: 'Network connection error',
-  DATA_PARSING_ERROR: 'Invalid data received from server'
+const REFRESH_INTERVALS = {
+  DASHBOARD_DATA: 30 * 1000,        // 30 seconds
+  BACKGROUND: 2 * 60 * 1000         // 2 minutes
 };
 
-/**
- * Enhanced Dashboard Component with Real API Integration and Professional Features
- */
-export default function EnhancedDashboard() {
+export default function Dashboard() {
   const { wallet } = useWallet();
   const router = useRouter();
 
-  // ==================== STATE MANAGEMENT ====================
-  
-  // Core data state
+  // Core state management
   const [dashboardData, setDashboardData] = useState(null);
   const [nodesOverview, setNodesOverview] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
   
-  // UI state
-  const [refreshing, setRefreshing] = useState(false);
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
-  const [viewMode, setViewMode] = useState('overview'); // overview, detailed, analytics
-  const [selectedTimeframe, setSelectedTimeframe] = useState('24h');
+  // Cache management
+  const [cache, setCache] = useState(new Map());
+  const [signatureCache, setSignatureCache] = useState(new Map());
   
-  // Cache and performance state
-  const [dataCache, setDataCache] = useState(new Map());
+  // Auto-refresh control
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const refreshIntervalRef = React.useRef(null);
+  const requestInProgressRef = React.useRef(false);
+  const mountedRef = React.useRef(true);
+
+  // Performance metrics
   const [performanceMetrics, setPerformanceMetrics] = useState({
-    apiResponseTime: null,
-    lastUpdateDuration: null,
+    totalRequests: 0,
     successfulRequests: 0,
-    failedRequests: 0
+    failedRequests: 0,
+    averageResponseTime: 0,
+    cacheHits: 0,
+    cacheMisses: 0
   });
 
-  // ==================== UTILITY FUNCTIONS ====================
-  
-  /**
-   * Normalize node status to standard values
-   */
+  // Check if cached data is still valid
+  const isCacheValid = useCallback((cacheEntry, ttl) => {
+    if (!cacheEntry) return false;
+    return (Date.now() - cacheEntry.timestamp) < ttl;
+  }, []);
+
+  // Get or generate signature with caching
+  const getSignature = useCallback(async () => {
+    const cacheKey = `signature_${wallet.address}`;
+    const cachedSignature = signatureCache.get(cacheKey);
+    
+    if (cachedSignature && isCacheValid(cachedSignature, CACHE_DURATION.SIGNATURE)) {
+      setPerformanceMetrics(prev => ({ ...prev, cacheHits: prev.cacheHits + 1 }));
+      return {
+        signature: cachedSignature.signature,
+        message: cachedSignature.message
+      };
+    }
+
+    setPerformanceMetrics(prev => ({ ...prev, cacheMisses: prev.cacheMisses + 1 }));
+
+    // Generate new signature
+    const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+    
+    if (!messageResponse.success) {
+      throw new Error(messageResponse.message || 'Failed to generate signature message');
+    }
+
+    const message = messageResponse.data.message;
+    const formattedMessage = formatMessageForSigning(message);
+    const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
+
+    // Cache the signature
+    const newCache = new Map(signatureCache);
+    newCache.set(cacheKey, {
+      signature,
+      message,
+      timestamp: Date.now()
+    });
+    setSignatureCache(newCache);
+
+    return { signature, message };
+  }, [wallet.address, wallet.provider, signatureCache, isCacheValid]);
+
+  // Process dashboard data
+  const processDashboardData = useCallback((apiData) => {
+    const { summary, nodes: nodesByStatus } = apiData;
+    
+    // Combine all nodes from different status categories
+    const allNodes = [
+      ...(nodesByStatus.online || []),
+      ...(nodesByStatus.active || []),
+      ...(nodesByStatus.offline || [])
+    ];
+
+    // Transform nodes for dashboard display
+    const transformedNodes = allNodes.slice(0, 6).map(node => ({
+      id: node.reference_code || node.id || `node-${Date.now()}-${Math.random()}`,
+      name: node.name || 'Unnamed Node',
+      status: normalizeNodeStatus(node.status),
+      type: node.node_type?.id || node.node_type || 'general',
+      deviceId: node.reference_code || node.id,
+      uptime: calculateNodeUptime(node.last_seen, node.created_at),
+      cpu: node.performance?.cpu_usage || 0,
+      memory: node.performance?.memory_usage || 0,
+      lastSeen: node.last_seen,
+      createdAt: node.created_at,
+      isConnected: node.is_connected || false,
+      totalTasks: node.total_tasks || 0,
+      completedTasks: node.completed_tasks || 0
+    }));
+
+    // Calculate statistics without financial metrics
+    const stats = {
+      totalNodes: summary.total_nodes || allNodes.length,
+      activeNodes: summary.online_nodes || summary.active_nodes || 0,
+      offlineNodes: summary.offline_nodes || 0,
+      pendingNodes: Math.max(0, (summary.total_nodes || allNodes.length) - (summary.online_nodes || summary.active_nodes || 0) - (summary.offline_nodes || 0)),
+      resourceUtilization: calculateResourceUtilization(allNodes),
+      networkHealth: calculateNetworkHealth(summary, allNodes)
+    };
+
+    return {
+      stats,
+      nodes: transformedNodes,
+      timestamp: new Date().toISOString(),
+      source: 'api'
+    };
+  }, []);
+
+  // Utility functions
   const normalizeNodeStatus = useCallback((status) => {
     const statusMap = {
       'active': 'online',
@@ -102,9 +167,6 @@ export default function EnhancedDashboard() {
     return statusMap[status] || status || 'offline';
   }, []);
 
-  /**
-   * Calculate node uptime from timestamps
-   */
   const calculateNodeUptime = useCallback((lastSeen, createdAt) => {
     if (!createdAt) return '0 days, 0 hours';
     
@@ -125,31 +187,6 @@ export default function EnhancedDashboard() {
     return `${days} days, ${hours} hours`;
   }, []);
 
-  /**
-   * Calculate resource usage percentage
-   */
-  const calculateResourceUsage = useCallback((usage) => {
-    const numericUsage = Number(usage);
-    if (isNaN(numericUsage)) return 0;
-    return Math.max(0, Math.min(100, Math.round(numericUsage)));
-  }, []);
-
-  /**
-   * Calculate estimated network contribution
-   */
-  const calculateNetworkContribution = useCallback((allNodes) => {
-    const activeNodes = allNodes.filter(node => 
-      node.status === 'online' || node.status === 'active'
-    ).length;
-    
-    // Simplified calculation (in production, this would come from network-wide statistics)
-    const estimatedContribution = (activeNodes * 0.0015).toFixed(4);
-    return `${estimatedContribution}%`;
-  }, []);
-
-  /**
-   * Calculate overall resource utilization
-   */
   const calculateResourceUtilization = useCallback((allNodes) => {
     const activeNodes = allNodes.filter(node => 
       node.status === 'online' || node.status === 'active'
@@ -166,207 +203,76 @@ export default function EnhancedDashboard() {
     return Math.round(totalUtilization / activeNodes.length);
   }, []);
 
-  /**
-   * Transform individual node data for dashboard card display
-   */
-  const transformNodeForDashboard = useCallback((node) => ({
-    id: node.reference_code || node.id || `node-${Date.now()}-${Math.random()}`,
-    name: node.name || 'Unnamed Node',
-    status: normalizeNodeStatus(node.status),
-    type: node.node_type?.id || node.node_type || 'general',
-    deviceId: node.reference_code || node.id,
-    uptime: calculateNodeUptime(node.last_seen, node.created_at),
-    earnings: parseFloat(node.earnings || 0),
-    cpu: calculateResourceUsage(node.performance?.cpu_usage),
-    memory: calculateResourceUsage(node.performance?.memory_usage),
-    lastSeen: node.last_seen,
-    createdAt: node.created_at,
-    isConnected: node.is_connected || false,
-    totalTasks: node.total_tasks || 0,
-    completedTasks: node.completed_tasks || 0
-  }), [normalizeNodeStatus, calculateNodeUptime, calculateResourceUsage]);
-
-  /**
-   * Calculate dashboard health score
-   */
-  const calculateHealthScore = useCallback(() => {
-    if (!dashboardData) return 0;
-    
-    const { stats } = dashboardData;
-    const totalNodes = stats.totalNodes;
-    
+  const calculateNetworkHealth = useCallback((summary, allNodes) => {
+    const totalNodes = summary.total_nodes || allNodes.length;
     if (totalNodes === 0) return 100;
     
-    const activeRatio = stats.activeNodes / totalNodes;
-    const offlineRatio = stats.offlineNodes / totalNodes;
+    const activeNodes = summary.online_nodes || summary.active_nodes || 0;
+    const offlineNodes = summary.offline_nodes || 0;
     
     let score = 100;
-    score -= (offlineRatio * 50); // Penalize offline nodes
-    score -= ((1 - activeRatio) * 30); // Reward active nodes
-    score += (stats.resourceUtilization > 70 ? 10 : 0); // Bonus for good utilization
+    const activeRatio = activeNodes / totalNodes;
+    const offlineRatio = offlineNodes / totalNodes;
+    
+    score -= (offlineRatio * 50);
+    score -= ((1 - activeRatio) * 30);
+    
+    // Bonus for good resource utilization
+    if (allNodes.length > 0) {
+      const utilization = calculateResourceUtilization(allNodes);
+      if (utilization > 70) score += 10;
+    }
     
     return Math.max(0, Math.min(100, Math.round(score)));
-  }, [dashboardData]);
+  }, [calculateResourceUtilization]);
 
-  /**
-   * Check if cached data is still valid
-   */
-  const isCacheValid = useCallback((cacheEntry, maxAge) => {
-    if (!cacheEntry || !cacheEntry.timestamp) return false;
-    return (Date.now() - cacheEntry.timestamp) < maxAge;
-  }, []);
-
-  // ==================== DATA PROCESSING ====================
-  
-  /**
-   * Process and transform API data for dashboard consumption
-   */
-  const processDashboardData = useCallback(async (apiData) => {
-    const { summary, nodes: nodesByStatus } = apiData;
-    
-    // Combine all nodes from different status categories
-    const allNodes = [
-      ...(nodesByStatus.online || []),
-      ...(nodesByStatus.active || []),
-      ...(nodesByStatus.offline || [])
-    ];
-
-    // Transform nodes for dashboard display (limit to first 4 for preview)
-    const transformedNodes = allNodes.slice(0, 4).map(transformNodeForDashboard);
-
-    // Calculate comprehensive statistics
-    const stats = {
-      totalNodes: summary.total_nodes || allNodes.length,
-      activeNodes: summary.online_nodes || summary.active_nodes || 0,
-      offlineNodes: summary.offline_nodes || 0,
-      pendingNodes: Math.max(0, (summary.total_nodes || allNodes.length) - (summary.online_nodes || summary.active_nodes || 0) - (summary.offline_nodes || 0)),
-      totalEarnings: parseFloat(allNodes.reduce((sum, node) => sum + parseFloat(node.earnings || 0), 0).toFixed(4)),
-      networkContribution: calculateNetworkContribution(allNodes),
-      resourceUtilization: calculateResourceUtilization(allNodes)
-    };
-
-    return {
-      stats,
-      nodes: transformedNodes,
-      timestamp: new Date().toISOString(),
-      source: 'api'
-    };
-  }, [transformNodeForDashboard, calculateNetworkContribution, calculateResourceUtilization]);
-
-  // ==================== COMPUTED VALUES ====================
-  
-  /**
-   * Enhanced financial metrics with professional calculations
-   */
-  const financialMetrics = useMemo(() => {
-    if (!dashboardData) return null;
-    
-    const { stats } = dashboardData;
-    
-    // Calculate professional financial metrics
-    const calculateAPY = (earnings, investment, days) => {
-      if (!investment || !days) return 0;
-      const dailyReturn = earnings / investment / days;
-      return ((1 + dailyReturn) ** 365 - 1) * 100;
-    };
-    
-    // Estimated values (in production, these would come from real market data)
-    const estimatedInvestment = stats.totalNodes * 2500; // $2500 per node average
-    const tokenPrice = 25; // $25 per AeroNyx token (estimated)
-    const dailyEarnings = stats.totalEarnings * 0.1; // 10% daily rate
-    
-    return {
-      totalValue: estimatedInvestment + (stats.totalEarnings * tokenPrice),
-      totalInvestment: estimatedInvestment,
-      unrealizedGains: stats.totalEarnings * (tokenPrice - 1), // Token appreciation
-      realizedEarnings: stats.totalEarnings,
-      apy: calculateAPY(stats.totalEarnings, estimatedInvestment, 30),
-      roi: estimatedInvestment > 0 ? ((stats.totalEarnings * tokenPrice) / estimatedInvestment) * 100 : 0,
-      dailyYield: dailyEarnings,
-      weeklyProjection: dailyEarnings * 7,
-      monthlyProjection: dailyEarnings * 30,
-      riskScore: Math.max(0, 100 - (calculateHealthScore() || 0)),
-      diversificationScore: stats.totalNodes > 0 ? Math.min(100, (stats.activeNodes / stats.totalNodes) * 100) : 0,
-      efficiencyRating: stats.resourceUtilization || 0
-    };
-  }, [dashboardData, calculateHealthScore]);
-
-  /**
-   * Performance trends and predictions
-   */
-  const performanceTrends = useMemo(() => {
-    if (!financialMetrics) return null;
-    
-    return {
-      earningsTrend: {
-        direction: 'up',
-        percentage: 12.5,
-        confidence: 85
-      },
-      networkGrowth: {
-        direction: 'up',
-        percentage: 8.3,
-        confidence: 92
-      },
-      riskLevel: {
-        current: financialMetrics.riskScore,
-        trend: 'down',
-        recommendation: 'Consider diversifying node types'
-      },
-      optimizationPotential: {
-        earnings: '+$124/month',
-        efficiency: '+15%',
-        risk: '-8%'
-      }
-    };
-  }, [financialMetrics]);
-
-  // ==================== DATA FETCHING METHODS ====================
-  
-  /**
-   * Fetch comprehensive dashboard data from API
-   */
+  // Fetch dashboard data with caching
   const fetchDashboardData = useCallback(async (silentRefresh = false) => {
+    // Prevent multiple simultaneous requests
+    if (requestInProgressRef.current) {
+      return;
+    }
+
     if (!wallet.connected || !wallet.address) {
-      setError(ERROR_MESSAGES.WALLET_NOT_CONNECTED);
+      setError('Wallet not connected');
       setIsLoading(false);
       return;
     }
 
-    // Check cache first for non-silent refreshes
+    // Check cache first
     const cacheKey = `dashboard_${wallet.address}`;
-    const cachedData = dataCache.get(cacheKey);
+    const cachedData = cache.get(cacheKey);
     
-    if (!silentRefresh && cachedData && isCacheValid(cachedData, CACHE_DURATION.DASHBOARD_OVERVIEW)) {
+    if (!silentRefresh && cachedData && isCacheValid(cachedData, CACHE_DURATION.DASHBOARD_DATA)) {
       setDashboardData(cachedData.data);
       setNodesOverview(cachedData.overview);
+      setPerformanceMetrics(prev => ({ ...prev, cacheHits: prev.cacheHits + 1 }));
       setIsLoading(false);
       return;
     }
 
+    if (cachedData) {
+      setPerformanceMetrics(prev => ({ ...prev, cacheMisses: prev.cacheMisses + 1 }));
+    }
+
+    requestInProgressRef.current = true;
+    
     if (!silentRefresh) {
       setIsLoading(true);
     } else {
-      setRefreshing(true);
+      setIsRefreshing(true);
     }
     
     setError(null);
     
     const startTime = performance.now();
+    setPerformanceMetrics(prev => ({ ...prev, totalRequests: prev.totalRequests + 1 }));
 
     try {
-      // Step 1: Generate signature for API authentication
-      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-      
-      if (!messageResponse.success) {
-        throw new Error(messageResponse.message || ERROR_MESSAGES.SIGNATURE_FAILED);
-      }
+      // Get signature (with caching)
+      const { signature, message } = await getSignature();
 
-      const message = messageResponse.data.message;
-      const formattedMessage = formatMessageForSigning(message);
-      const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
-
-      // Step 2: Fetch user nodes overview (primary data source)
+      // Fetch user nodes overview
       const overviewResponse = await nodeRegistrationService.getUserNodesOverview(
         wallet.address,
         signature,
@@ -375,161 +281,150 @@ export default function EnhancedDashboard() {
       );
 
       if (overviewResponse.success && overviewResponse.data) {
-        const apiResponseTime = performance.now() - startTime;
+        const processedData = processDashboardData(overviewResponse.data);
         
-        // Process and transform the API response
-        const processedData = await processDashboardData(overviewResponse.data);
-        
-        // Cache the successful response
-        const newCache = new Map(dataCache);
+        // Update cache
+        const newCache = new Map(cache);
         newCache.set(cacheKey, {
           data: processedData,
           overview: overviewResponse.data,
           timestamp: Date.now()
         });
-        setDataCache(newCache);
+        setCache(newCache);
         
         // Update state
-        setDashboardData(processedData);
-        setNodesOverview(overviewResponse.data);
-        setLastRefresh(new Date());
-        
-        // Update performance metrics
-        setPerformanceMetrics(prev => ({
-          ...prev,
-          apiResponseTime: Math.round(apiResponseTime),
-          lastUpdateDuration: Math.round(performance.now() - startTime),
-          successfulRequests: prev.successfulRequests + 1
-        }));
-        
+        if (mountedRef.current) {
+          setDashboardData(processedData);
+          setNodesOverview(overviewResponse.data);
+          setLastRefresh(new Date());
+          
+          // Update performance metrics
+          const responseTime = Math.round(performance.now() - startTime);
+          setPerformanceMetrics(prev => ({
+            ...prev,
+            successfulRequests: prev.successfulRequests + 1,
+            averageResponseTime: Math.round(
+              (prev.averageResponseTime * prev.successfulRequests + responseTime) / 
+              (prev.successfulRequests + 1)
+            )
+          }));
+        }
       } else {
-        throw new Error(overviewResponse.message || ERROR_MESSAGES.API_UNAVAILABLE);
+        throw new Error(overviewResponse.message || 'Failed to fetch dashboard data');
       }
 
     } catch (err) {
-      console.error('Error fetching dashboard data:', err);
-      handleFetchError(err);
+      console.error('Dashboard data fetch error:', err);
       
-      // Update performance metrics for failed requests
+      // Update performance metrics
       setPerformanceMetrics(prev => ({
         ...prev,
         failedRequests: prev.failedRequests + 1
       }));
+      
+      // Handle specific error cases
+      if (err.message?.includes('no nodes') || err.message?.includes('No nodes found')) {
+        // User has no nodes yet - not really an error
+        const emptyData = {
+          stats: {
+            totalNodes: 0,
+            activeNodes: 0,
+            pendingNodes: 0,
+            offlineNodes: 0,
+            resourceUtilization: 0,
+            networkHealth: 100
+          },
+          nodes: [],
+          timestamp: new Date().toISOString(),
+          source: 'api'
+        };
+        
+        if (mountedRef.current) {
+          setDashboardData(emptyData);
+          setNodesOverview({
+            summary: { total_nodes: 0, online_nodes: 0, active_nodes: 0, offline_nodes: 0 },
+            nodes: { online: [], active: [], offline: [] }
+          });
+          setError(null);
+        }
+      } else {
+        if (mountedRef.current) {
+          setError(err.message || 'Failed to load dashboard data');
+        }
+      }
     } finally {
-      setIsLoading(false);
-      setRefreshing(false);
+      requestInProgressRef.current = false;
+      if (mountedRef.current) {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
     }
-  }, [wallet.connected, wallet.address, wallet.provider, dataCache, isCacheValid, processDashboardData]);
+  }, [wallet.connected, wallet.address, cache, getSignature, processDashboardData, isCacheValid]);
 
-  /**
-   * Handle errors during data fetching
-   */
-  const handleFetchError = useCallback((err) => {
-    let errorMessage = err.message || ERROR_MESSAGES.API_UNAVAILABLE;
-    
-    // Handle specific error cases
-    if (err.message?.includes('Network error') || err.message?.includes('fetch')) {
-      errorMessage = ERROR_MESSAGES.NETWORK_ERROR;
-    } else if (err.message?.includes('no nodes') || err.message?.includes('No nodes found')) {
-      // Not really an error - user just has no nodes yet
-      setDashboardData({
-        stats: {
-          totalNodes: 0,
-          activeNodes: 0,
-          pendingNodes: 0,
-          offlineNodes: 0,
-          totalEarnings: 0,
-          networkContribution: '0.0000%',
-          resourceUtilization: 0
-        },
-        nodes: [],
-        timestamp: new Date().toISOString(),
-        source: 'api'
-      });
-      setError(null);
-      return;
-    }
-    
-    setError(errorMessage);
+  // Manual refresh handler
+  const handleRefreshDashboard = useCallback(() => {
+    // Clear cache for fresh data
+    const cacheKey = `dashboard_${wallet.address}`;
+    cache.delete(cacheKey);
+    fetchDashboardData(false);
+  }, [wallet.address, cache, fetchDashboardData]);
+
+  // Toggle auto-refresh
+  const toggleAutoRefresh = useCallback(() => {
+    setAutoRefreshEnabled(prev => !prev);
   }, []);
 
-  // ==================== LIFECYCLE HOOKS ====================
-  
-  /**
-   * Effect: Handle wallet connection and initial data loading
-   */
+  // Initial data load
   useEffect(() => {
     if (!wallet.connected) {
       router.push('/');
       return;
     }
 
-    // Load initial dashboard data
     fetchDashboardData();
-    
-    // Setup auto-refresh interval if enabled
-    let refreshInterval;
-    if (autoRefreshEnabled) {
-      refreshInterval = setInterval(() => {
-        if (wallet.connected && !isLoading) {
-          fetchDashboardData(true); // Silent refresh
-        }
-      }, REFRESH_INTERVALS.DASHBOARD_DATA);
+  }, [wallet.connected, wallet.address, fetchDashboardData, router]);
+
+  // Auto-refresh setup
+  useEffect(() => {
+    if (!autoRefreshEnabled || !wallet.connected) {
+      return;
     }
 
+    refreshIntervalRef.current = setInterval(() => {
+      if (!requestInProgressRef.current) {
+        fetchDashboardData(true); // Silent refresh
+      }
+    }, REFRESH_INTERVALS.DASHBOARD_DATA);
+
     return () => {
-      if (refreshInterval) {
-        clearInterval(refreshInterval);
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
       }
     };
-  }, [wallet.connected, wallet.address, autoRefreshEnabled, fetchDashboardData, isLoading, router]);
+  }, [autoRefreshEnabled, wallet.connected, fetchDashboardData]);
 
-  // ==================== EVENT HANDLERS ====================
-  
-  /**
-   * Handle manual refresh of dashboard data
-   */
-  const handleRefreshDashboard = useCallback(() => {
-    fetchDashboardData();
-  }, [fetchDashboardData]);
-
-  /**
-   * Toggle auto-refresh functionality
-   */
-  const toggleAutoRefresh = useCallback(() => {
-    setAutoRefreshEnabled(prev => !prev);
+  // Cleanup
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    return () => {
+      mountedRef.current = false;
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+      }
+    };
   }, []);
 
-  /**
-   * Clear all cached data
-   */
-  const clearCache = useCallback(() => {
-    setDataCache(new Map());
-    fetchDashboardData();
-  }, [fetchDashboardData]);
-
-  const handleViewModeChange = useCallback((mode) => {
-    setViewMode(mode);
-  }, []);
-
-  const handleTimeframeChange = useCallback((timeframe) => {
-    setSelectedTimeframe(timeframe);
-  }, []);
-
-  // ==================== RENDER GUARDS ====================
-  
   // Redirect if wallet not connected
   if (!wallet.connected) {
     return null;
   }
 
-  // ==================== RENDER COMPONENT ====================
-  
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background-50 to-background-100">
       <Header />
       
-      {/* Enhanced Hero Section */}
+      {/* Hero Section */}
       <section className="border-b border-background-200 bg-gradient-to-r from-primary-900/20 to-secondary-900/20">
         <div className="container-custom py-8">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
@@ -542,137 +437,62 @@ export default function EnhancedDashboard() {
                   </span>
                 </div>
                 <div>
-                  <h1 className="text-3xl font-bold">Welcome back!</h1>
+                  <h1 className="text-3xl font-bold">Node Management Center</h1>
                   <p className="text-gray-400">
-                    {financialMetrics ? `$${financialMetrics.totalValue.toLocaleString()}` : '---'} portfolio value
-                    {performanceTrends?.earningsTrend.direction === 'up' && (
-                      <span className="ml-2 text-green-400">
-                        ↗ +{performanceTrends.earningsTrend.percentage}%
-                      </span>
-                    )}
+                    Monitor and manage your AeroNyx network nodes
                   </p>
                 </div>
               </div>
-              
-              {/* Achievement Badges */}
-              <div className="flex flex-wrap gap-2">
-                <span className="px-3 py-1 bg-yellow-900/30 text-yellow-400 text-xs font-medium rounded-full border border-yellow-800">
-                  🏆 Top Performer
-                </span>
-                <span className="px-3 py-1 bg-blue-900/30 text-blue-400 text-xs font-medium rounded-full border border-blue-800">
-                  🚀 Early Adopter
-                </span>
-                <span className="px-3 py-1 bg-green-900/30 text-green-400 text-xs font-medium rounded-full border border-green-800">
-                  💎 Diamond Hands
-                </span>
-              </div>
             </div>
             
-            {/* Quick Stats */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6">
-              <div className="text-center">
-                <div className="text-2xl font-bold text-green-400">
-                  +{financialMetrics?.apy.toFixed(1) || '0'}%
-                </div>
-                <div className="text-xs text-gray-400">APY</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-blue-400">
-                  {dashboardData?.stats.activeNodes || 0}
-                </div>
-                <div className="text-xs text-gray-400">Active Nodes</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-purple-400">
-                  #{Math.floor(Math.random() * 100) + 1}
-                </div>
-                <div className="text-xs text-gray-400">Rank</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-yellow-400">
-                  {calculateHealthScore() || 0}%
-                </div>
-                <div className="text-xs text-gray-400">Health</div>
-              </div>
+            {/* Control Panel */}
+            <div className="flex items-center gap-4">
+              {/* Auto-refresh toggle */}
+              <button
+                onClick={toggleAutoRefresh}
+                className={`text-sm px-3 py-1 rounded transition-colors ${
+                  autoRefreshEnabled 
+                    ? 'bg-green-900/30 text-green-400 border border-green-800' 
+                    : 'bg-gray-900/30 text-gray-400 border border-gray-800'
+                }`}
+                title={`Auto-refresh ${autoRefreshEnabled ? 'enabled' : 'disabled'}`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline mr-1" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                </svg>
+                Auto
+              </button>
+              
+              {/* Manual refresh */}
+              <button 
+                onClick={handleRefreshDashboard}
+                disabled={isLoading || isRefreshing}
+                className={`button-outline flex items-center gap-2 ${
+                  isLoading || isRefreshing ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${isRefreshing ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                </svg>
+                {isRefreshing ? 'Refreshing...' : 'Refresh'}
+              </button>
+              
+              {/* Register new node */}
+              <Link 
+                href="/dashboard/register"
+                className="button-primary flex items-center gap-2 whitespace-nowrap"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                </svg>
+                Register New Node
+              </Link>
             </div>
           </div>
         </div>
       </section>
 
       <main className="container-custom py-8">
-        {/* Enhanced Controls */}
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-4">
-            {/* View Mode Selector */}
-            <div className="flex rounded-lg overflow-hidden border border-background-200">
-              {['overview', 'detailed', 'analytics'].map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => handleViewModeChange(mode)}
-                  className={`px-4 py-2 text-sm font-medium transition-colors ${
-                    viewMode === mode
-                      ? 'bg-primary text-white'
-                      : 'bg-background-100 text-gray-300 hover:bg-background-200'
-                  }`}
-                >
-                  {mode.charAt(0).toUpperCase() + mode.slice(1)}
-                </button>
-              ))}
-            </div>
-            
-            {/* Timeframe Selector */}
-            <div className="flex rounded-lg overflow-hidden border border-background-200">
-              {['24h', '7d', '30d', '90d'].map((timeframe) => (
-                <button
-                  key={timeframe}
-                  onClick={() => handleTimeframeChange(timeframe)}
-                  className={`px-3 py-2 text-xs font-medium transition-colors ${
-                    selectedTimeframe === timeframe
-                      ? 'bg-secondary text-white'
-                      : 'bg-background-100 text-gray-400 hover:bg-background-200'
-                  }`}
-                >
-                  {timeframe}
-                </button>
-              ))}
-            </div>
-          </div>
-          
-          {/* Control Buttons */}
-          <div className="flex items-center gap-3">
-            {/* Auto-refresh toggle */}
-            <button
-              onClick={toggleAutoRefresh}
-              className={`text-sm px-3 py-1 rounded transition-colors ${
-                autoRefreshEnabled 
-                  ? 'bg-green-900/30 text-green-400 border border-green-800' 
-                  : 'bg-gray-900/30 text-gray-400 border border-gray-800'
-              }`}
-              title={`Auto-refresh ${autoRefreshEnabled ? 'enabled' : 'disabled'}`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline mr-1" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-              </svg>
-              Auto
-            </button>
-            
-            {/* Manual refresh */}
-            <button 
-              onClick={handleRefreshDashboard}
-              disabled={isLoading || refreshing}
-              className={`button-outline flex items-center gap-2 ${
-                isLoading || refreshing ? 'opacity-50 cursor-not-allowed' : ''
-              }`}
-              aria-label="Refresh dashboard data"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${refreshing ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-              </svg>
-              {refreshing ? 'Refreshing...' : 'Refresh'}
-            </button>
-          </div>
-        </div>
-
         {/* Error Display */}
         {error && (
           <div className="mb-6 p-4 bg-red-900/50 border border-red-800 rounded-md text-red-200">
@@ -683,20 +503,12 @@ export default function EnhancedDashboard() {
               <span className="font-bold">Dashboard Error</span>
             </div>
             <p className="text-sm mb-3">{error}</p>
-            <div className="flex gap-3">
-              <button 
-                onClick={handleRefreshDashboard}
-                className="text-sm underline hover:no-underline"
-              >
-                Retry
-              </button>
-              <button 
-                onClick={clearCache}
-                className="text-sm text-red-300 underline hover:no-underline"
-              >
-                Clear Cache & Retry
-              </button>
-            </div>
+            <button 
+              onClick={handleRefreshDashboard}
+              className="text-sm underline hover:no-underline"
+            >
+              Try again
+            </button>
           </div>
         )}
 
@@ -710,114 +522,73 @@ export default function EnhancedDashboard() {
           </div>
         ) : dashboardData ? (
           <>
-            {/* Professional Financial Metrics */}
-            <div className="mb-8">
-              <MetricsOverview 
-                financialMetrics={financialMetrics}
-                trends={performanceTrends}
-                timeframe={selectedTimeframe}
-              />
+            {/* Network Overview */}
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-8">
+              <div className="card glass-effect">
+                <h3 className="text-sm text-gray-400 mb-1">Total Nodes</h3>
+                <div className="text-2xl font-bold">{dashboardData.stats.totalNodes}</div>
+              </div>
+              
+              <div className="card glass-effect">
+                <h3 className="text-sm text-gray-400 mb-1">Active</h3>
+                <div className="text-2xl font-bold text-green-500">{dashboardData.stats.activeNodes}</div>
+              </div>
+              
+              <div className="card glass-effect">
+                <h3 className="text-sm text-gray-400 mb-1">Offline</h3>
+                <div className="text-2xl font-bold text-red-500">{dashboardData.stats.offlineNodes}</div>
+              </div>
+              
+              <div className="card glass-effect">
+                <h3 className="text-sm text-gray-400 mb-1">Pending</h3>
+                <div className="text-2xl font-bold text-yellow-500">{dashboardData.stats.pendingNodes}</div>
+              </div>
+              
+              <div className="card glass-effect">
+                <h3 className="text-sm text-gray-400 mb-1">Utilization</h3>
+                <div className="text-2xl font-bold">{dashboardData.stats.resourceUtilization}%</div>
+              </div>
+              
+              <div className="card glass-effect">
+                <h3 className="text-sm text-gray-400 mb-1">Health Score</h3>
+                <div className={`text-2xl font-bold ${
+                  dashboardData.stats.networkHealth >= 80 ? 'text-green-500' :
+                  dashboardData.stats.networkHealth >= 60 ? 'text-yellow-500' :
+                  'text-red-500'
+                }`}>
+                  {dashboardData.stats.networkHealth}%
+                </div>
+              </div>
             </div>
 
             {/* Quick Action Buttons */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-              <Link href="/dashboard/register" className="card glass-effect flex items-center gap-4 hover:bg-background-100 transition-colors">
-                <div className="p-3 rounded-full bg-primary-600">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="font-bold">Register New Node</h3>
-                  <p className="text-sm text-gray-400">Add a new device to the AeroNyx network</p>
-                </div>
-              </Link>
-              
               <Link href="/dashboard/nodes" className="card glass-effect flex items-center gap-4 hover:bg-background-100 transition-colors">
-                <div className="p-3 rounded-full bg-secondary-600">
+                <div className="p-3 rounded-full bg-primary-600">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
                   </svg>
                 </div>
                 <div>
                   <h3 className="font-bold">Manage Nodes</h3>
-                  <p className="text-sm text-gray-400">View and manage your registered nodes</p>
+                  <p className="text-sm text-gray-400">View and control all your registered nodes</p>
+                </div>
+              </Link>
+              
+              <Link href="/dashboard/network" className="card glass-effect flex items-center gap-4 hover:bg-background-100 transition-colors">
+                <div className="p-3 rounded-full bg-secondary-600">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="font-bold">Network Statistics</h3>
+                  <p className="text-sm text-gray-400">Global network insights and analytics</p>
                 </div>
               </Link>
             </div>
 
-            {/* Enhanced Statistics Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-              <div className="card glass-effect">
-                <h3 className="text-gray-400 text-sm mb-1">Total Nodes</h3>
-                <div className="flex items-end gap-2">
-                  <span className="text-3xl font-bold">{dashboardData.stats.totalNodes}</span>
-                </div>
-              </div>
-              
-              <div className="card glass-effect">
-                <h3 className="text-gray-400 text-sm mb-1">Node Status</h3>
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-1">
-                    <span className="inline-block w-2 h-2 rounded-full bg-green-500"></span>
-                    <span className="text-sm">{dashboardData.stats.activeNodes} Active</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="inline-block w-2 h-2 rounded-full bg-yellow-500"></span>
-                    <span className="text-sm">{dashboardData.stats.pendingNodes} Pending</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="inline-block w-2 h-2 rounded-full bg-red-500"></span>
-                    <span className="text-sm">{dashboardData.stats.offlineNodes} Offline</span>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="card glass-effect">
-                <h3 className="text-gray-400 text-sm mb-1">Total Earnings</h3>
-                <div className="flex items-end gap-2">
-                  <span className="text-3xl font-bold">{dashboardData.stats.totalEarnings}</span>
-                  <div className="text-xs text-gray-400 mb-1">AeroNyx</div>
-                </div>
-              </div>
-              
-              <div className="card glass-effect">
-                <h3 className="text-gray-400 text-sm mb-1">Network Contribution</h3>
-                <div className="flex items-end gap-2">
-                  <span className="text-3xl font-bold">{dashboardData.stats.networkContribution}</span>
-                  <div className="text-xs text-gray-400 mb-1">of Global Resources</div>
-                </div>
-              </div>
-            </div>
-
-            {/* Resource Utilization */}
-            <div className="card glass-effect mb-8">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-bold">Resource Utilization</h2>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-400">Health Score:</span>
-                  <span className={`text-sm font-bold ${
-                    calculateHealthScore() >= 80 ? 'text-green-500' :
-                    calculateHealthScore() >= 60 ? 'text-yellow-500' :
-                    'text-red-500'
-                  }`}>
-                    {calculateHealthScore()}%
-                  </span>
-                </div>
-              </div>
-              <div className="w-full bg-background-200 rounded-full h-4 mb-2">
-                <div 
-                  className="bg-primary rounded-full h-4 transition-all duration-500" 
-                  style={{ width: `${dashboardData.stats.resourceUtilization}%` }}
-                ></div>
-              </div>
-              <div className="flex justify-between text-sm text-gray-400">
-                <span>Current: {dashboardData.stats.resourceUtilization}%</span>
-                <span>Target: 85%</span>
-              </div>
-            </div>
-
-            {/* Node Status Overview */}
+            {/* Recent Nodes */}
             <div className="mb-8">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-bold">Recent Nodes</h2>
@@ -827,7 +598,7 @@ export default function EnhancedDashboard() {
               </div>
               
               {dashboardData.nodes.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {dashboardData.nodes.map(node => (
                     <NodeStatusCard 
                       key={node.id}
@@ -835,7 +606,7 @@ export default function EnhancedDashboard() {
                       status={node.status}
                       deviceId={node.deviceId}
                       uptime={node.uptime}
-                      earnings={node.earnings}
+                      earnings={0} // Remove earnings display
                       cpu={node.cpu}
                       memory={node.memory}
                       type={node.type}
@@ -861,30 +632,46 @@ export default function EnhancedDashboard() {
               )}
             </div>
 
-            {/* Performance Debug Panel (Development Only) */}
-            {process.env.NODE_ENV === 'development' && performanceMetrics.successfulRequests > 0 && (
+            {/* Performance Metrics (Production Only) */}
+            {process.env.NODE_ENV === 'production' && performanceMetrics.totalRequests > 0 && (
               <div className="card glass-effect mb-8 border-blue-800/50">
-                <h3 className="text-lg font-bold mb-4 text-blue-400">
-                  Performance Metrics (Development)
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+                <h3 className="text-lg font-bold mb-4 text-blue-400">System Performance</h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                   <div>
-                    <div className="text-gray-400">API Response Time</div>
-                    <div className="font-mono">{performanceMetrics.apiResponseTime}ms</div>
+                    <div className="text-gray-400">Avg Response Time</div>
+                    <div className="font-mono">{performanceMetrics.averageResponseTime}ms</div>
                   </div>
                   <div>
-                    <div className="text-gray-400">Update Duration</div>
-                    <div className="font-mono">{performanceMetrics.lastUpdateDuration}ms</div>
+                    <div className="text-gray-400">Success Rate</div>
+                    <div className="font-mono text-green-400">
+                      {performanceMetrics.totalRequests > 0 
+                        ? Math.round((performanceMetrics.successfulRequests / performanceMetrics.totalRequests) * 100)
+                        : 0
+                      }%
+                    </div>
                   </div>
                   <div>
-                    <div className="text-gray-400">Successful Requests</div>
-                    <div className="font-mono text-green-400">{performanceMetrics.successfulRequests}</div>
+                    <div className="text-gray-400">Cache Hit Rate</div>
+                    <div className="font-mono text-blue-400">
+                      {(performanceMetrics.cacheHits + performanceMetrics.cacheMisses) > 0
+                        ? Math.round((performanceMetrics.cacheHits / (performanceMetrics.cacheHits + performanceMetrics.cacheMisses)) * 100)
+                        : 0
+                      }%
+                    </div>
                   </div>
                   <div>
-                    <div className="text-gray-400">Failed Requests</div>
-                    <div className="font-mono text-red-400">{performanceMetrics.failedRequests}</div>
+                    <div className="text-gray-400">Total Requests</div>
+                    <div className="font-mono">{performanceMetrics.totalRequests}</div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Last Refresh Information */}
+            {lastRefresh && (
+              <div className="mt-6 text-center text-sm text-gray-400">
+                Last updated: {lastRefresh.toLocaleString()}
+                {dashboardData.source && ` • Data source: ${dashboardData.source}`}
               </div>
             )}
           </>
@@ -892,7 +679,7 @@ export default function EnhancedDashboard() {
           <div className="card glass-effect p-8 text-center">
             <h3 className="text-xl font-bold mb-4">No Data Available</h3>
             <p className="text-gray-400 mb-6">
-              We couldn't retrieve your dashboard data. Please try again later.
+              We couldn't retrieve your dashboard data. Please try again.
             </p>
             <button 
               onClick={handleRefreshDashboard}
@@ -909,12 +696,6 @@ export default function EnhancedDashboard() {
         <div className="container-custom">
           <div className="text-sm text-gray-400 text-center">
             © {new Date().getFullYear()} AeroNyx Network. All rights reserved.
-            {lastRefresh && (
-              <span className="ml-4">
-                Data source: {dashboardData?.source || 'unknown'} • 
-                Last refresh: {lastRefresh.toLocaleString()}
-              </span>
-            )}
           </div>
         </div>
       </footer>
