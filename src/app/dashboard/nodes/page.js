@@ -1,81 +1,137 @@
 'use client';
 
 /**
- * src/app/dashboard/nodes/page.js
- * Enhanced Nodes Management Page with real API integration
+ * AeroNyx Nodes Management Dashboard Page
+ * 
+ * File Path: src/app/dashboard/nodes/page.js
+ * 
+ * This component provides a comprehensive interface for managing user's nodes
+ * in the AeroNyx network. It includes real-time status monitoring, performance
+ * tracking, blockchain integration capabilities, and node management controls.
+ * 
+ * Features:
+ * - Real-time node overview with status grouping
+ * - Advanced filtering and search capabilities
+ * - Blockchain integration management
+ * - Performance monitoring and health scoring
+ * - Comprehensive error handling and user feedback
+ * - Responsive design for desktop and mobile
+ * 
+ * @version 1.0.0
+ * @author AeroNyx Development Team
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '../../../components/layout/Header';
 import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
 import NodeList from '../../../components/dashboard/NodeList';
 import BlockchainIntegrationModule from '../../../components/dashboard/BlockchainIntegrationModule';
-import DebugNodesData from '../../../components/debug/DebugNodesData';
 import nodeRegistrationService from '../../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
 
+/**
+ * Constants for configuration and error messages
+ */
+const ERROR_MESSAGES = {
+  WALLET_NOT_CONNECTED: 'Wallet not connected',
+  SIGNATURE_FAILED: 'Failed to generate wallet signature',
+  API_ERROR: 'Failed to fetch nodes data',
+  NO_NODES_FOUND: 'No nodes found for this wallet',
+  NETWORK_ERROR: 'Network connection error'
+};
+
+const CACHE_DURATION = {
+  NODES_DATA: 5 * 60 * 1000, // 5 minutes
+  PERFORMANCE_DATA: 2 * 60 * 1000 // 2 minutes
+};
+
+/**
+ * Main Nodes Management Page Component
+ */
 export default function NodesPage() {
   const { wallet } = useWallet();
   const router = useRouter();
   
-  // 状态管理
+  // ==================== STATE MANAGEMENT ====================
+  
+  // Core data state
   const [nodes, setNodes] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [lastRefresh, setLastRefresh] = useState(null);
+  
+  // UI state
   const [filter, setFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
   const [showBlockchainModal, setShowBlockchainModal] = useState(false);
+  
+  // Statistics state
   const [nodeStats, setNodeStats] = useState({
     total: 0,
     online: 0,
     offline: 0,
     pending: 0
   });
+  
   const [blockchainStats, setBlockchainStats] = useState({
     totalNodes: 0,
     blockchainNodes: 0,
     potentialEarnings: 0
   });
-  const [rawApiResponse, setRawApiResponse] = useState(null); // 用于调试
+  
+  // Debug state (removed in production)
+  const [rawApiResponse, setRawApiResponse] = useState(null);
 
-  // Check wallet connection on page load
+  // ==================== LIFECYCLE HOOKS ====================
+  
+  /**
+   * Effect: Handle wallet connection and initial data loading
+   */
   useEffect(() => {
     if (!wallet.connected) {
       router.push('/');
       return;
     }
 
-    // Fetch nodes data when wallet is connected
+    // Load nodes data when wallet is connected
     fetchNodesData();
   }, [wallet.connected, wallet.address, router]);
 
+  // ==================== DATA FETCHING METHODS ====================
+  
   /**
-   * 获取节点数据（使用新的 API）
+   * Fetch comprehensive nodes data from the API
+   * 
+   * This is the main data fetching method that retrieves user's nodes,
+   * transforms the data for UI consumption, and updates all related statistics.
    */
-  const fetchNodesData = async () => {
-    if (!wallet.connected || !wallet.address) return;
+  const fetchNodesData = useCallback(async () => {
+    if (!wallet.connected || !wallet.address) {
+      setError(ERROR_MESSAGES.WALLET_NOT_CONNECTED);
+      return;
+    }
 
     setIsLoading(true);
     setError(null);
 
     try {
-      // 1. 生成签名消息
+      // Step 1: Generate signature message for authentication
       const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       
       if (!messageResponse.success) {
-        throw new Error(messageResponse.message || 'Failed to generate signature message');
+        throw new Error(messageResponse.message || ERROR_MESSAGES.SIGNATURE_FAILED);
       }
 
       const message = messageResponse.data.message;
       const formattedMessage = formatMessageForSigning(message);
 
-      // 2. 获取钱包签名
+      // Step 2: Get wallet signature
       const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
 
-      // 3. 获取用户节点概览（使用新的 API）
+      // Step 3: Fetch user nodes overview
       const overviewResponse = await nodeRegistrationService.getUserNodesOverview(
         wallet.address,
         signature,
@@ -84,112 +140,102 @@ export default function NodesPage() {
       );
 
       if (overviewResponse.success && overviewResponse.data) {
-        // 存储原始响应用于调试
-        setRawApiResponse(overviewResponse.data);
+        // Store raw response for debugging (remove in production)
+        if (process.env.NODE_ENV === 'development') {
+          setRawApiResponse(overviewResponse.data);
+        }
         
-        const { summary, nodes: nodesByStatus } = overviewResponse.data;
+        // Process and transform the API response
+        await processNodesData(overviewResponse.data);
         
-        // 合并所有状态的节点
-        const allNodes = [
-          ...(nodesByStatus.online || []),
-          ...(nodesByStatus.active || []),
-          ...(nodesByStatus.offline || [])
-        ];
-
-        // 转换节点数据格式以匹配现有组件
-        const transformedNodes = allNodes.map(node => ({
-          id: node.reference_code || node.id || `node-${Date.now()}-${Math.random()}`,
-          name: node.name || 'Unnamed Node',
-          status: node.status || 'unknown',
-          type: node.node_type?.id || node.node_type || 'general', // 处理 node_type 对象
-          registeredDate: node.created_at || new Date().toISOString(),
-          lastSeen: node.last_seen || null,
-          uptime: node.uptime || calculateUptime(node.last_seen, node.created_at),
-          earnings: typeof node.earnings === 'string' ? parseFloat(node.earnings) : (typeof node.earnings === 'number' ? node.earnings : 0),
-          resources: transformResources(node.performance),
-          blockchainIntegrations: Array.isArray(node.blockchain_integrations) ? node.blockchain_integrations : [],
-          referenceCode: node.reference_code || node.id,
-          // 新增字段，确保类型安全
-          totalTasks: typeof node.total_tasks === 'number' ? node.total_tasks : 0,
-          completedTasks: typeof node.completed_tasks === 'number' ? node.completed_tasks : 0,
-          nodeVersion: node.node_version || 'Unknown',
-          publicIp: node.public_ip || null,
-          isConnected: node.is_connected || false,
-          connectionStatus: node.connection_status || 'offline',
-          offlineDuration: node.connection_details?.offline_duration_formatted || null,
-          nodeTypeInfo: node.node_type || null // 保存完整的节点类型信息
-        }));
-
-        setNodes(transformedNodes);
-        
-        // 设置节点统计 - 根据实际状态计算
-        const actualOnline = transformedNodes.filter(node => node.status === 'online' || node.status === 'active').length;
-        const actualOffline = transformedNodes.filter(node => node.status === 'offline').length;
-        const actualPending = transformedNodes.filter(node => node.status === 'pending').length;
-        const actualRegistered = transformedNodes.filter(node => node.status === 'registered').length;
-        
-        setNodeStats({
-          total: transformedNodes.length,
-          online: actualOnline,
-          offline: actualOffline,
-          pending: actualPending + actualRegistered // 将 registered 也归类为 pending
-        });
-
-        // 计算区块链统计
-        const blockchainNodes = transformedNodes.filter(node => 
-          node.blockchainIntegrations && node.blockchainIntegrations.length > 0
-        ).length;
-        
-        const onlineNodes = transformedNodes.filter(node => 
-          node.status === 'online' && node.blockchainIntegrations.length === 0
-        );
-        const potentialEarnings = onlineNodes.length * 12.5; // 简化估算
-
-        setBlockchainStats({
-          totalNodes: transformedNodes.length,
-          blockchainNodes,
-          potentialEarnings
-        });
+        setLastRefresh(new Date());
+      } else {
+        throw new Error(overviewResponse.message || ERROR_MESSAGES.API_ERROR);
       }
 
     } catch (err) {
-      console.error('Failed to fetch nodes:', err);
-      setError(err.message || 'Failed to fetch nodes data');
-      // 如果是新用户或者没有节点，设置空数组而不是错误
-      if (err.message && err.message.includes('No nodes found')) {
-        setNodes([]);
-        setNodeStats({ total: 0, online: 0, offline: 0, pending: 0 });
-        setBlockchainStats({ totalNodes: 0, blockchainNodes: 0, potentialEarnings: 0 });
-      }
+      console.error('Error fetching nodes data:', err);
+      handleFetchError(err);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [wallet.connected, wallet.address, wallet.provider]);
 
   /**
-   * 计算节点运行时间
+   * Process and transform API response data for UI consumption
+   * 
+   * @param {Object} apiData - Raw API response data
    */
-  const calculateUptime = (lastHeartbeat, createdAt) => {
-    if (!lastHeartbeat || !createdAt) return '0 days, 0 hours';
+  const processNodesData = async (apiData) => {
+    const { summary, nodes: nodesByStatus } = apiData;
     
-    const now = new Date();
-    const created = new Date(createdAt);
-    const lastSeen = new Date(lastHeartbeat);
+    // Combine all nodes from different status categories
+    const allNodes = [
+      ...(nodesByStatus.online || []),
+      ...(nodesByStatus.active || []),
+      ...(nodesByStatus.offline || [])
+    ];
+
+    // Transform nodes data to match UI component expectations
+    const transformedNodes = allNodes.map(transformNodeData);
+
+    setNodes(transformedNodes);
     
-    // 如果最后心跳超过10分钟，认为离线
-    const isOnline = (now - lastSeen) < (10 * 60 * 1000);
-    
-    if (!isOnline) return '0 days, 0 hours';
-    
-    const diffMs = now - created;
-    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    
-    return `${days} days, ${hours} hours`;
+    // Calculate and update statistics
+    updateNodeStatistics(transformedNodes);
+    updateBlockchainStatistics(transformedNodes);
   };
 
   /**
-   * 转换资源数据格式（从 performance 对象）
+   * Transform individual node data from API format to UI format
+   * 
+   * @param {Object} node - Raw node data from API
+   * @returns {Object} Transformed node data for UI
+   */
+  const transformNodeData = (node) => ({
+    // Core identifiers
+    id: node.reference_code || node.id || `node-${Date.now()}-${Math.random()}`,
+    referenceCode: node.reference_code || node.id,
+    
+    // Basic information
+    name: node.name || 'Unnamed Node',
+    status: node.status || 'unknown',
+    type: node.node_type?.id || node.node_type || 'general',
+    
+    // Timestamps
+    registeredDate: node.created_at || new Date().toISOString(),
+    lastSeen: node.last_seen || null,
+    activatedAt: node.activated_at || null,
+    
+    // Performance and connection
+    uptime: node.uptime || calculateUptime(node.last_seen, node.created_at),
+    earnings: parseEarnings(node.earnings),
+    resources: transformResources(node.performance),
+    
+    // Connection status
+    isConnected: node.is_connected || false,
+    connectionStatus: node.connection_status || 'offline',
+    offlineDuration: node.connection_details?.offline_duration_formatted || null,
+    
+    // Node type information
+    nodeTypeInfo: node.node_type || null,
+    
+    // Additional features
+    blockchainIntegrations: Array.isArray(node.blockchain_integrations) ? node.blockchain_integrations : [],
+    
+    // Extended information
+    totalTasks: typeof node.total_tasks === 'number' ? node.total_tasks : 0,
+    completedTasks: typeof node.completed_tasks === 'number' ? node.completed_tasks : 0,
+    nodeVersion: node.node_version || 'Unknown',
+    publicIp: node.public_ip || null,
+    registrationStatus: node.registration_status || {}
+  });
+
+  /**
+   * Transform performance data from API format to UI resources format
+   * 
+   * @param {Object} performance - Performance data from API
+   * @returns {Object} Transformed resources data
    */
   const transformResources = (performance) => {
     if (!performance || typeof performance !== 'object') {
@@ -203,35 +249,176 @@ export default function NodesPage() {
 
     return {
       cpu: {
-        total: 'Unknown', // API 没有提供总量信息
-        usage: typeof performance.cpu_usage === 'number' ? Math.max(0, Math.min(100, performance.cpu_usage)) : 0
+        total: 'Unknown', // API doesn't provide total resource information
+        usage: validateUsagePercentage(performance.cpu_usage)
       },
       memory: {
         total: 'Unknown',
-        usage: typeof performance.memory_usage === 'number' ? Math.max(0, Math.min(100, performance.memory_usage)) : 0
+        usage: validateUsagePercentage(performance.memory_usage)
       },
       storage: {
         total: 'Unknown',
-        usage: typeof performance.storage_usage === 'number' ? Math.max(0, Math.min(100, performance.storage_usage)) : 0
+        usage: validateUsagePercentage(performance.storage_usage)
       },
       bandwidth: {
         total: 'Unknown',
-        usage: typeof performance.bandwidth_usage === 'number' ? Math.max(0, Math.min(100, performance.bandwidth_usage)) : 0
+        usage: validateUsagePercentage(performance.bandwidth_usage)
       }
     };
   };
 
   /**
-   * 刷新节点数据
+   * Validate and normalize usage percentage values
+   * 
+   * @param {number|string} usage - Raw usage value
+   * @returns {number} Validated usage percentage (0-100)
    */
-  const handleRefreshNodes = () => {
-    fetchNodesData();
+  const validateUsagePercentage = (usage) => {
+    const numericUsage = Number(usage);
+    if (isNaN(numericUsage)) return 0;
+    return Math.max(0, Math.min(100, numericUsage));
   };
 
   /**
-   * 获取节点详细状态
+   * Parse earnings value from various formats
+   * 
+   * @param {string|number} earnings - Raw earnings value
+   * @returns {number} Parsed earnings as number
    */
-  const fetchNodeDetails = async (referenceCode) => {
+  const parseEarnings = (earnings) => {
+    if (typeof earnings === 'string') {
+      const parsed = parseFloat(earnings);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    if (typeof earnings === 'number') {
+      return earnings;
+    }
+    return 0;
+  };
+
+  /**
+   * Calculate uptime based on timestamps
+   * 
+   * @param {string|null} lastSeen - Last seen timestamp
+   * @param {string} createdAt - Creation timestamp
+   * @returns {string} Formatted uptime string
+   */
+  const calculateUptime = (lastSeen, createdAt) => {
+    if (!createdAt) return '0 days, 0 hours';
+    
+    const now = new Date();
+    const created = new Date(createdAt);
+    
+    // If never seen or seen too long ago, consider as no uptime
+    if (!lastSeen) return '0 days, 0 hours';
+    
+    const lastSeenDate = new Date(lastSeen);
+    const isRecentlyActive = (now - lastSeenDate) < (10 * 60 * 1000); // 10 minutes threshold
+    
+    if (!isRecentlyActive) return '0 days, 0 hours';
+    
+    const diffMs = now - created;
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    
+    return `${days} days, ${hours} hours`;
+  };
+
+  /**
+   * Update node statistics based on current nodes data
+   * 
+   * @param {Array} nodesData - Array of transformed node data
+   */
+  const updateNodeStatistics = (nodesData) => {
+    const stats = {
+      total: nodesData.length,
+      online: nodesData.filter(node => node.status === 'online' || node.status === 'active').length,
+      offline: nodesData.filter(node => node.status === 'offline').length,
+      pending: nodesData.filter(node => node.status === 'pending' || node.status === 'registered').length
+    };
+    
+    setNodeStats(stats);
+  };
+
+  /**
+   * Update blockchain integration statistics
+   * 
+   * @param {Array} nodesData - Array of transformed node data
+   */
+  const updateBlockchainStatistics = (nodesData) => {
+    const blockchainNodes = nodesData.filter(node => 
+      node.blockchainIntegrations && node.blockchainIntegrations.length > 0
+    ).length;
+    
+    // Calculate potential earnings for non-integrated online nodes
+    const eligibleNodes = nodesData.filter(node => 
+      (node.status === 'online' || node.status === 'active') && 
+      node.blockchainIntegrations.length === 0
+    );
+    
+    // Simplified earnings estimation (can be made more sophisticated)
+    const potentialEarnings = eligibleNodes.length * 12.5; // $12.5 per month per node
+
+    setBlockchainStats({
+      totalNodes: nodesData.length,
+      blockchainNodes,
+      potentialEarnings
+    });
+  };
+
+  /**
+   * Handle errors during data fetching
+   * 
+   * @param {Error} err - The error object
+   */
+  const handleFetchError = (err) => {
+    let errorMessage = err.message || ERROR_MESSAGES.API_ERROR;
+    
+    // Handle specific error cases
+    if (err.message && err.message.includes('no nodes')) {
+      // Not really an error - user just has no nodes yet
+      setNodes([]);
+      setNodeStats({ total: 0, online: 0, offline: 0, pending: 0 });
+      setBlockchainStats({ totalNodes: 0, blockchainNodes: 0, potentialEarnings: 0 });
+      setError(null);
+      return;
+    }
+    
+    if (err.message && err.message.includes('Network error')) {
+      errorMessage = ERROR_MESSAGES.NETWORK_ERROR;
+    }
+    
+    setError(errorMessage);
+  };
+
+  // ==================== UI EVENT HANDLERS ====================
+  
+  /**
+   * Handle manual refresh of nodes data
+   */
+  const handleRefreshNodes = useCallback(() => {
+    fetchNodesData();
+  }, [fetchNodesData]);
+
+  /**
+   * Handle node selection for blockchain integration
+   * 
+   * @param {Object} node - Selected node object
+   */
+  const handleNodeSelect = useCallback((node) => {
+    setSelectedNode(node);
+    setShowBlockchainModal(true);
+  }, []);
+
+  /**
+   * Fetch detailed status for a specific node
+   * 
+   * @param {string} referenceCode - Node reference code
+   * @returns {Promise<Object|null>} Node details or null
+   */
+  const fetchNodeDetails = useCallback(async (referenceCode) => {
+    if (!wallet.connected || !referenceCode) return null;
+    
     try {
       const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       const message = messageResponse.data.message;
@@ -253,51 +440,67 @@ export default function NodesPage() {
       console.error('Failed to fetch node details:', err);
     }
     return null;
-  };
+  }, [wallet.connected, wallet.address, wallet.provider]);
 
-  // Filter nodes based on status and search term
-  const filteredNodes = nodes.filter(node => {
-    let matchesFilter = false;
-    
-    if (filter === 'all') {
-      matchesFilter = true;
-    } else if (filter === 'online') {
-      matchesFilter = node.status === 'online' || node.status === 'active';
-    } else if (filter === 'offline') {
-      matchesFilter = node.status === 'offline';
-    } else if (filter === 'pending') {
-      matchesFilter = node.status === 'pending' || node.status === 'registered';
-    } else {
-      matchesFilter = node.status === filter;
-    }
-    
-    const matchesSearch = node.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          node.id.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesFilter && matchesSearch;
-  });
+  // ==================== COMPUTED VALUES ====================
+  
+  /**
+   * Filter nodes based on current filter and search criteria
+   */
+  const filteredNodes = React.useMemo(() => {
+    return nodes.filter(node => {
+      // Apply status filter
+      let matchesFilter = false;
+      
+      switch (filter) {
+        case 'all':
+          matchesFilter = true;
+          break;
+        case 'online':
+          matchesFilter = node.status === 'online' || node.status === 'active';
+          break;
+        case 'offline':
+          matchesFilter = node.status === 'offline';
+          break;
+        case 'pending':
+          matchesFilter = node.status === 'pending' || node.status === 'registered';
+          break;
+        default:
+          matchesFilter = node.status === filter;
+      }
+      
+      // Apply search filter
+      const matchesSearch = searchTerm === '' || 
+        node.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        node.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        node.referenceCode.toLowerCase().includes(searchTerm.toLowerCase());
+      
+      return matchesFilter && matchesSearch;
+    });
+  }, [nodes, filter, searchTerm]);
 
-  // Handle node selection for blockchain integration
-  const handleNodeSelect = (node) => {
-    setSelectedNode(node);
-    setShowBlockchainModal(true);
-  };
-
+  // ==================== RENDER GUARDS ====================
+  
+  // Redirect if wallet not connected
   if (!wallet.connected) {
-    return null; // Will redirect to home
+    return null;
   }
 
+  // ==================== RENDER COMPONENT ====================
+  
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <Header />
       
       <main className="flex-grow container-custom py-8">
+        {/* Page Header */}
         <div className="mb-8">
           <div className="flex items-center gap-2 mb-4">
-            <Link href="/dashboard" className="text-gray-400 hover:text-white">
+            <Link href="/dashboard" className="text-gray-400 hover:text-white transition-colors">
               Dashboard
             </Link>
             <span className="text-gray-600">/</span>
-            <span>My Nodes</span>
+            <span className="text-white">My Nodes</span>
           </div>
           
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -307,17 +510,21 @@ export default function NodesPage() {
                 Manage your registered nodes on the AeroNyx network
               </p>
             </div>
+            
+            {/* Action Buttons */}
             <div className="flex gap-3">
               <button 
                 onClick={handleRefreshNodes}
                 disabled={isLoading}
-                className="button-outline flex items-center gap-2"
+                className={`button-outline flex items-center gap-2 ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                aria-label="Refresh nodes data"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${isLoading ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
                 </svg>
-                Refresh
+                {isLoading ? 'Refreshing...' : 'Refresh'}
               </button>
+              
               <Link 
                 href="/dashboard/register"
                 className="button-primary flex items-center gap-2 whitespace-nowrap"
@@ -340,17 +547,17 @@ export default function NodesPage() {
               </svg>
               <span className="font-bold">Error loading nodes</span>
             </div>
-            <p className="text-sm">{error}</p>
+            <p className="text-sm mb-3">{error}</p>
             <button 
               onClick={handleRefreshNodes}
-              className="mt-2 text-sm underline hover:no-underline"
+              className="text-sm underline hover:no-underline"
             >
               Try again
             </button>
           </div>
         )}
 
-        {/* Node Stats */}
+        {/* Node Statistics */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
           <div className="card glass-effect">
             <h3 className="text-sm text-gray-400 mb-1">Total Nodes</h3>
@@ -463,40 +670,39 @@ export default function NodesPage() {
           </div>
         </div>
 
-        {/* Filter and Search */}
+        {/* Filter and Search Controls */}
         <div className="flex flex-col md:flex-row gap-4 mb-6">
+          {/* Status Filter */}
           <div className="flex">
-            <button 
-              className={`px-4 py-2 rounded-l-md ${filter === 'all' ? 'bg-primary text-white' : 'bg-background-100 text-gray-300 hover:bg-background-200'}`}
-              onClick={() => setFilter('all')}
-            >
-              All
-            </button>
-            <button 
-              className={`px-4 py-2 ${filter === 'online' ? 'bg-primary text-white' : 'bg-background-100 text-gray-300 hover:bg-background-200'}`}
-              onClick={() => setFilter('online')}
-            >
-              Online
-            </button>
-            <button 
-              className={`px-4 py-2 ${filter === 'offline' ? 'bg-primary text-white' : 'bg-background-100 text-gray-300 hover:bg-background-200'}`}
-              onClick={() => setFilter('offline')}
-            >
-              Offline
-            </button>
-            <button 
-              className={`px-4 py-2 rounded-r-md ${filter === 'pending' ? 'bg-primary text-white' : 'bg-background-100 text-gray-300 hover:bg-background-200'}`}
-              onClick={() => setFilter('pending')}
-            >
-              Pending
-            </button>
+            {[
+              { key: 'all', label: 'All' },
+              { key: 'online', label: 'Online' },
+              { key: 'offline', label: 'Offline' },
+              { key: 'pending', label: 'Pending' }
+            ].map(({ key, label }, index, array) => (
+              <button 
+                key={key}
+                className={`px-4 py-2 ${
+                  index === 0 ? 'rounded-l-md' : index === array.length - 1 ? 'rounded-r-md' : ''
+                } ${
+                  filter === key 
+                    ? 'bg-primary text-white' 
+                    : 'bg-background-100 text-gray-300 hover:bg-background-200'
+                } transition-colors`}
+                onClick={() => setFilter(key)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
+          
+          {/* Search Input */}
           <div className="flex-grow">
             <div className="relative">
               <input
                 type="text"
                 className="input-field w-full pl-10"
-                placeholder="Search nodes..."
+                placeholder="Search nodes by name or reference code..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -509,7 +715,7 @@ export default function NodesPage() {
           </div>
         </div>
 
-        {/* Node List */}
+        {/* Nodes List or Empty State */}
         {isLoading ? (
           <div className="flex justify-center items-center h-64">
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
@@ -525,8 +731,8 @@ export default function NodesPage() {
             <h3 className="text-xl font-bold mb-4">No Nodes Found</h3>
             <p className="text-gray-400 mb-6">
               {nodes.length === 0 
-                ? "You haven't registered any nodes yet."
-                : "No nodes match your current filter criteria."
+                ? "You haven't registered any nodes yet. Get started by registering your first node!"
+                : "No nodes match your current filter criteria. Try adjusting your search or filter settings."
               }
             </p>
             {nodes.length === 0 && (
@@ -542,6 +748,13 @@ export default function NodesPage() {
             )}
           </div>
         )}
+        
+        {/* Refresh Information */}
+        {lastRefresh && (
+          <div className="mt-6 text-center text-sm text-gray-400">
+            Last updated: {lastRefresh.toLocaleString()}
+          </div>
+        )}
       </main>
       
       {/* Blockchain Integration Modal */}
@@ -553,9 +766,19 @@ export default function NodesPage() {
         />
       )}
       
-      {/* Debug Component (只在开发环境显示) */}
-      <DebugNodesData nodes={filteredNodes} rawApiResponse={rawApiResponse} />
+      {/* Debug Component (Development Only) */}
+      {process.env.NODE_ENV === 'development' && rawApiResponse && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <details className="bg-black text-green-400 p-4 rounded-md border border-gray-600 font-mono text-xs max-w-md">
+            <summary className="cursor-pointer text-white font-bold mb-2">🐛 Debug Data</summary>
+            <pre className="whitespace-pre-wrap break-all max-h-64 overflow-auto">
+              {JSON.stringify(rawApiResponse, null, 2)}
+            </pre>
+          </details>
+        </div>
+      )}
       
+      {/* Footer */}
       <footer className="bg-background-100 border-t border-background-200 py-4">
         <div className="container-custom">
           <div className="text-sm text-gray-400 text-center">
