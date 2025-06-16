@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * : src/app/dashboard/nodes/page.js
+ * src/app/dashboard/nodes/page.js
  * Enhanced Nodes Management Page with real API integration
  */
 
@@ -12,6 +12,7 @@ import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
 import NodeList from '../../../components/dashboard/NodeList';
 import BlockchainIntegrationModule from '../../../components/dashboard/BlockchainIntegrationModule';
+import DebugNodesData from '../../../components/debug/DebugNodesData';
 import nodeRegistrationService from '../../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
 
@@ -38,6 +39,7 @@ export default function NodesPage() {
     blockchainNodes: 0,
     potentialEarnings: 0
   });
+  const [rawApiResponse, setRawApiResponse] = useState(null); // 用于调试
 
   // Check wallet connection on page load
   useEffect(() => {
@@ -82,6 +84,9 @@ export default function NodesPage() {
       );
 
       if (overviewResponse.success && overviewResponse.data) {
+        // 存储原始响应用于调试
+        setRawApiResponse(overviewResponse.data);
+        
         const { summary, nodes: nodesByStatus } = overviewResponse.data;
         
         // 合并所有状态的节点
@@ -93,27 +98,41 @@ export default function NodesPage() {
 
         // 转换节点数据格式以匹配现有组件
         const transformedNodes = allNodes.map(node => ({
-          id: node.reference_code || node.id,
+          id: node.reference_code || node.id || `node-${Date.now()}-${Math.random()}`,
           name: node.name || 'Unnamed Node',
-          status: node.status,
-          type: node.node_type || 'general',
+          status: node.status || 'unknown',
+          type: node.node_type?.id || node.node_type || 'general', // 处理 node_type 对象
           registeredDate: node.created_at || new Date().toISOString(),
-          lastSeen: node.last_heartbeat || null,
-          uptime: calculateUptime(node.last_heartbeat, node.created_at),
-          earnings: node.total_earnings || 0,
-          resources: transformResources(node.resources),
-          blockchainIntegrations: node.blockchain_integrations || [],
-          referenceCode: node.reference_code
+          lastSeen: node.last_seen || null,
+          uptime: node.uptime || calculateUptime(node.last_seen, node.created_at),
+          earnings: typeof node.earnings === 'string' ? parseFloat(node.earnings) : (typeof node.earnings === 'number' ? node.earnings : 0),
+          resources: transformResources(node.performance),
+          blockchainIntegrations: Array.isArray(node.blockchain_integrations) ? node.blockchain_integrations : [],
+          referenceCode: node.reference_code || node.id,
+          // 新增字段，确保类型安全
+          totalTasks: typeof node.total_tasks === 'number' ? node.total_tasks : 0,
+          completedTasks: typeof node.completed_tasks === 'number' ? node.completed_tasks : 0,
+          nodeVersion: node.node_version || 'Unknown',
+          publicIp: node.public_ip || null,
+          isConnected: node.is_connected || false,
+          connectionStatus: node.connection_status || 'offline',
+          offlineDuration: node.connection_details?.offline_duration_formatted || null,
+          nodeTypeInfo: node.node_type || null // 保存完整的节点类型信息
         }));
 
         setNodes(transformedNodes);
         
-        // 设置节点统计
+        // 设置节点统计 - 根据实际状态计算
+        const actualOnline = transformedNodes.filter(node => node.status === 'online' || node.status === 'active').length;
+        const actualOffline = transformedNodes.filter(node => node.status === 'offline').length;
+        const actualPending = transformedNodes.filter(node => node.status === 'pending').length;
+        const actualRegistered = transformedNodes.filter(node => node.status === 'registered').length;
+        
         setNodeStats({
-          total: summary.total_nodes || 0,
-          online: summary.online_nodes || 0,
-          offline: summary.offline_nodes || 0,
-          pending: (summary.total_nodes - summary.online_nodes - summary.offline_nodes) || 0
+          total: transformedNodes.length,
+          online: actualOnline,
+          offline: actualOffline,
+          pending: actualPending + actualRegistered // 将 registered 也归类为 pending
         });
 
         // 计算区块链统计
@@ -170,10 +189,10 @@ export default function NodesPage() {
   };
 
   /**
-   * 转换资源数据格式
+   * 转换资源数据格式（从 performance 对象）
    */
-  const transformResources = (resources) => {
-    if (!resources) {
+  const transformResources = (performance) => {
+    if (!performance || typeof performance !== 'object') {
       return {
         cpu: { total: 'Unknown', usage: 0 },
         memory: { total: 'Unknown', usage: 0 },
@@ -184,20 +203,20 @@ export default function NodesPage() {
 
     return {
       cpu: {
-        total: resources.cpu_cores ? `${resources.cpu_cores} cores` : 'Unknown',
-        usage: resources.cpu_usage || 0
+        total: 'Unknown', // API 没有提供总量信息
+        usage: typeof performance.cpu_usage === 'number' ? Math.max(0, Math.min(100, performance.cpu_usage)) : 0
       },
       memory: {
-        total: resources.memory_gb ? `${resources.memory_gb} GB` : 'Unknown',
-        usage: resources.memory_usage || 0
+        total: 'Unknown',
+        usage: typeof performance.memory_usage === 'number' ? Math.max(0, Math.min(100, performance.memory_usage)) : 0
       },
       storage: {
-        total: resources.storage_gb ? `${resources.storage_gb} GB` : 'Unknown',
-        usage: resources.storage_usage || 0
+        total: 'Unknown',
+        usage: typeof performance.storage_usage === 'number' ? Math.max(0, Math.min(100, performance.storage_usage)) : 0
       },
       bandwidth: {
-        total: resources.bandwidth_mbps ? `${resources.bandwidth_mbps} Mbps` : 'Unknown',
-        usage: resources.bandwidth_usage || 0
+        total: 'Unknown',
+        usage: typeof performance.bandwidth_usage === 'number' ? Math.max(0, Math.min(100, performance.bandwidth_usage)) : 0
       }
     };
   };
@@ -238,7 +257,20 @@ export default function NodesPage() {
 
   // Filter nodes based on status and search term
   const filteredNodes = nodes.filter(node => {
-    const matchesFilter = filter === 'all' || node.status === filter;
+    let matchesFilter = false;
+    
+    if (filter === 'all') {
+      matchesFilter = true;
+    } else if (filter === 'online') {
+      matchesFilter = node.status === 'online' || node.status === 'active';
+    } else if (filter === 'offline') {
+      matchesFilter = node.status === 'offline';
+    } else if (filter === 'pending') {
+      matchesFilter = node.status === 'pending' || node.status === 'registered';
+    } else {
+      matchesFilter = node.status === filter;
+    }
+    
     const matchesSearch = node.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           node.id.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesFilter && matchesSearch;
@@ -520,6 +552,9 @@ export default function NodesPage() {
           selectedNode={selectedNode}
         />
       )}
+      
+      {/* Debug Component (只在开发环境显示) */}
+      <DebugNodesData nodes={filteredNodes} rawApiResponse={rawApiResponse} />
       
       <footer className="bg-background-100 border-t border-background-200 py-4">
         <div className="container-custom">
