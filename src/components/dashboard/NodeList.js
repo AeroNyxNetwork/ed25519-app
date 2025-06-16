@@ -1,8 +1,16 @@
+/**
+ * src/components/dashboard/NodeList.js
+ * Enhanced NodeList component with performance monitoring
+ */
+
 import React, { useState } from 'react';
 import Link from 'next/link';
+import NodePerformanceChart from './NodePerformanceChart';
 
-export default function NodeList({ nodes, onBlockchainIntegrate }) {
+export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }) {
   const [expandedNode, setExpandedNode] = useState(null);
+  const [performanceData, setPerformanceData] = useState({});
+  const [loadingPerformance, setLoadingPerformance] = useState({});
 
   // Format date to local string
   const formatDate = (dateString) => {
@@ -15,6 +23,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
   const getStatusBadge = (status) => {
     switch (status) {
       case 'online':
+      case 'active':
         return 'bg-green-900/30 text-green-500 border border-green-800';
       case 'offline':
         return 'bg-red-900/30 text-red-500 border border-red-800';
@@ -26,11 +35,27 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
   };
 
   // Toggle node details expansion
-  const toggleNodeExpansion = (nodeId) => {
+  const toggleNodeExpansion = async (nodeId) => {
     if (expandedNode === nodeId) {
       setExpandedNode(null);
     } else {
       setExpandedNode(nodeId);
+      
+      // Load node details if available
+      if (onNodeDetails) {
+        const node = nodes.find(n => n.id === nodeId);
+        if (node && node.referenceCode) {
+          try {
+            const details = await onNodeDetails(node.referenceCode);
+            if (details) {
+              console.log('Node details loaded:', details);
+              // You can update state with detailed information here
+            }
+          } catch (error) {
+            console.error('Failed to load node details:', error);
+          }
+        }
+      }
     }
   };
 
@@ -114,11 +139,67 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
     }
   };
 
+  // Get connection status indicator
+  const getConnectionStatus = (lastSeen, status) => {
+    if (status === 'offline') {
+      return { color: 'text-red-500', text: 'Disconnected' };
+    }
+    
+    if (!lastSeen) {
+      return { color: 'text-gray-500', text: 'Unknown' };
+    }
+
+    const now = new Date();
+    const lastSeenDate = new Date(lastSeen);
+    const diffMinutes = Math.floor((now - lastSeenDate) / (1000 * 60));
+
+    if (diffMinutes < 5) {
+      return { color: 'text-green-500', text: 'Connected' };
+    } else if (diffMinutes < 30) {
+      return { color: 'text-yellow-500', text: `Last seen ${diffMinutes}m ago` };
+    } else {
+      return { color: 'text-red-500', text: 'Connection lost' };
+    }
+  };
+
+  // Calculate health score based on various metrics
+  const calculateHealthScore = (node) => {
+    let score = 100;
+    
+    // Reduce score based on resource usage
+    if (node.resources?.cpu?.usage > 90) score -= 15;
+    else if (node.resources?.cpu?.usage > 80) score -= 10;
+    
+    if (node.resources?.memory?.usage > 90) score -= 15;
+    else if (node.resources?.memory?.usage > 80) score -= 10;
+    
+    // Reduce score if offline
+    if (node.status === 'offline') score -= 50;
+    else if (node.status === 'pending') score -= 20;
+    
+    // Connection status impact
+    const connectionStatus = getConnectionStatus(node.lastSeen, node.status);
+    if (connectionStatus.text === 'Connection lost') score -= 30;
+    else if (connectionStatus.text.includes('Last seen')) score -= 10;
+    
+    return Math.max(0, Math.min(100, score));
+  };
+
+  // Get health score color
+  const getHealthScoreColor = (score) => {
+    if (score >= 80) return 'text-green-500';
+    if (score >= 60) return 'text-yellow-500';
+    if (score >= 40) return 'text-orange-500';
+    return 'text-red-500';
+  };
+
   return (
     <div className="space-y-4">
       {nodes.map((node) => {
         const nodeTypeInfo = getNodeTypeIcon(node.type);
         const hasBlockchainIntegrations = node.blockchainIntegrations && node.blockchainIntegrations.length > 0;
+        const connectionStatus = getConnectionStatus(node.lastSeen, node.status);
+        const healthScore = calculateHealthScore(node);
         
         return (
           <div key={node.id} className="card glass-effect">
@@ -138,6 +219,11 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
                     <span className="font-mono text-xs text-gray-400">{node.id}</span>
                     <span className={`text-xs px-2 py-1 rounded ${getStatusBadge(node.status)}`}>
                       {node.status.charAt(0).toUpperCase() + node.status.slice(1)}
+                    </span>
+                    
+                    {/* Connection status indicator */}
+                    <span className={`text-xs ${connectionStatus.color}`}>
+                      {connectionStatus.text}
                     </span>
                     
                     {/* Blockchain indicator badge */}
@@ -160,6 +246,12 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
               
               <div className="flex flex-wrap gap-4 md:gap-8">
                 <div>
+                  <div className="text-xs text-gray-400">Health Score</div>
+                  <div className={`text-sm font-bold ${getHealthScoreColor(healthScore)}`}>
+                    {healthScore}%
+                  </div>
+                </div>
+                <div>
                   <div className="text-xs text-gray-400">Registration Date</div>
                   <div className="text-sm">{formatDate(node.registeredDate)}</div>
                 </div>
@@ -169,7 +261,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
                 </div>
                 <div>
                   <div className="text-xs text-gray-400">Earnings</div>
-                  <div className="text-sm">{node.earnings.toFixed(2)} AeroNyx</div>
+                  <div className="text-sm">{typeof node.earnings === 'number' ? node.earnings.toFixed(2) : node.earnings} AeroNyx</div>
                 </div>
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400 self-center transition-transform duration-200" viewBox="0 0 20 20" fill="currentColor" style={{ transform: expandedNode === node.id ? 'rotate(180deg)' : 'rotate(0deg)' }}>
                   <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -185,6 +277,40 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
                   <h4 className="font-bold mb-2">Node Type: {node.type.charAt(0).toUpperCase() + node.type.slice(1)}</h4>
                   <p className="text-sm text-gray-300">{getNodeTypeDescription(node.type)}</p>
                 </div>
+
+                {/* Performance Metrics Overview */}
+                <div className="mb-6 p-4 bg-gradient-to-r from-blue-900/20 to-purple-900/20 border border-blue-800/50 rounded-lg">
+                  <h4 className="font-bold mb-3 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                    </svg>
+                    Performance Overview
+                  </h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="text-center">
+                      <div className="text-xs text-gray-400 mb-1">Health Score</div>
+                      <div className={`text-lg font-bold ${getHealthScoreColor(healthScore)}`}>
+                        {healthScore}%
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-xs text-gray-400 mb-1">Uptime</div>
+                      <div className="text-lg font-bold text-green-400">{node.uptime}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-xs text-gray-400 mb-1">Connection</div>
+                      <div className={`text-lg font-bold ${connectionStatus.color}`}>
+                        {connectionStatus.text === 'Connected' ? '✓' : connectionStatus.text === 'Disconnected' ? '✗' : '~'}
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-xs text-gray-400 mb-1">Tasks Completed</div>
+                      <div className="text-lg font-bold text-blue-400">
+                        {node.completedTasks || 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Resources */}
@@ -193,52 +319,64 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
                     <div className="space-y-4">
                       <div>
                         <div className="flex justify-between text-sm mb-1">
-                          <span className="text-gray-400">CPU ({node.resources.cpu.total})</span>
-                          <span>{node.resources.cpu.usage}%</span>
+                          <span className="text-gray-400">CPU ({node.resources?.cpu?.total || 'Unknown'})</span>
+                          <span>{node.resources?.cpu?.usage || 0}%</span>
                         </div>
                         <div className="w-full bg-background-200 rounded-full h-2">
                           <div 
-                            className="bg-primary-400 rounded-full h-2" 
-                            style={{ width: `${node.resources.cpu.usage}%` }}
+                            className={`rounded-full h-2 ${
+                              (node.resources?.cpu?.usage || 0) > 80 ? 'bg-red-400' : 
+                              (node.resources?.cpu?.usage || 0) > 60 ? 'bg-yellow-400' : 'bg-primary-400'
+                            }`}
+                            style={{ width: `${node.resources?.cpu?.usage || 0}%` }}
                           ></div>
                         </div>
                       </div>
                       
                       <div>
                         <div className="flex justify-between text-sm mb-1">
-                          <span className="text-gray-400">Memory ({node.resources.memory.total})</span>
-                          <span>{node.resources.memory.usage}%</span>
+                          <span className="text-gray-400">Memory ({node.resources?.memory?.total || 'Unknown'})</span>
+                          <span>{node.resources?.memory?.usage || 0}%</span>
                         </div>
                         <div className="w-full bg-background-200 rounded-full h-2">
                           <div 
-                            className="bg-secondary-400 rounded-full h-2" 
-                            style={{ width: `${node.resources.memory.usage}%` }}
+                            className={`rounded-full h-2 ${
+                              (node.resources?.memory?.usage || 0) > 80 ? 'bg-red-400' : 
+                              (node.resources?.memory?.usage || 0) > 60 ? 'bg-yellow-400' : 'bg-secondary-400'
+                            }`}
+                            style={{ width: `${node.resources?.memory?.usage || 0}%` }}
                           ></div>
                         </div>
                       </div>
                       
                       <div>
                         <div className="flex justify-between text-sm mb-1">
-                          <span className="text-gray-400">Storage ({node.resources.storage.total})</span>
-                          <span>{node.resources.storage.usage}%</span>
+                          <span className="text-gray-400">Storage ({node.resources?.storage?.total || 'Unknown'})</span>
+                          <span>{node.resources?.storage?.usage || 0}%</span>
                         </div>
                         <div className="w-full bg-background-200 rounded-full h-2">
                           <div 
-                            className="bg-accent rounded-full h-2" 
-                            style={{ width: `${node.resources.storage.usage}%` }}
+                            className={`rounded-full h-2 ${
+                              (node.resources?.storage?.usage || 0) > 80 ? 'bg-red-400' : 
+                              (node.resources?.storage?.usage || 0) > 60 ? 'bg-yellow-400' : 'bg-accent'
+                            }`}
+                            style={{ width: `${node.resources?.storage?.usage || 0}%` }}
                           ></div>
                         </div>
                       </div>
                       
                       <div>
                         <div className="flex justify-between text-sm mb-1">
-                          <span className="text-gray-400">Bandwidth ({node.resources.bandwidth.total})</span>
-                          <span>{node.resources.bandwidth.usage}%</span>
+                          <span className="text-gray-400">Bandwidth ({node.resources?.bandwidth?.total || 'Unknown'})</span>
+                          <span>{node.resources?.bandwidth?.usage || 0}%</span>
                         </div>
                         <div className="w-full bg-background-200 rounded-full h-2">
                           <div 
-                            className="bg-purple-500 rounded-full h-2" 
-                            style={{ width: `${node.resources.bandwidth.usage}%` }}
+                            className={`rounded-full h-2 ${
+                              (node.resources?.bandwidth?.usage || 0) > 80 ? 'bg-red-400' : 
+                              (node.resources?.bandwidth?.usage || 0) > 60 ? 'bg-yellow-400' : 'bg-purple-500'
+                            }`}
+                            style={{ width: `${node.resources?.bandwidth?.usage || 0}%` }}
                           ></div>
                         </div>
                       </div>
@@ -250,10 +388,14 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
                     <h4 className="font-bold mb-3">Node Controls</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                       <button 
-                        className={`py-2 px-4 rounded-md flex items-center justify-center gap-2 ${node.status === 'online' ? 'bg-red-900/30 text-red-500 border border-red-800 hover:bg-red-900/50' : 'bg-green-900/30 text-green-500 border border-green-800 hover:bg-green-900/50'}`}
+                        className={`py-2 px-4 rounded-md flex items-center justify-center gap-2 ${
+                          node.status === 'online' || node.status === 'active' 
+                            ? 'bg-red-900/30 text-red-500 border border-red-800 hover:bg-red-900/50' 
+                            : 'bg-green-900/30 text-green-500 border border-green-800 hover:bg-green-900/50'
+                        }`}
                         disabled={node.status === 'pending'}
                       >
-                        {node.status === 'online' ? (
+                        {node.status === 'online' || node.status === 'active' ? (
                           <>
                             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                               <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clipRule="evenodd" />
@@ -291,6 +433,22 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
                         Details
                       </button>
                     </div>
+                    
+                    {/* Performance History Chart */}
+                    {node.referenceCode && (
+                      <div className="mt-4 pt-4 border-t border-background-200">
+                        <h4 className="font-bold mb-3 flex items-center gap-2">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                          </svg>
+                          24h Performance
+                        </h4>
+                        <NodePerformanceChart 
+                          nodeId={node.referenceCode}
+                          height={200}
+                        />
+                      </div>
+                    )}
                     
                     {/* Blockchain section */}
                     <div className="mt-4 pt-4 border-t border-background-200">
@@ -336,7 +494,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
                             className="py-2 px-4 rounded-md bg-blue-900/30 text-blue-400 border border-blue-800 hover:bg-blue-900/50 flex items-center justify-center gap-2 w-full"
                             onClick={(e) => {
                               e.stopPropagation();
-                              onBlockchainIntegrate(node);
+                              onBlockchainIntegrate && onBlockchainIntegrate(node);
                             }}
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -376,7 +534,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate }) {
                               className="py-2 px-4 rounded-md bg-blue-700 hover:bg-blue-600 text-white flex items-center justify-center gap-2 w-full"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                onBlockchainIntegrate(node);
+                                onBlockchainIntegrate && onBlockchainIntegrate(node);
                               }}
                             >
                               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
