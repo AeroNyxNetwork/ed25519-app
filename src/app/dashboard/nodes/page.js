@@ -1,5 +1,10 @@
 'use client';
 
+/**
+ * : src/app/dashboard/nodes/page.js
+ * Enhanced Nodes Management Page with real API integration
+ */
+
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '../../../components/layout/Header';
@@ -7,95 +12,27 @@ import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
 import NodeList from '../../../components/dashboard/NodeList';
 import BlockchainIntegrationModule from '../../../components/dashboard/BlockchainIntegrationModule';
-
-// Mock data for nodes
-const mockNodes = [
-  {
-    id: 'aero-node-1a2b3c',
-    name: 'Node Alpha',
-    status: 'online',
-    type: 'general',
-    registeredDate: '2025-03-12T14:32:21Z',
-    lastSeen: '2025-04-06T08:45:12Z',
-    uptime: '14 days, 7 hours',
-    earnings: 542.12,
-    resources: {
-      cpu: { total: '8 cores', usage: 65 },
-      memory: { total: '16 GB', usage: 48 },
-      storage: { total: '500 GB', usage: 32 },
-      bandwidth: { total: '1 Gbps', usage: 27 }
-    },
-    blockchainIntegrations: []
-  },
-  {
-    id: 'aero-node-4d5e6f',
-    name: 'Node Beta',
-    status: 'online',
-    type: 'compute',
-    registeredDate: '2025-03-29T09:15:42Z',
-    lastSeen: '2025-04-06T08:42:33Z',
-    uptime: '7 days, 3 hours',
-    earnings: 286.45,
-    resources: {
-      cpu: { total: '12 cores', usage: 32 },
-      memory: { total: '32 GB', usage: 56 },
-      storage: { total: '1 TB', usage: 18 },
-      bandwidth: { total: '1 Gbps', usage: 41 }
-    },
-    blockchainIntegrations: [
-      {
-        blockchain: 'solana',
-        status: 'active',
-        estimatedRewards: 8.5,
-        validatorKey: '7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2'
-      }
-    ]
-  },
-  {
-    id: 'aero-node-7g8h9i',
-    name: 'Node Gamma',
-    status: 'pending',
-    type: 'storage',
-    registeredDate: '2025-04-06T07:22:10Z',
-    lastSeen: null,
-    uptime: '0 days, 0 hours',
-    earnings: 0,
-    resources: {
-      cpu: { total: '4 cores', usage: 0 },
-      memory: { total: '8 GB', usage: 0 },
-      storage: { total: '2 TB', usage: 0 },
-      bandwidth: { total: '500 Mbps', usage: 0 }
-    },
-    blockchainIntegrations: []
-  },
-  {
-    id: 'aero-node-j0k1l2',
-    name: 'Node Delta',
-    status: 'offline',
-    type: 'general',
-    registeredDate: '2025-02-18T11:05:37Z',
-    lastSeen: '2025-04-02T22:17:45Z',
-    uptime: '0 days, 0 hours',
-    earnings: 417.23,
-    resources: {
-      cpu: { total: '6 cores', usage: 0 },
-      memory: { total: '12 GB', usage: 0 },
-      storage: { total: '250 GB', usage: 0 },
-      bandwidth: { total: '750 Mbps', usage: 0 }
-    },
-    blockchainIntegrations: []
-  }
-];
+import nodeRegistrationService from '../../../lib/api/nodeRegistration';
+import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
 
 export default function NodesPage() {
   const { wallet } = useWallet();
   const router = useRouter();
+  
+  // 状态管理
   const [nodes, setNodes] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [filter, setFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
   const [showBlockchainModal, setShowBlockchainModal] = useState(false);
+  const [nodeStats, setNodeStats] = useState({
+    total: 0,
+    online: 0,
+    offline: 0,
+    pending: 0
+  });
   const [blockchainStats, setBlockchainStats] = useState({
     totalNodes: 0,
     blockchainNodes: 0,
@@ -109,49 +46,195 @@ export default function NodesPage() {
       return;
     }
 
-    // Fetch nodes data
-    const fetchNodes = async () => {
-      setIsLoading(true);
-      try {
-        // In a real app, this would be an API call
-        // const response = await fetch('/api/nodes', {
-        //   headers: {
-        //     'Authorization': `Bearer ${wallet.address}`
-        //   }
-        // });
-        // const data = await response.json();
+    // Fetch nodes data when wallet is connected
+    fetchNodesData();
+  }, [wallet.connected, wallet.address, router]);
+
+  /**
+   * 获取节点数据（使用新的 API）
+   */
+  const fetchNodesData = async () => {
+    if (!wallet.connected || !wallet.address) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // 1. 生成签名消息
+      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+      
+      if (!messageResponse.success) {
+        throw new Error(messageResponse.message || 'Failed to generate signature message');
+      }
+
+      const message = messageResponse.data.message;
+      const formattedMessage = formatMessageForSigning(message);
+
+      // 2. 获取钱包签名
+      const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
+
+      // 3. 获取用户节点概览（使用新的 API）
+      const overviewResponse = await nodeRegistrationService.getUserNodesOverview(
+        wallet.address,
+        signature,
+        message,
+        'okx'
+      );
+
+      if (overviewResponse.success && overviewResponse.data) {
+        const { summary, nodes: nodesByStatus } = overviewResponse.data;
         
-        // Using mock data for now
-        setTimeout(() => {
-          setNodes(mockNodes);
-          
-          // Calculate blockchain stats
-          const totalNodes = mockNodes.length;
-          const blockchainNodes = mockNodes.filter(node => 
-            node.blockchainIntegrations && node.blockchainIntegrations.length > 0
-          ).length;
-          
-          // Calculate estimated potential earnings (simplified model)
-          const onlineNodes = mockNodes.filter(node => node.status === 'online' && node.blockchainIntegrations.length === 0);
-          const potentialEarnings = onlineNodes.length * 12.5; // Simplified estimate of $12.5/month per node
-          
-          setBlockchainStats({
-            totalNodes,
-            blockchainNodes,
-            potentialEarnings
-          });
-          
-          setIsLoading(false);
-        }, 1000);
-      } catch (error) {
-        console.error('Failed to fetch nodes:', error);
-        setIsLoading(false);
+        // 合并所有状态的节点
+        const allNodes = [
+          ...(nodesByStatus.online || []),
+          ...(nodesByStatus.active || []),
+          ...(nodesByStatus.offline || [])
+        ];
+
+        // 转换节点数据格式以匹配现有组件
+        const transformedNodes = allNodes.map(node => ({
+          id: node.reference_code || node.id,
+          name: node.name || 'Unnamed Node',
+          status: node.status,
+          type: node.node_type || 'general',
+          registeredDate: node.created_at || new Date().toISOString(),
+          lastSeen: node.last_heartbeat || null,
+          uptime: calculateUptime(node.last_heartbeat, node.created_at),
+          earnings: node.total_earnings || 0,
+          resources: transformResources(node.resources),
+          blockchainIntegrations: node.blockchain_integrations || [],
+          referenceCode: node.reference_code
+        }));
+
+        setNodes(transformedNodes);
+        
+        // 设置节点统计
+        setNodeStats({
+          total: summary.total_nodes || 0,
+          online: summary.online_nodes || 0,
+          offline: summary.offline_nodes || 0,
+          pending: (summary.total_nodes - summary.online_nodes - summary.offline_nodes) || 0
+        });
+
+        // 计算区块链统计
+        const blockchainNodes = transformedNodes.filter(node => 
+          node.blockchainIntegrations && node.blockchainIntegrations.length > 0
+        ).length;
+        
+        const onlineNodes = transformedNodes.filter(node => 
+          node.status === 'online' && node.blockchainIntegrations.length === 0
+        );
+        const potentialEarnings = onlineNodes.length * 12.5; // 简化估算
+
+        setBlockchainStats({
+          totalNodes: transformedNodes.length,
+          blockchainNodes,
+          potentialEarnings
+        });
+      }
+
+    } catch (err) {
+      console.error('Failed to fetch nodes:', err);
+      setError(err.message || 'Failed to fetch nodes data');
+      // 如果是新用户或者没有节点，设置空数组而不是错误
+      if (err.message && err.message.includes('No nodes found')) {
         setNodes([]);
+        setNodeStats({ total: 0, online: 0, offline: 0, pending: 0 });
+        setBlockchainStats({ totalNodes: 0, blockchainNodes: 0, potentialEarnings: 0 });
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /**
+   * 计算节点运行时间
+   */
+  const calculateUptime = (lastHeartbeat, createdAt) => {
+    if (!lastHeartbeat || !createdAt) return '0 days, 0 hours';
+    
+    const now = new Date();
+    const created = new Date(createdAt);
+    const lastSeen = new Date(lastHeartbeat);
+    
+    // 如果最后心跳超过10分钟，认为离线
+    const isOnline = (now - lastSeen) < (10 * 60 * 1000);
+    
+    if (!isOnline) return '0 days, 0 hours';
+    
+    const diffMs = now - created;
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    
+    return `${days} days, ${hours} hours`;
+  };
+
+  /**
+   * 转换资源数据格式
+   */
+  const transformResources = (resources) => {
+    if (!resources) {
+      return {
+        cpu: { total: 'Unknown', usage: 0 },
+        memory: { total: 'Unknown', usage: 0 },
+        storage: { total: 'Unknown', usage: 0 },
+        bandwidth: { total: 'Unknown', usage: 0 }
+      };
+    }
+
+    return {
+      cpu: {
+        total: resources.cpu_cores ? `${resources.cpu_cores} cores` : 'Unknown',
+        usage: resources.cpu_usage || 0
+      },
+      memory: {
+        total: resources.memory_gb ? `${resources.memory_gb} GB` : 'Unknown',
+        usage: resources.memory_usage || 0
+      },
+      storage: {
+        total: resources.storage_gb ? `${resources.storage_gb} GB` : 'Unknown',
+        usage: resources.storage_usage || 0
+      },
+      bandwidth: {
+        total: resources.bandwidth_mbps ? `${resources.bandwidth_mbps} Mbps` : 'Unknown',
+        usage: resources.bandwidth_usage || 0
       }
     };
+  };
 
-    fetchNodes();
-  }, [wallet.connected, wallet.address, router]);
+  /**
+   * 刷新节点数据
+   */
+  const handleRefreshNodes = () => {
+    fetchNodesData();
+  };
+
+  /**
+   * 获取节点详细状态
+   */
+  const fetchNodeDetails = async (referenceCode) => {
+    try {
+      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+      const message = messageResponse.data.message;
+      const formattedMessage = formatMessageForSigning(message);
+      const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
+
+      const detailsResponse = await nodeRegistrationService.getNodeDetailedStatus(
+        wallet.address,
+        signature,
+        message,
+        referenceCode,
+        'okx'
+      );
+
+      if (detailsResponse.success) {
+        return detailsResponse.data;
+      }
+    } catch (err) {
+      console.error('Failed to fetch node details:', err);
+    }
+    return null;
+  };
 
   // Filter nodes based on status and search term
   const filteredNodes = nodes.filter(node => {
@@ -161,14 +244,6 @@ export default function NodesPage() {
     return matchesFilter && matchesSearch;
   });
 
-  // Calculate node stats
-  const nodeStats = {
-    total: nodes.length,
-    online: nodes.filter(node => node.status === 'online').length,
-    offline: nodes.filter(node => node.status === 'offline').length,
-    pending: nodes.filter(node => node.status === 'pending').length
-  };
-  
   // Handle node selection for blockchain integration
   const handleNodeSelect = (node) => {
     setSelectedNode(node);
@@ -200,17 +275,48 @@ export default function NodesPage() {
                 Manage your registered nodes on the AeroNyx network
               </p>
             </div>
-            <Link 
-              href="/dashboard/register"
-              className="button-primary flex items-center gap-2 whitespace-nowrap"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-              </svg>
-              Register New Node
-            </Link>
+            <div className="flex gap-3">
+              <button 
+                onClick={handleRefreshNodes}
+                disabled={isLoading}
+                className="button-outline flex items-center gap-2"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${isLoading ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                </svg>
+                Refresh
+              </button>
+              <Link 
+                href="/dashboard/register"
+                className="button-primary flex items-center gap-2 whitespace-nowrap"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                </svg>
+                Register New Node
+              </Link>
+            </div>
           </div>
         </div>
+
+        {/* Error Display */}
+        {error && (
+          <div className="mb-6 p-4 bg-red-900/50 border border-red-800 rounded-md text-red-200">
+            <div className="flex items-center gap-2 mb-2">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              <span className="font-bold">Error loading nodes</span>
+            </div>
+            <p className="text-sm">{error}</p>
+            <button 
+              onClick={handleRefreshNodes}
+              className="mt-2 text-sm underline hover:no-underline"
+            >
+              Try again
+            </button>
+          </div>
+        )}
 
         {/* Node Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -263,7 +369,7 @@ export default function NodesPage() {
                     
                     <div className="h-10 w-10 rounded-full bg-background-100 flex items-center justify-center">
                       <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center text-xs font-bold">
-                        {Math.round((blockchainStats.blockchainNodes / blockchainStats.totalNodes) * 100)}%
+                        {blockchainStats.totalNodes > 0 ? Math.round((blockchainStats.blockchainNodes / blockchainStats.totalNodes) * 100) : 0}%
                       </div>
                     </div>
                   </div>
@@ -380,6 +486,7 @@ export default function NodesPage() {
           <NodeList 
             nodes={filteredNodes} 
             onBlockchainIntegrate={handleNodeSelect}
+            onNodeDetails={fetchNodeDetails}
           />
         ) : (
           <div className="card glass-effect p-8 text-center">
