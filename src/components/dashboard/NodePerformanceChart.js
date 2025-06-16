@@ -1,38 +1,107 @@
 /**
- * src/components/dashboard/NodePerformanceChart.js
- * Node Performance Chart Component using the new performance history API
+ * Node Performance Chart Component for AeroNyx Dashboard
+ * 
+ * File Path: src/components/dashboard/NodePerformanceChart.js
+ * 
+ * This component renders real-time performance charts for individual nodes
+ * using the new performance history API. It supports multiple time ranges
+ * and chart types with intelligent caching and error handling.
+ * 
+ * Features:
+ * - Real-time performance data visualization
+ * - Multiple time range support (1h, 6h, 24h, 3d, 7d)
+ * - Multiple chart types (CPU, Memory, Bandwidth, Storage)
+ * - Intelligent caching for performance optimization
+ * - Graceful fallback to mock data during development
+ * - Responsive SVG-based charts
+ * - Comprehensive error handling
+ * 
+ * @version 1.0.0
+ * @author AeroNyx Development Team
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
 import nodeRegistrationService from '../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../lib/utils/walletSignature';
 
+/**
+ * Chart configuration constants
+ */
+const TIME_RANGES = [
+  { value: 1, label: '1h' },
+  { value: 6, label: '6h' },
+  { value: 24, label: '24h' },
+  { value: 72, label: '3d' },
+  { value: 168, label: '7d' }
+];
+
+const CHART_TYPES = [
+  { key: 'cpu', label: 'CPU', color: '#8B5CF6' },
+  { key: 'memory', label: 'Memory', color: '#10B981' },
+  { key: 'bandwidth', label: 'Bandwidth', color: '#F59E0B' },
+  { key: 'storage', label: 'Storage', color: '#EF4444' }
+];
+
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache duration
+
+/**
+ * Main NodePerformanceChart Component
+ * 
+ * @param {Object} props - Component props
+ * @param {string} props.nodeId - Node reference code for fetching data
+ * @param {number} props.height - Chart height in pixels (default: 300)
+ */
 export default function NodePerformanceChart({ nodeId, height = 300 }) {
   const { wallet } = useWallet();
+  
+  // ==================== STATE MANAGEMENT ====================
+  
   const [performanceData, setPerformanceData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [timeRange, setTimeRange] = useState(24); // Default to 24 hours
-  const [chartType, setChartType] = useState('cpu'); // cpu, memory, bandwidth, earnings
+  const [chartType, setChartType] = useState('cpu'); // Default to CPU
+  const [cache, setCache] = useState(new Map());
 
-  useEffect(() => {
-    if (nodeId && wallet.connected) {
-      fetchPerformanceData();
-    }
-  }, [nodeId, wallet.connected, timeRange]);
+  // ==================== MEMOIZED VALUES ====================
+  
+  /**
+   * Generate cache key for performance data
+   */
+  const cacheKey = useMemo(() => 
+    `${nodeId}_${timeRange}_${chartType}`, 
+    [nodeId, timeRange, chartType]
+  );
 
   /**
-   * Fetch performance history data from API
+   * Check if cached data is still valid
    */
-  const fetchPerformanceData = async () => {
+  const isCacheValid = useCallback((cacheEntry) => {
+    if (!cacheEntry) return false;
+    return (Date.now() - cacheEntry.timestamp) < CACHE_DURATION;
+  }, []);
+
+  // ==================== DATA FETCHING ====================
+  
+  /**
+   * Fetch performance data from API with caching
+   */
+  const fetchPerformanceData = useCallback(async () => {
     if (!wallet.connected || !nodeId) return;
+
+    // Check cache first
+    const cachedData = cache.get(cacheKey);
+    if (cachedData && isCacheValid(cachedData)) {
+      setPerformanceData(cachedData.data);
+      return;
+    }
 
     setLoading(true);
     setError(null);
 
     try {
-      // Generate signature message
+      // Generate signature for API authentication
       const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       
       if (!messageResponse.success) {
@@ -41,11 +110,9 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
 
       const message = messageResponse.data.message;
       const formattedMessage = formatMessageForSigning(message);
-
-      // Get wallet signature
       const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
 
-      // Fetch performance history
+      // Fetch performance history from API
       const performanceResponse = await nodeRegistrationService.getNodePerformanceHistory(
         wallet.address,
         signature,
@@ -56,7 +123,17 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
       );
 
       if (performanceResponse.success && performanceResponse.data) {
-        setPerformanceData(performanceResponse.data);
+        const data = performanceResponse.data;
+        
+        // Cache the successful response
+        const newCache = new Map(cache);
+        newCache.set(cacheKey, {
+          data,
+          timestamp: Date.now()
+        });
+        setCache(newCache);
+        
+        setPerformanceData(data);
       } else {
         throw new Error(performanceResponse.message || 'Failed to fetch performance data');
       }
@@ -64,19 +141,23 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
     } catch (err) {
       console.error('Failed to fetch performance data:', err);
       setError(err.message || 'Failed to load performance data');
-      // Use mock data as fallback for demo
-      setPerformanceData(generateMockData());
+      
+      // Use mock data as fallback for demo purposes
+      if (process.env.NODE_ENV === 'development') {
+        const mockData = generateMockData(nodeId, timeRange);
+        setPerformanceData(mockData);
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, [wallet.connected, wallet.address, wallet.provider, nodeId, timeRange, cacheKey, cache, isCacheValid]);
 
   /**
-   * Generate mock performance data for demonstration
+   * Generate mock performance data for development/demo
    */
-  const generateMockData = () => {
-    const points = timeRange > 24 ? Math.min(timeRange, 168) : 24; // Limit to 1 week max
-    const interval = timeRange > 24 ? 60 : timeRange; // minutes between points
+  const generateMockData = useCallback((nodeId, hours) => {
+    const points = Math.min(hours, 168); // Max 1 week of hourly data
+    const interval = hours > 24 ? 60 : Math.max(1, hours); // Minutes between points
     
     const data = [];
     const now = new Date();
@@ -84,17 +165,17 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
     for (let i = points - 1; i >= 0; i--) {
       const timestamp = new Date(now.getTime() - (i * interval * 60 * 1000));
       
-      // Generate realistic performance data with some variation
-      const baseLoad = 40 + Math.sin(i * 0.2) * 15; // Base load with daily pattern
+      // Generate realistic performance data with patterns
+      const baseLoad = 40 + Math.sin(i * 0.2) * 15; // Daily pattern
       const noise = (Math.random() - 0.5) * 20; // Random variation
+      const trend = i * 0.1; // Slight upward trend
       
       data.push({
         timestamp: timestamp.toISOString(),
-        cpu_usage: Math.max(0, Math.min(100, baseLoad + noise)),
+        cpu_usage: Math.max(0, Math.min(100, baseLoad + noise - trend)),
         memory_usage: Math.max(0, Math.min(100, baseLoad + noise + 10)),
         bandwidth_usage: Math.max(0, Math.min(100, (baseLoad + noise) * 0.6)),
         storage_usage: Math.max(0, Math.min(100, 35 + Math.sin(i * 0.05) * 5)), // Slower changing
-        earnings_rate: Math.max(0, (baseLoad + noise) * 0.01), // AeroNyx per hour
         network_latency: Math.max(10, 50 + Math.sin(i * 0.3) * 20), // ms
         uptime: Math.random() > 0.05 ? 100 : 0 // 95% uptime
       });
@@ -102,16 +183,22 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
     
     return {
       node_id: nodeId,
-      time_range_hours: timeRange,
+      time_range_hours: hours,
       data_points: data.length,
-      performance_history: data
+      performance_history: data,
+      cache_info: {
+        generated_at: now.toISOString(),
+        is_mock_data: true
+      }
     };
-  };
+  }, []);
 
+  // ==================== CHART DATA PROCESSING ====================
+  
   /**
-   * Get chart data based on selected type
+   * Transform performance data for chart rendering
    */
-  const getChartData = () => {
+  const chartData = useMemo(() => {
     if (!performanceData || !performanceData.performance_history) return [];
     
     return performanceData.performance_history.map(point => ({
@@ -121,58 +208,71 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
         hour12: false 
       }),
       value: point[`${chartType}_usage`] || point[chartType] || 0,
-      fullTime: point.timestamp
+      fullTime: point.timestamp,
+      rawData: point
     }));
-  };
+  }, [performanceData, chartType]);
 
   /**
-   * Get chart color based on type
+   * Calculate chart dimensions and scaling
    */
-  const getChartColor = () => {
-    switch (chartType) {
-      case 'cpu': return '#8B5CF6'; // Purple
-      case 'memory': return '#10B981'; // Green
-      case 'bandwidth': return '#F59E0B'; // Yellow
-      case 'storage': return '#EF4444'; // Red
-      case 'earnings': return '#3B82F6'; // Blue
-      default: return '#8B5CF6';
-    }
-  };
-
-  /**
-   * Get max value for chart scaling
-   */
-  const getMaxValue = () => {
-    const data = getChartData();
-    if (data.length === 0) return 100;
+  const chartConfig = useMemo(() => {
+    const data = chartData;
+    if (data.length === 0) return { maxValue: 100, color: '#8B5CF6' };
     
     const maxValue = Math.max(...data.map(d => d.value));
+    const chartTypeConfig = CHART_TYPES.find(t => t.key === chartType);
     
-    // For percentage metrics, cap at 100
-    if (['cpu', 'memory', 'bandwidth', 'storage'].includes(chartType)) {
-      return Math.max(maxValue, 100);
-    }
-    
-    // For other metrics, add 20% padding
-    return maxValue * 1.2;
-  };
+    return {
+      maxValue: chartType.includes('usage') ? Math.max(maxValue, 100) : maxValue * 1.2,
+      color: chartTypeConfig?.color || '#8B5CF6'
+    };
+  }, [chartData, chartType]);
 
+  // ==================== LIFECYCLE HOOKS ====================
+  
+  useEffect(() => {
+    if (nodeId && wallet.connected) {
+      fetchPerformanceData();
+    }
+  }, [nodeId, wallet.connected, timeRange, fetchPerformanceData]);
+
+  // ==================== EVENT HANDLERS ====================
+  
+  const handleTimeRangeChange = useCallback((newRange) => {
+    setTimeRange(newRange);
+  }, []);
+
+  const handleChartTypeChange = useCallback((newType) => {
+    setChartType(newType);
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    // Clear cache for current key and refetch
+    const newCache = new Map(cache);
+    newCache.delete(cacheKey);
+    setCache(newCache);
+    fetchPerformanceData();
+  }, [cache, cacheKey, fetchPerformanceData]);
+
+  // ==================== RENDER COMPONENTS ====================
+  
   /**
    * Render time range selector
    */
   const TimeRangeSelector = () => (
-    <div className="flex gap-2 mb-4">
-      {[1, 6, 24, 72, 168].map(hours => (
+    <div className="flex gap-1">
+      {TIME_RANGES.map(range => (
         <button
-          key={hours}
-          onClick={() => setTimeRange(hours)}
-          className={`px-3 py-1 text-xs rounded ${
-            timeRange === hours 
+          key={range.value}
+          onClick={() => handleTimeRangeChange(range.value)}
+          className={`px-3 py-1 text-xs rounded transition-colors ${
+            timeRange === range.value 
               ? 'bg-primary text-white' 
               : 'bg-background-100 text-gray-300 hover:bg-background-200'
           }`}
         >
-          {hours === 1 ? '1h' : hours < 24 ? `${hours}h` : `${hours/24}d`}
+          {range.label}
         </button>
       ))}
     </div>
@@ -182,17 +282,12 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
    * Render chart type selector
    */
   const ChartTypeSelector = () => (
-    <div className="flex gap-2 mb-4">
-      {[
-        { key: 'cpu', label: 'CPU' },
-        { key: 'memory', label: 'Memory' },
-        { key: 'bandwidth', label: 'Bandwidth' },
-        { key: 'storage', label: 'Storage' }
-      ].map(type => (
+    <div className="flex gap-1">
+      {CHART_TYPES.map(type => (
         <button
           key={type.key}
-          onClick={() => setChartType(type.key)}
-          className={`px-3 py-1 text-xs rounded ${
+          onClick={() => handleChartTypeChange(type.key)}
+          className={`px-3 py-1 text-xs rounded transition-colors ${
             chartType === type.key 
               ? 'bg-secondary text-white' 
               : 'bg-background-100 text-gray-300 hover:bg-background-200'
@@ -205,12 +300,11 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
   );
 
   /**
-   * Render simple line chart
+   * Render SVG line chart
    */
-  const SimpleLineChart = () => {
-    const data = getChartData();
-    const maxValue = getMaxValue();
-    const color = getChartColor();
+  const LineChart = () => {
+    const data = chartData;
+    const { maxValue, color } = chartConfig;
     
     if (data.length === 0) {
       return (
@@ -220,45 +314,51 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
       );
     }
 
-    // Create SVG path for the line
-    const width = 100; // Percentage based
-    const chartHeight = height - 60; // Account for labels
+    const chartHeight = height - 80; // Account for labels and padding
+    const chartWidth = 100; // Percentage based
     
+    // Create SVG path for the line
     const points = data.map((point, index) => {
-      const x = (index / (data.length - 1)) * width;
+      const x = (index / Math.max(1, data.length - 1)) * chartWidth;
       const y = chartHeight - ((point.value / maxValue) * chartHeight);
       return `${x},${y}`;
     }).join(' ');
+
+    // Y-axis grid values
+    const gridValues = [100, 75, 50, 25, 0];
 
     return (
       <div className="relative" style={{ height: `${height}px` }}>
         <svg 
           className="absolute inset-0 w-full h-full"
-          viewBox={`0 0 100 ${height}`}
+          viewBox={`0 0 ${chartWidth} ${height}`}
           preserveAspectRatio="none"
         >
           {/* Grid lines */}
-          {[0, 25, 50, 75, 100].map(percent => (
-            <line
-              key={percent}
-              x1="0"
-              y1={chartHeight - (percent / 100) * chartHeight}
-              x2="100"
-              y2={chartHeight - (percent / 100) * chartHeight}
-              stroke="#374151"
-              strokeWidth="0.2"
-              opacity="0.5"
-            />
-          ))}
+          {gridValues.map(percent => {
+            const y = chartHeight - (percent / 100) * chartHeight;
+            return (
+              <line
+                key={percent}
+                x1="0"
+                y1={y}
+                x2={chartWidth}
+                y2={y}
+                stroke="#374151"
+                strokeWidth="0.2"
+                opacity="0.5"
+              />
+            );
+          })}
           
           {/* Area under the line */}
           <polygon
-            points={`0,${chartHeight} ${points} 100,${chartHeight}`}
+            points={`0,${chartHeight} ${points} ${chartWidth},${chartHeight}`}
             fill={color}
             opacity="0.1"
           />
           
-          {/* Line */}
+          {/* Main line */}
           <polyline
             points={points}
             fill="none"
@@ -268,7 +368,7 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
           
           {/* Data points */}
           {data.map((point, index) => {
-            const x = (index / (data.length - 1)) * 100;
+            const x = (index / Math.max(1, data.length - 1)) * chartWidth;
             const y = chartHeight - ((point.value / maxValue) * chartHeight);
             return (
               <circle
@@ -277,6 +377,7 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
                 cy={y}
                 r="0.3"
                 fill={color}
+                className="hover:r-0.5 transition-all"
               />
             );
           })}
@@ -284,9 +385,12 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
         
         {/* Y-axis labels */}
         <div className="absolute left-0 top-0 h-full flex flex-col justify-between text-xs text-gray-400 -ml-8">
-          {[100, 75, 50, 25, 0].map(value => (
+          {gridValues.map(value => (
             <div key={value} className="text-right">
-              {chartType.includes('usage') ? `${Math.round((value / 100) * maxValue)}%` : Math.round((value / 100) * maxValue)}
+              {chartType.includes('usage') ? 
+                `${Math.round((value / 100) * maxValue)}%` : 
+                Math.round((value / 100) * maxValue)
+              }
             </div>
           ))}
         </div>
@@ -305,52 +409,82 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
     );
   };
 
+  // ==================== MAIN RENDER ====================
+  
   if (loading) {
     return (
-      <div className="flex items-center justify-center p-4" style={{ height: `${height}px` }}>
-        <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-primary"></div>
+      <div className="bg-background-100 rounded-lg p-4">
+        <div className="flex items-center justify-center" style={{ height: `${height}px` }}>
+          <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-primary"></div>
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="p-4 bg-red-900/20 border border-red-800 rounded-md">
-        <div className="text-red-400 text-sm">
-          Failed to load performance data: {error}
+      <div className="bg-background-100 rounded-lg p-4">
+        <div className="p-4 bg-red-900/20 border border-red-800 rounded-md">
+          <div className="text-red-400 text-sm mb-2">
+            Failed to load performance data: {error}
+          </div>
+          <button 
+            onClick={handleRefresh}
+            className="text-xs text-red-300 underline hover:no-underline"
+          >
+            Retry
+          </button>
         </div>
-        <button 
-          onClick={fetchPerformanceData}
-          className="mt-2 text-xs text-red-300 underline hover:no-underline"
-        >
-          Retry
-        </button>
       </div>
     );
   }
 
+  const currentChartType = CHART_TYPES.find(t => t.key === chartType);
+
   return (
     <div className="bg-background-100 rounded-lg p-4">
+      {/* Chart Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-        <h5 className="font-medium">
-          {chartType.charAt(0).toUpperCase() + chartType.slice(1)} Performance
-        </h5>
+        <div className="flex items-center gap-2">
+          <h5 className="font-medium">
+            {currentChartType?.label || 'Performance'} Usage
+          </h5>
+          <button
+            onClick={handleRefresh}
+            className="text-gray-400 hover:text-white transition-colors"
+            title="Refresh data"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </div>
+        
         <div className="flex flex-col sm:flex-row gap-2">
           <ChartTypeSelector />
           <TimeRangeSelector />
         </div>
       </div>
       
+      {/* Chart Metadata */}
       {performanceData && (
-        <div className="mb-4 text-xs text-gray-400">
-          Last updated: {new Date(performanceData.performance_history?.[performanceData.performance_history.length - 1]?.timestamp).toLocaleString()}
-          <span className="ml-4">
+        <div className="mb-4 text-xs text-gray-400 flex justify-between">
+          <span>
+            Last updated: {performanceData.performance_history?.length > 0 && 
+              new Date(performanceData.performance_history[performanceData.performance_history.length - 1]?.timestamp).toLocaleString()
+            }
+          </span>
+          <span>
             {performanceData.data_points} data points over {timeRange}h
+            {performanceData.cache_info?.is_mock_data && (
+              <span className="ml-2 text-yellow-400">(Demo Data)</span>
+            )}
           </span>
         </div>
       )}
       
-      <SimpleLineChart />
+      {/* Chart Visualization */}
+      <LineChart />
     </div>
   );
 }
