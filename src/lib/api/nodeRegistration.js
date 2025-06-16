@@ -1,6 +1,7 @@
 /**
- * Node Registration API Service for AeroNyx platform
- * Handles registration-specific API communications with the backend
+ * Enhanced Node Registration and Monitoring API Service for AeroNyx platform
+ * 文件路径: src/lib/api/nodeRegistration.js
+ * Handles registration-specific and monitoring API communications with the backend
  */
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.aeronyx.network';
@@ -47,7 +48,7 @@ async function request(endpoint, options = {}) {
 }
 
 /**
- * Node Registration API Service
+ * Enhanced Node Registration and Monitoring API Service
  */
 const nodeRegistrationService = {
   /**
@@ -59,8 +60,6 @@ const nodeRegistrationService = {
    * @returns {Promise<Object>} Node creation response
    */
   createNode: async (nodeData, walletAddress, signature, message) => {
-    // We're using the type directly as node_type_id based on AeroNyxNodeType model
-    // where id is a CharField with values like 'general', 'compute', etc.
     const payload = {
       name: nodeData.name,
       wallet_address: walletAddress,
@@ -150,6 +149,82 @@ const nodeRegistrationService = {
       }),
     });
   },
+
+  // ============= 新增的用户节点监控 API 方法 =============
+
+  /**
+   * 获取用户节点概览
+   * @param {string} walletAddress - User's wallet address
+   * @param {string} signature - Wallet signature
+   * @param {string} message - Message that was signed
+   * @param {string} walletType - Wallet type (metamask, okx, etc.)
+   * @returns {Promise<Object>} Nodes overview response
+   */
+  getUserNodesOverview: async (walletAddress, signature, message, walletType = 'okx') => {
+    const payload = {
+      wallet_address: walletAddress,
+      signature: signature,
+      message: message,
+      wallet_type: walletType
+    };
+
+    return request('/api/aeronyx/user/nodes-overview/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /**
+   * 获取节点详细状态
+   * @param {string} walletAddress - User's wallet address
+   * @param {string} signature - Wallet signature
+   * @param {string} message - Message that was signed
+   * @param {string} referenceCode - Node reference code
+   * @param {string} walletType - Wallet type (metamask, okx, etc.)
+   * @returns {Promise<Object>} Node detailed status response
+   */
+  getNodeDetailedStatus: async (walletAddress, signature, message, referenceCode, walletType = 'okx') => {
+    const payload = {
+      wallet_address: walletAddress,
+      signature: signature,
+      message: message,
+      wallet_type: walletType,
+      reference_code: referenceCode
+    };
+
+    return request('/api/aeronyx/user/node-detailed-status/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /**
+   * 获取节点性能历史数据
+   * @param {string} walletAddress - User's wallet address
+   * @param {string} signature - Wallet signature
+   * @param {string} message - Message that was signed
+   * @param {string} referenceCode - Node reference code
+   * @param {number} hours - Hours of history to retrieve (default 24)
+   * @param {string} walletType - Wallet type (metamask, okx, etc.)
+   * @returns {Promise<Object>} Node performance history response
+   */
+  getNodePerformanceHistory: async (walletAddress, signature, message, referenceCode, hours = 24, walletType = 'okx') => {
+    const payload = {
+      wallet_address: walletAddress,
+      signature: signature,
+      message: message,
+      reference_code: referenceCode,
+      hours: hours,
+      wallet_type: walletType
+    };
+
+    return request('/api/aeronyx/user/node-performance-history/', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  // ============= 现有的 API 方法 =============
   
   /**
    * Get available node types
