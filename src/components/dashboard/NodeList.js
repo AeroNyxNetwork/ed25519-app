@@ -29,6 +29,8 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
         return 'bg-red-900/30 text-red-500 border border-red-800';
       case 'pending':
         return 'bg-yellow-900/30 text-yellow-500 border border-yellow-800';
+      case 'registered':
+        return 'bg-blue-900/30 text-blue-500 border border-blue-800';
       default:
         return 'bg-gray-900/30 text-gray-500 border border-gray-800';
     }
@@ -61,7 +63,10 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
 
   // Get node type icon and color
   const getNodeTypeIcon = (type) => {
-    switch (type) {
+    // Ensure type is a string and handle null/undefined cases
+    const nodeType = type ? String(type).toLowerCase() : 'general';
+    
+    switch (nodeType) {
       case 'compute':
         return {
           icon: (
@@ -121,7 +126,10 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
 
   // Get node type description
   const getNodeTypeDescription = (type) => {
-    switch (type) {
+    // Ensure type is a string and handle null/undefined cases
+    const nodeType = type ? String(type).toLowerCase() : 'general';
+    
+    switch (nodeType) {
       case 'general':
         return "General purpose node providing a balanced mix of resources to the network.";
       case 'compute':
@@ -139,18 +147,34 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
     }
   };
 
-  // Get connection status indicator
-  const getConnectionStatus = (lastSeen, status) => {
-    if (status === 'offline') {
+  // Get connection status indicator - 使用实际的连接数据
+  const getConnectionStatus = (node) => {
+    // 使用 API 提供的连接状态
+    if (node.connectionStatus === 'offline' || node.status === 'offline') {
+      if (node.offlineDuration) {
+        return { color: 'text-red-500', text: `Offline ${node.offlineDuration}` };
+      }
       return { color: 'text-red-500', text: 'Disconnected' };
     }
     
-    if (!lastSeen) {
-      return { color: 'text-gray-500', text: 'Unknown' };
+    if (node.status === 'pending') {
+      return { color: 'text-yellow-500', text: 'Waiting activation' };
+    }
+    
+    if (node.status === 'registered') {
+      return { color: 'text-blue-500', text: 'Registered' };
+    }
+    
+    if (node.isConnected) {
+      return { color: 'text-green-500', text: 'Connected' };
+    }
+    
+    if (!node.lastSeen) {
+      return { color: 'text-gray-500', text: 'Never connected' };
     }
 
     const now = new Date();
-    const lastSeenDate = new Date(lastSeen);
+    const lastSeenDate = new Date(node.lastSeen);
     const diffMinutes = Math.floor((now - lastSeenDate) / (1000 * 60));
 
     if (diffMinutes < 5) {
@@ -166,20 +190,22 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
   const calculateHealthScore = (node) => {
     let score = 100;
     
-    // Reduce score based on resource usage
+    // 基于节点状态评分
+    if (node.status === 'offline') score -= 50;
+    else if (node.status === 'pending') score -= 30;
+    else if (node.status === 'registered') score -= 20;
+    
+    // 基于资源使用率评分
     if (node.resources?.cpu?.usage > 90) score -= 15;
     else if (node.resources?.cpu?.usage > 80) score -= 10;
     
     if (node.resources?.memory?.usage > 90) score -= 15;
     else if (node.resources?.memory?.usage > 80) score -= 10;
     
-    // Reduce score if offline
-    if (node.status === 'offline') score -= 50;
-    else if (node.status === 'pending') score -= 20;
-    
-    // Connection status impact
-    const connectionStatus = getConnectionStatus(node.lastSeen, node.status);
-    if (connectionStatus.text === 'Connection lost') score -= 30;
+    // 基于连接状态评分
+    const connectionStatus = getConnectionStatus(node);
+    if (connectionStatus.text.includes('Offline')) score -= 30;
+    else if (connectionStatus.text === 'Never connected') score -= 40;
     else if (connectionStatus.text.includes('Last seen')) score -= 10;
     
     return Math.max(0, Math.min(100, score));
@@ -198,7 +224,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
       {nodes.map((node) => {
         const nodeTypeInfo = getNodeTypeIcon(node.type);
         const hasBlockchainIntegrations = node.blockchainIntegrations && node.blockchainIntegrations.length > 0;
-        const connectionStatus = getConnectionStatus(node.lastSeen, node.status);
+        const connectionStatus = getConnectionStatus(node);
         const healthScore = calculateHealthScore(node);
         
         return (
@@ -218,7 +244,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
                   <div className="flex items-center gap-4 mt-1">
                     <span className="font-mono text-xs text-gray-400">{node.id}</span>
                     <span className={`text-xs px-2 py-1 rounded ${getStatusBadge(node.status)}`}>
-                      {node.status.charAt(0).toUpperCase() + node.status.slice(1)}
+                      {node.status ? String(node.status).charAt(0).toUpperCase() + String(node.status).slice(1) : 'Unknown'}
                     </span>
                     
                     {/* Connection status indicator */}
@@ -239,7 +265,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
                     )}
                   </div>
                   <div className={`text-xs mt-1 ${nodeTypeInfo.color}`}>
-                    {node.type.charAt(0).toUpperCase() + node.type.slice(1)} Node
+                    {node.type ? String(node.type).charAt(0).toUpperCase() + String(node.type).slice(1) : 'General'} Node
                   </div>
                 </div>
               </div>
@@ -274,8 +300,12 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
               <div className="mt-6 pt-6 border-t border-background-200">
                 {/* Node Type Description */}
                 <div className="mb-6 p-3 bg-background-100 rounded-md">
-                  <h4 className="font-bold mb-2">Node Type: {node.type.charAt(0).toUpperCase() + node.type.slice(1)}</h4>
-                  <p className="text-sm text-gray-300">{getNodeTypeDescription(node.type)}</p>
+                  <h4 className="font-bold mb-2">
+                    Node Type: {node.nodeTypeInfo?.name || (node.type ? String(node.type).charAt(0).toUpperCase() + String(node.type).slice(1) : 'General')}
+                  </h4>
+                  <p className="text-sm text-gray-300">
+                    {node.nodeTypeInfo?.description || getNodeTypeDescription(node.type)}
+                  </p>
                 </div>
 
                 {/* Performance Metrics Overview */}
@@ -300,7 +330,11 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
                     <div className="text-center">
                       <div className="text-xs text-gray-400 mb-1">Connection</div>
                       <div className={`text-lg font-bold ${connectionStatus.color}`}>
-                        {connectionStatus.text === 'Connected' ? '✓' : connectionStatus.text === 'Disconnected' ? '✗' : '~'}
+                        {connectionStatus.text === 'Connected' ? '✓' : 
+                         connectionStatus.text === 'Disconnected' || connectionStatus.text.includes('Offline') ? '✗' : 
+                         connectionStatus.text === 'Never connected' ? '○' :
+                         connectionStatus.text === 'Waiting activation' ? '⏳' :
+                         connectionStatus.text === 'Registered' ? '📋' : '~'}
                       </div>
                     </div>
                     <div className="text-center">
