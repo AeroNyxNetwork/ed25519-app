@@ -1,22 +1,12 @@
 /**
- * Enhanced Node List Component for AeroNyx Dashboard
+ * Enhanced Node List Component for AeroNyx Dashboard - Production Ready
  * 
  * File Path: src/components/dashboard/NodeList.js
  * 
- * This component renders a comprehensive list of user's nodes with advanced
- * features including performance monitoring, health scoring, resource usage
- * tracking, and blockchain integration management.
+ * Production-ready node list component without earnings display,
+ * focusing on operational metrics and node health.
  * 
- * Features:
- * - Real-time node status monitoring
- * - Expandable node details with performance charts
- * - Intelligent health scoring system
- * - Resource usage visualization
- * - Blockchain integration management
- * - Node control actions (start, stop, restart, etc.)
- * - Responsive design for all screen sizes
- * 
- * @version 1.0.0
+ * @version 2.0.0
  * @author AeroNyx Development Team
  */
 
@@ -24,9 +14,7 @@ import React, { useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import NodePerformanceChart from './NodePerformanceChart';
 
-/**
- * Node type configuration mapping
- */
+// Node type configuration
 const NODE_TYPE_CONFIG = {
   general: {
     icon: (
@@ -84,9 +72,7 @@ const NODE_TYPE_CONFIG = {
   }
 };
 
-/**
- * Status badge configuration
- */
+// Status badge configuration
 const STATUS_CONFIG = {
   online: 'bg-green-900/30 text-green-500 border border-green-800',
   active: 'bg-green-900/30 text-green-500 border border-green-800',
@@ -95,15 +81,11 @@ const STATUS_CONFIG = {
   registered: 'bg-blue-900/30 text-blue-500 border border-blue-800'
 };
 
-/**
- * Main NodeList Component
- */
 export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }) {
   const [expandedNode, setExpandedNode] = useState(null);
   const [performanceData, setPerformanceData] = useState({});
 
-  // ==================== UTILITY FUNCTIONS ====================
-  
+  // Utility functions
   const formatDate = useCallback((dateString) => {
     if (!dateString) return 'N/A';
     try {
@@ -210,8 +192,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
     return 'bg-primary-400';
   }, []);
 
-  // ==================== EVENT HANDLERS ====================
-  
+  // Event handlers
   const toggleNodeExpansion = useCallback(async (nodeId) => {
     if (expandedNode === nodeId) {
       setExpandedNode(null);
@@ -245,8 +226,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
     }
   }, [onBlockchainIntegrate]);
 
-  // ==================== MEMOIZED VALUES ====================
-  
+  // Computed values for each node
   const nodesWithComputedData = useMemo(() => {
     return nodes.map(node => {
       const nodeTypeConfig = getNodeTypeConfig(node.type);
@@ -264,8 +244,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
     });
   }, [nodes, getNodeTypeConfig, getConnectionStatus, calculateHealthScore]);
 
-  // ==================== RENDER METHODS ====================
-  
+  // Render methods
   const renderResourceUsage = useCallback((resources) => (
     <div>
       <h4 className="font-bold mb-3">Resource Usage</h4>
@@ -391,7 +370,6 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
                   <div className="text-xs px-2 py-1 rounded-full bg-green-900/30 text-green-400 border border-green-800">
                     {integration.status}
                   </div>
-                  <div className="text-sm font-medium">${integration.estimatedRewards}/mo</div>
                 </div>
               </div>
             ))}
@@ -411,18 +389,8 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
         <div>
           <div className="p-4 rounded-lg bg-gradient-to-r from-blue-900/30 to-purple-900/30 border border-blue-800 mb-4">
             <p className="text-sm text-gray-300 mb-2">
-              Supercharge your node with blockchain validation capabilities to earn additional rewards while supporting decentralized networks.
+              Enable blockchain validation to participate in network consensus and maximize your node's potential.
             </p>
-            <div className="flex gap-2 items-center text-xs text-gray-400 mb-4">
-              {['Diversified revenue', 'Maximize resources', 'Network governance'].map(benefit => (
-                <span key={benefit} className="flex items-center gap-1">
-                  <svg viewBox="0 0 24 24" className="h-4 w-4 text-green-500" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                  {benefit}
-                </span>
-              ))}
-            </div>
             <button 
               className="py-2 px-4 rounded-md bg-blue-700 hover:bg-blue-600 text-white flex items-center justify-center gap-2 w-full transition-colors"
               onClick={(e) => handleBlockchainIntegration(e, node)}
@@ -438,8 +406,6 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
     </div>
   ), [handleBlockchainIntegration]);
 
-  // ==================== MAIN RENDER ====================
-  
   return (
     <div className="space-y-4">
       {nodesWithComputedData.map((node) => (
@@ -490,16 +456,12 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
                 </div>
               </div>
               <div className="text-center">
-                <div className="text-xs text-gray-400">Registration</div>
-                <div className="text-sm">{formatDate(node.registeredDate)}</div>
+                <div className="text-xs text-gray-400">Uptime</div>
+                <div className="text-sm">{node.uptime}</div>
               </div>
               <div className="text-center">
-                <div className="text-xs text-gray-400">Last Seen</div>
-                <div className="text-sm">{formatDate(node.lastSeen)}</div>
-              </div>
-              <div className="text-center">
-                <div className="text-xs text-gray-400">Earnings</div>
-                <div className="text-sm">{typeof node.earnings === 'number' ? node.earnings.toFixed(4) : node.earnings} AeroNyx</div>
+                <div className="text-xs text-gray-400">Tasks</div>
+                <div className="text-sm">{node.completedTasks || 0} / {node.totalTasks || 0}</div>
               </div>
               
               <div className="self-center">
@@ -559,7 +521,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
                   <div className="text-center">
                     <div className="text-xs text-gray-400 mb-1">Tasks Completed</div>
                     <div className="text-lg font-bold text-blue-400">
-                      {node.completedTasks || 'N/A'}
+                      {((node.completedTasks || 0) / (node.totalTasks || 1) * 100).toFixed(0)}%
                     </div>
                   </div>
                 </div>
