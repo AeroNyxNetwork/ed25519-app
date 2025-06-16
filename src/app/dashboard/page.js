@@ -85,6 +85,174 @@ export default function EnhancedDashboard() {
     failedRequests: 0
   });
 
+  // ==================== UTILITY FUNCTIONS ====================
+  
+  /**
+   * Normalize node status to standard values
+   */
+  const normalizeNodeStatus = useCallback((status) => {
+    const statusMap = {
+      'active': 'online',
+      'running': 'online',
+      'stopped': 'offline',
+      'error': 'offline',
+      'registered': 'pending',
+      'initializing': 'pending'
+    };
+    return statusMap[status] || status || 'offline';
+  }, []);
+
+  /**
+   * Calculate node uptime from timestamps
+   */
+  const calculateNodeUptime = useCallback((lastSeen, createdAt) => {
+    if (!createdAt) return '0 days, 0 hours';
+    
+    const now = new Date();
+    const created = new Date(createdAt);
+    
+    if (!lastSeen) return '0 days, 0 hours';
+    
+    const lastSeenDate = new Date(lastSeen);
+    const isRecentlyActive = (now - lastSeenDate) < (10 * 60 * 1000); // 10 minutes threshold
+    
+    if (!isRecentlyActive) return '0 days, 0 hours';
+    
+    const diffMs = now - created;
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    
+    return `${days} days, ${hours} hours`;
+  }, []);
+
+  /**
+   * Calculate resource usage percentage
+   */
+  const calculateResourceUsage = useCallback((usage) => {
+    const numericUsage = Number(usage);
+    if (isNaN(numericUsage)) return 0;
+    return Math.max(0, Math.min(100, Math.round(numericUsage)));
+  }, []);
+
+  /**
+   * Calculate estimated network contribution
+   */
+  const calculateNetworkContribution = useCallback((allNodes) => {
+    const activeNodes = allNodes.filter(node => 
+      node.status === 'online' || node.status === 'active'
+    ).length;
+    
+    // Simplified calculation (in production, this would come from network-wide statistics)
+    const estimatedContribution = (activeNodes * 0.0015).toFixed(4);
+    return `${estimatedContribution}%`;
+  }, []);
+
+  /**
+   * Calculate overall resource utilization
+   */
+  const calculateResourceUtilization = useCallback((allNodes) => {
+    const activeNodes = allNodes.filter(node => 
+      node.status === 'online' || node.status === 'active'
+    );
+    
+    if (activeNodes.length === 0) return 0;
+    
+    const totalUtilization = activeNodes.reduce((sum, node) => {
+      const cpuUsage = node.performance?.cpu_usage || 0;
+      const memoryUsage = node.performance?.memory_usage || 0;
+      return sum + ((cpuUsage + memoryUsage) / 2);
+    }, 0);
+    
+    return Math.round(totalUtilization / activeNodes.length);
+  }, []);
+
+  /**
+   * Transform individual node data for dashboard card display
+   */
+  const transformNodeForDashboard = useCallback((node) => ({
+    id: node.reference_code || node.id || `node-${Date.now()}-${Math.random()}`,
+    name: node.name || 'Unnamed Node',
+    status: normalizeNodeStatus(node.status),
+    type: node.node_type?.id || node.node_type || 'general',
+    deviceId: node.reference_code || node.id,
+    uptime: calculateNodeUptime(node.last_seen, node.created_at),
+    earnings: parseFloat(node.earnings || 0),
+    cpu: calculateResourceUsage(node.performance?.cpu_usage),
+    memory: calculateResourceUsage(node.performance?.memory_usage),
+    lastSeen: node.last_seen,
+    createdAt: node.created_at,
+    isConnected: node.is_connected || false,
+    totalTasks: node.total_tasks || 0,
+    completedTasks: node.completed_tasks || 0
+  }), [normalizeNodeStatus, calculateNodeUptime, calculateResourceUsage]);
+
+  /**
+   * Calculate dashboard health score
+   */
+  const calculateHealthScore = useCallback(() => {
+    if (!dashboardData) return 0;
+    
+    const { stats } = dashboardData;
+    const totalNodes = stats.totalNodes;
+    
+    if (totalNodes === 0) return 100;
+    
+    const activeRatio = stats.activeNodes / totalNodes;
+    const offlineRatio = stats.offlineNodes / totalNodes;
+    
+    let score = 100;
+    score -= (offlineRatio * 50); // Penalize offline nodes
+    score -= ((1 - activeRatio) * 30); // Reward active nodes
+    score += (stats.resourceUtilization > 70 ? 10 : 0); // Bonus for good utilization
+    
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }, [dashboardData]);
+
+  /**
+   * Check if cached data is still valid
+   */
+  const isCacheValid = useCallback((cacheEntry, maxAge) => {
+    if (!cacheEntry || !cacheEntry.timestamp) return false;
+    return (Date.now() - cacheEntry.timestamp) < maxAge;
+  }, []);
+
+  // ==================== DATA PROCESSING ====================
+  
+  /**
+   * Process and transform API data for dashboard consumption
+   */
+  const processDashboardData = useCallback(async (apiData) => {
+    const { summary, nodes: nodesByStatus } = apiData;
+    
+    // Combine all nodes from different status categories
+    const allNodes = [
+      ...(nodesByStatus.online || []),
+      ...(nodesByStatus.active || []),
+      ...(nodesByStatus.offline || [])
+    ];
+
+    // Transform nodes for dashboard display (limit to first 4 for preview)
+    const transformedNodes = allNodes.slice(0, 4).map(transformNodeForDashboard);
+
+    // Calculate comprehensive statistics
+    const stats = {
+      totalNodes: summary.total_nodes || allNodes.length,
+      activeNodes: summary.online_nodes || summary.active_nodes || 0,
+      offlineNodes: summary.offline_nodes || 0,
+      pendingNodes: Math.max(0, (summary.total_nodes || allNodes.length) - (summary.online_nodes || summary.active_nodes || 0) - (summary.offline_nodes || 0)),
+      totalEarnings: parseFloat(allNodes.reduce((sum, node) => sum + parseFloat(node.earnings || 0), 0).toFixed(4)),
+      networkContribution: calculateNetworkContribution(allNodes),
+      resourceUtilization: calculateResourceUtilization(allNodes)
+    };
+
+    return {
+      stats,
+      nodes: transformedNodes,
+      timestamp: new Date().toISOString(),
+      source: 'api'
+    };
+  }, [transformNodeForDashboard, calculateNetworkContribution, calculateResourceUtilization]);
+
   // ==================== COMPUTED VALUES ====================
   
   /**
@@ -93,7 +261,7 @@ export default function EnhancedDashboard() {
   const financialMetrics = useMemo(() => {
     if (!dashboardData) return null;
     
-    const { stats, nodes } = dashboardData;
+    const { stats } = dashboardData;
     
     // Calculate professional financial metrics
     const calculateAPY = (earnings, investment, days) => {
@@ -121,7 +289,7 @@ export default function EnhancedDashboard() {
       diversificationScore: stats.totalNodes > 0 ? Math.min(100, (stats.activeNodes / stats.totalNodes) * 100) : 0,
       efficiencyRating: stats.resourceUtilization || 0
     };
-  }, [dashboardData]);
+  }, [dashboardData, calculateHealthScore]);
 
   /**
    * Performance trends and predictions
@@ -153,69 +321,8 @@ export default function EnhancedDashboard() {
     };
   }, [financialMetrics]);
 
-  /**
-   * Calculate dashboard health score
-   */
-  const calculateHealthScore = useCallback(() => {
-    if (!dashboardData) return 0;
-    
-    const { stats } = dashboardData;
-    const totalNodes = stats.totalNodes;
-    
-    if (totalNodes === 0) return 100;
-    
-    const activeRatio = stats.activeNodes / totalNodes;
-    const offlineRatio = stats.offlineNodes / totalNodes;
-    
-    let score = 100;
-    score -= (offlineRatio * 50); // Penalize offline nodes
-    score -= ((1 - activeRatio) * 30); // Reward active nodes
-    score += (stats.resourceUtilization > 70 ? 10 : 0); // Bonus for good utilization
-    
-    return Math.max(0, Math.min(100, Math.round(score)));
-  }, [dashboardData]);
-
-  // ==================== LIFECYCLE HOOKS ====================
-  
-  /**
-   * Effect: Handle wallet connection and initial data loading
-   */
-  useEffect(() => {
-    if (!wallet.connected) {
-      router.push('/');
-      return;
-    }
-
-    // Load initial dashboard data
-    fetchDashboardData();
-    
-    // Setup auto-refresh interval if enabled
-    let refreshInterval;
-    if (autoRefreshEnabled) {
-      refreshInterval = setInterval(() => {
-        if (wallet.connected && !isLoading) {
-          fetchDashboardData(true); // Silent refresh
-        }
-      }, REFRESH_INTERVALS.DASHBOARD_DATA);
-    }
-
-    return () => {
-      if (refreshInterval) {
-        clearInterval(refreshInterval);
-      }
-    };
-  }, [wallet.connected, wallet.address, autoRefreshEnabled]);
-
   // ==================== DATA FETCHING METHODS ====================
   
-  /**
-   * Check if cached data is still valid
-   */
-  const isCacheValid = useCallback((cacheEntry, maxAge) => {
-    if (!cacheEntry || !cacheEntry.timestamp) return false;
-    return (Date.now() - cacheEntry.timestamp) < maxAge;
-  }, []);
-
   /**
    * Fetch comprehensive dashboard data from API
    */
@@ -312,141 +419,7 @@ export default function EnhancedDashboard() {
       setIsLoading(false);
       setRefreshing(false);
     }
-  }, [wallet.connected, wallet.address, wallet.provider, dataCache, isCacheValid]);
-
-  /**
-   * Process and transform API data for dashboard consumption
-   */
-  const processDashboardData = useCallback(async (apiData) => {
-    const { summary, nodes: nodesByStatus } = apiData;
-    
-    // Combine all nodes from different status categories
-    const allNodes = [
-      ...(nodesByStatus.online || []),
-      ...(nodesByStatus.active || []),
-      ...(nodesByStatus.offline || [])
-    ];
-
-    // Transform nodes for dashboard display (limit to first 4 for preview)
-    const transformedNodes = allNodes.slice(0, 4).map(transformNodeForDashboard);
-
-    // Calculate comprehensive statistics
-    const stats = {
-      totalNodes: summary.total_nodes || allNodes.length,
-      activeNodes: summary.online_nodes || summary.active_nodes || 0,
-      offlineNodes: summary.offline_nodes || 0,
-      pendingNodes: Math.max(0, (summary.total_nodes || allNodes.length) - (summary.online_nodes || summary.active_nodes || 0) - (summary.offline_nodes || 0)),
-      totalEarnings: parseFloat(allNodes.reduce((sum, node) => sum + parseFloat(node.earnings || 0), 0).toFixed(4)),
-      networkContribution: calculateNetworkContribution(allNodes),
-      resourceUtilization: calculateResourceUtilization(allNodes)
-    };
-
-    return {
-      stats,
-      nodes: transformedNodes,
-      timestamp: new Date().toISOString(),
-      source: 'api'
-    };
-  }, []);
-
-  /**
-   * Transform individual node data for dashboard card display
-   */
-  const transformNodeForDashboard = useCallback((node) => ({
-    id: node.reference_code || node.id || `node-${Date.now()}-${Math.random()}`,
-    name: node.name || 'Unnamed Node',
-    status: normalizeNodeStatus(node.status),
-    type: node.node_type?.id || node.node_type || 'general',
-    deviceId: node.reference_code || node.id,
-    uptime: calculateNodeUptime(node.last_seen, node.created_at),
-    earnings: parseFloat(node.earnings || 0),
-    cpu: calculateResourceUsage(node.performance?.cpu_usage),
-    memory: calculateResourceUsage(node.performance?.memory_usage),
-    lastSeen: node.last_seen,
-    createdAt: node.created_at,
-    isConnected: node.is_connected || false,
-    totalTasks: node.total_tasks || 0,
-    completedTasks: node.completed_tasks || 0
-  }), []);
-
-  /**
-   * Normalize node status to standard values
-   */
-  const normalizeNodeStatus = useCallback((status) => {
-    const statusMap = {
-      'active': 'online',
-      'running': 'online',
-      'stopped': 'offline',
-      'error': 'offline',
-      'registered': 'pending',
-      'initializing': 'pending'
-    };
-    return statusMap[status] || status || 'offline';
-  }, []);
-
-  /**
-   * Calculate node uptime from timestamps
-   */
-  const calculateNodeUptime = useCallback((lastSeen, createdAt) => {
-    if (!createdAt) return '0 days, 0 hours';
-    
-    const now = new Date();
-    const created = new Date(createdAt);
-    
-    if (!lastSeen) return '0 days, 0 hours';
-    
-    const lastSeenDate = new Date(lastSeen);
-    const isRecentlyActive = (now - lastSeenDate) < (10 * 60 * 1000); // 10 minutes threshold
-    
-    if (!isRecentlyActive) return '0 days, 0 hours';
-    
-    const diffMs = now - created;
-    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    
-    return `${days} days, ${hours} hours`;
-  }, []);
-
-  /**
-   * Calculate resource usage percentage
-   */
-  const calculateResourceUsage = useCallback((usage) => {
-    const numericUsage = Number(usage);
-    if (isNaN(numericUsage)) return 0;
-    return Math.max(0, Math.min(100, Math.round(numericUsage)));
-  }, []);
-
-  /**
-   * Calculate estimated network contribution
-   */
-  const calculateNetworkContribution = useCallback((allNodes) => {
-    const activeNodes = allNodes.filter(node => 
-      node.status === 'online' || node.status === 'active'
-    ).length;
-    
-    // Simplified calculation (in production, this would come from network-wide statistics)
-    const estimatedContribution = (activeNodes * 0.0015).toFixed(4);
-    return `${estimatedContribution}%`;
-  }, []);
-
-  /**
-   * Calculate overall resource utilization
-   */
-  const calculateResourceUtilization = useCallback((allNodes) => {
-    const activeNodes = allNodes.filter(node => 
-      node.status === 'online' || node.status === 'active'
-    );
-    
-    if (activeNodes.length === 0) return 0;
-    
-    const totalUtilization = activeNodes.reduce((sum, node) => {
-      const cpuUsage = node.performance?.cpu_usage || 0;
-      const memoryUsage = node.performance?.memory_usage || 0;
-      return sum + ((cpuUsage + memoryUsage) / 2);
-    }, 0);
-    
-    return Math.round(totalUtilization / activeNodes.length);
-  }, []);
+  }, [wallet.connected, wallet.address, wallet.provider, dataCache, isCacheValid, processDashboardData]);
 
   /**
    * Handle errors during data fetching
@@ -479,6 +452,37 @@ export default function EnhancedDashboard() {
     
     setError(errorMessage);
   }, []);
+
+  // ==================== LIFECYCLE HOOKS ====================
+  
+  /**
+   * Effect: Handle wallet connection and initial data loading
+   */
+  useEffect(() => {
+    if (!wallet.connected) {
+      router.push('/');
+      return;
+    }
+
+    // Load initial dashboard data
+    fetchDashboardData();
+    
+    // Setup auto-refresh interval if enabled
+    let refreshInterval;
+    if (autoRefreshEnabled) {
+      refreshInterval = setInterval(() => {
+        if (wallet.connected && !isLoading) {
+          fetchDashboardData(true); // Silent refresh
+        }
+      }, REFRESH_INTERVALS.DASHBOARD_DATA);
+    }
+
+    return () => {
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+      }
+    };
+  }, [wallet.connected, wallet.address, autoRefreshEnabled, fetchDashboardData, isLoading, router]);
 
   // ==================== EVENT HANDLERS ====================
   
