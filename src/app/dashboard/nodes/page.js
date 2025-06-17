@@ -352,7 +352,7 @@ export default function NodesPage() {
    */
   const validatePercentage = (value) => {
     const num = Number(value);
-    return isNaN(num) ? 0 : Math.max(0, Math.min(100, Math.round(num));
+    return isNaN(num) ? 0 : Math.max(0, Math.min(100, Math.round(num)));
   };
   
   /**
