@@ -1,54 +1,46 @@
-'use client';
-
 /**
- * AeroNyx Nodes Management Dashboard Page
+ * Enhanced AeroNyx Nodes Management Dashboard with Real-time Updates
  * 
  * File Path: src/app/dashboard/nodes/page.js
  * 
- * This component provides a comprehensive interface for managing user's nodes
- * in the AeroNyx network. It includes real-time status monitoring, performance
- * tracking, blockchain integration capabilities, and node management controls.
+ * Production-ready dashboard with real-time WebSocket monitoring,
+ * automatic updates, and performance optimizations.
  * 
- * Features:
- * - Real-time node overview with status grouping
- * - Advanced filtering and search capabilities
- * - Blockchain integration management
- * - Performance monitoring and health scoring
- * - Comprehensive error handling and user feedback
- * - Responsive design for desktop and mobile
- * 
- * @version 1.0.0
+ * @version 2.0.0
  * @author AeroNyx Development Team
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+'use client';
+
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '../../../components/layout/Header';
 import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
 import NodeList from '../../../components/dashboard/NodeList';
 import BlockchainIntegrationModule from '../../../components/dashboard/BlockchainIntegrationModule';
+import RealTimeNodeMonitor from '../../../components/dashboard/RealTimeNodeMonitor';
+import { useUserMonitorWebSocket } from '../../../hooks/useWebSocket';
 import nodeRegistrationService from '../../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
 
 /**
- * Constants for configuration and error messages
+ * Configuration constants
  */
-const ERROR_MESSAGES = {
-  WALLET_NOT_CONNECTED: 'Wallet not connected',
-  SIGNATURE_FAILED: 'Failed to generate wallet signature',
-  API_ERROR: 'Failed to fetch nodes data',
-  NO_NODES_FOUND: 'No nodes found for this wallet',
-  NETWORK_ERROR: 'Network connection error'
-};
-
-const CACHE_DURATION = {
-  NODES_DATA: 5 * 60 * 1000, // 5 minutes
-  PERFORMANCE_DATA: 2 * 60 * 1000 // 2 minutes
+const MONITOR_CONFIG = {
+  ENABLE_REALTIME: true,
+  FALLBACK_REFRESH_INTERVAL: 30000, // 30 seconds
+  INITIAL_LOAD_DELAY: 1000,
+  PERFORMANCE_THRESHOLD: {
+    CPU_WARNING: 80,
+    CPU_CRITICAL: 90,
+    MEMORY_WARNING: 80,
+    MEMORY_CRITICAL: 90
+  }
 };
 
 /**
- * Main Nodes Management Page Component
+ * Enhanced Nodes Management Page with Real-time Updates
  */
 export default function NodesPage() {
   const { wallet } = useWallet();
@@ -58,264 +50,341 @@ export default function NodesPage() {
   
   // Core data state
   const [nodes, setNodes] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isFallbackLoading, setIsFallbackLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [lastRefresh, setLastRefresh] = useState(null);
+  const [lastUpdate, setLastUpdate] = useState(null);
+  const [updateSource, setUpdateSource] = useState(null); // 'websocket' or 'api'
   
   // UI state
   const [filter, setFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
   const [showBlockchainModal, setShowBlockchainModal] = useState(false);
+  const [showRealtimeMonitor, setShowRealtimeMonitor] = useState(true);
   
   // Statistics state
   const [nodeStats, setNodeStats] = useState({
     total: 0,
     online: 0,
+    active: 0,
     offline: 0,
     pending: 0
   });
   
-  const [blockchainStats, setBlockchainStats] = useState({
-    totalNodes: 0,
-    blockchainNodes: 0,
-    potentialEarnings: 0
+  const [performanceAlerts, setPerformanceAlerts] = useState([]);
+  const [walletCredentials, setWalletCredentials] = useState(null);
+  
+  // Refs
+  const fallbackIntervalRef = useRef(null);
+  const nodesMapRef = useRef(new Map());
+  
+  // ==================== WEBSOCKET SETUP ====================
+  
+  // Initialize wallet credentials for WebSocket
+  useEffect(() => {
+    const initCredentials = async () => {
+      if (!wallet.connected || !wallet.address) return;
+      
+      try {
+        const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+        const message = messageResponse.data.message;
+        const formattedMessage = formatMessageForSigning(message);
+        const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
+        
+        setWalletCredentials({
+          walletAddress: wallet.address,
+          signature,
+          message,
+          walletType: 'okx'
+        });
+      } catch (error) {
+        console.error('Failed to initialize WebSocket credentials:', error);
+        // Fallback to API polling if WebSocket auth fails
+        startFallbackPolling();
+      }
+    };
+    
+    initCredentials();
+  }, [wallet.connected, wallet.address, wallet.provider]);
+  
+  // WebSocket hook
+  const {
+    connected: wsConnected,
+    authenticated: wsAuthenticated,
+    monitoring: wsMonitoring,
+    nodes: wsNodes,
+    summary: wsSummary,
+    error: wsError,
+    startMonitoring,
+    stopMonitoring,
+    subscribeToNode,
+    unsubscribeFromNode
+  } = useUserMonitorWebSocket(walletCredentials, {
+    enabled: MONITOR_CONFIG.ENABLE_REALTIME && !!walletCredentials
   });
   
-  // Debug state (removed in production)
-  const [rawApiResponse, setRawApiResponse] = useState(null);
-
   // ==================== LIFECYCLE HOOKS ====================
   
   /**
-   * Effect: Handle wallet connection and initial data loading
+   * Handle wallet connection and initial setup
    */
   useEffect(() => {
     if (!wallet.connected) {
       router.push('/');
       return;
     }
-
-    // Load nodes data when wallet is connected
-    fetchNodesData();
-  }, [wallet.connected, wallet.address, router]);
-
-  // ==================== DATA FETCHING METHODS ====================
+    
+    // Initial data load with delay to prevent flash
+    const loadTimer = setTimeout(() => {
+      if (!wsConnected || !wsAuthenticated) {
+        fetchNodesViaAPI();
+      }
+    }, MONITOR_CONFIG.INITIAL_LOAD_DELAY);
+    
+    return () => clearTimeout(loadTimer);
+  }, [wallet.connected, wsConnected, wsAuthenticated, router]);
   
   /**
-   * Fetch comprehensive nodes data from the API
-   * 
-   * This is the main data fetching method that retrieves user's nodes,
-   * transforms the data for UI consumption, and updates all related statistics.
+   * Start WebSocket monitoring when authenticated
    */
-  const fetchNodesData = useCallback(async () => {
-    if (!wallet.connected || !wallet.address) {
-      setError(ERROR_MESSAGES.WALLET_NOT_CONNECTED);
-      return;
+  useEffect(() => {
+    if (wsAuthenticated && !wsMonitoring && MONITOR_CONFIG.ENABLE_REALTIME) {
+      startMonitoring();
     }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      // Step 1: Generate signature message for authentication
-      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+  }, [wsAuthenticated, wsMonitoring, startMonitoring]);
+  
+  /**
+   * Process WebSocket nodes updates
+   */
+  useEffect(() => {
+    if (wsNodes && wsNodes.length > 0) {
+      processNodesUpdate(wsNodes, 'websocket');
+      setIsInitialLoading(false);
+      stopFallbackPolling();
+    }
+  }, [wsNodes]);
+  
+  /**
+   * Update statistics from WebSocket summary
+   */
+  useEffect(() => {
+    if (wsSummary) {
+      setNodeStats({
+        total: wsSummary.total_nodes || 0,
+        online: wsSummary.online_nodes || 0,
+        active: wsSummary.active_nodes || 0,
+        offline: wsSummary.offline_nodes || 0,
+        pending: Math.max(0, (wsSummary.total_nodes || 0) - 
+                          (wsSummary.online_nodes || 0) - 
+                          (wsSummary.active_nodes || 0) - 
+                          (wsSummary.offline_nodes || 0))
+      });
+    }
+  }, [wsSummary]);
+  
+  /**
+   * Handle WebSocket errors
+   */
+  useEffect(() => {
+    if (wsError && !wsConnected) {
+      console.warn('WebSocket error, falling back to API polling:', wsError);
+      startFallbackPolling();
+    }
+  }, [wsError, wsConnected]);
+  
+  /**
+   * Cleanup on unmount
+   */
+  useEffect(() => {
+    return () => {
+      stopFallbackPolling();
+      if (wsMonitoring) {
+        stopMonitoring();
+      }
+    };
+  }, [wsMonitoring, stopMonitoring]);
+  
+  // ==================== DATA PROCESSING ====================
+  
+  /**
+   * Process nodes update from WebSocket or API
+   */
+  const processNodesUpdate = useCallback((nodesData, source) => {
+    // Create map for efficient updates
+    const newNodesMap = new Map();
+    
+    nodesData.forEach(node => {
+      const processedNode = transformNodeData(node, source);
       
-      if (!messageResponse.success) {
-        throw new Error(messageResponse.message || ERROR_MESSAGES.SIGNATURE_FAILED);
+      // Check for performance alerts
+      checkNodePerformance(processedNode);
+      
+      // Preserve expansion state
+      const existingNode = nodesMapRef.current.get(processedNode.id);
+      if (existingNode) {
+        processedNode._expanded = existingNode._expanded;
       }
-
-      const message = messageResponse.data.message;
-      const formattedMessage = formatMessageForSigning(message);
-
-      // Step 2: Get wallet signature
-      const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
-
-      // Step 3: Fetch user nodes overview
-      const overviewResponse = await nodeRegistrationService.getUserNodesOverview(
-        wallet.address,
-        signature,
-        message,
-        'okx'
-      );
-
-      if (overviewResponse.success && overviewResponse.data) {
-        // Store raw response for debugging (remove in production)
-        if (process.env.NODE_ENV === 'development') {
-          setRawApiResponse(overviewResponse.data);
-        }
-        
-        // Process and transform the API response
-        await processNodesData(overviewResponse.data);
-        
-        setLastRefresh(new Date());
-      } else {
-        throw new Error(overviewResponse.message || ERROR_MESSAGES.API_ERROR);
-      }
-
-    } catch (err) {
-      console.error('Error fetching nodes data:', err);
-      handleFetchError(err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [wallet.connected, wallet.address, wallet.provider]);
-
+      
+      newNodesMap.set(processedNode.id, processedNode);
+    });
+    
+    nodesMapRef.current = newNodesMap;
+    setNodes(Array.from(newNodesMap.values()));
+    setLastUpdate(new Date());
+    setUpdateSource(source);
+  }, []);
+  
   /**
-   * Process and transform API response data for UI consumption
-   * 
-   * @param {Object} apiData - Raw API response data
+   * Transform node data for UI consumption
    */
-  const processNodesData = async (apiData) => {
-    const { summary, nodes: nodesByStatus } = apiData;
+  const transformNodeData = useCallback((node, source) => {
+    const isWebSocketData = source === 'websocket';
     
-    // Combine all nodes from different status categories
-    const allNodes = [
-      ...(nodesByStatus.online || []),
-      ...(nodesByStatus.active || []),
-      ...(nodesByStatus.offline || [])
-    ];
-
-    // Transform nodes data to match UI component expectations
-    const transformedNodes = allNodes.map(transformNodeData);
-
-    setNodes(transformedNodes);
-    
-    // Calculate and update statistics
-    updateNodeStatistics(transformedNodes);
-    updateBlockchainStatistics(transformedNodes);
-  };
-
+    return {
+      // Core identifiers
+      id: node.reference_code || node.id,
+      referenceCode: node.reference_code || node.id,
+      
+      // Basic information
+      name: node.name || 'Unnamed Node',
+      status: normalizeNodeStatus(node.status),
+      type: node.node_type?.id || node.node_type || 'general',
+      
+      // Timestamps
+      registeredDate: node.created_at || new Date().toISOString(),
+      lastSeen: isWebSocketData ? 
+        node.connection?.last_heartbeat : 
+        (node.last_seen || node.last_heartbeat),
+      
+      // Performance
+      uptime: node.uptime || calculateUptime(node.connection?.last_heartbeat, node.created_at),
+      earnings: parseFloat(node.earnings || 0),
+      resources: isWebSocketData ? 
+        transformWebSocketResources(node.performance) : 
+        transformAPIResources(node.performance),
+      
+      // Connection
+      isConnected: isWebSocketData ? 
+        node.connection?.connected : 
+        (node.is_connected || false),
+      connectionStatus: node.connection_status || 
+        (node.connection?.connected ? 'connected' : 'disconnected'),
+      heartbeatCount: node.connection?.heartbeat_count || 0,
+      
+      // Additional data
+      blockchainIntegrations: node.blockchain_integrations || [],
+      totalTasks: node.total_tasks || 0,
+      completedTasks: node.completed_tasks || 0,
+      nodeVersion: node.node_version || 'Unknown',
+      
+      // Real-time indicator
+      isRealtime: isWebSocketData,
+      lastUpdateSource: source,
+      lastUpdateTime: new Date().toISOString()
+    };
+  }, []);
+  
   /**
-   * Transform individual node data from API format to UI format
-   * 
-   * @param {Object} node - Raw node data from API
-   * @returns {Object} Transformed node data for UI
+   * Transform WebSocket performance data to resources format
    */
-  const transformNodeData = (node) => ({
-    // Core identifiers
-    id: node.reference_code || node.id || `node-${Date.now()}-${Math.random()}`,
-    referenceCode: node.reference_code || node.id,
+  const transformWebSocketResources = useCallback((performance) => {
+    if (!performance) return getDefaultResources();
     
-    // Basic information
-    name: node.name || 'Unnamed Node',
-    status: node.status || 'unknown',
-    type: node.node_type?.id || node.node_type || 'general',
-    
-    // Timestamps
-    registeredDate: node.created_at || new Date().toISOString(),
-    lastSeen: node.last_seen || null,
-    activatedAt: node.activated_at || null,
-    
-    // Performance and connection
-    uptime: node.uptime || calculateUptime(node.last_seen, node.created_at),
-    earnings: parseEarnings(node.earnings),
-    resources: transformResources(node.performance),
-    
-    // Connection status
-    isConnected: node.is_connected || false,
-    connectionStatus: node.connection_status || 'offline',
-    offlineDuration: node.connection_details?.offline_duration_formatted || null,
-    
-    // Node type information
-    nodeTypeInfo: node.node_type || null,
-    
-    // Additional features
-    blockchainIntegrations: Array.isArray(node.blockchain_integrations) ? node.blockchain_integrations : [],
-    
-    // Extended information
-    totalTasks: typeof node.total_tasks === 'number' ? node.total_tasks : 0,
-    completedTasks: typeof node.completed_tasks === 'number' ? node.completed_tasks : 0,
-    nodeVersion: node.node_version || 'Unknown',
-    publicIp: node.public_ip || null,
-    registrationStatus: node.registration_status || {}
-  });
-
-  /**
-   * Transform performance data from API format to UI resources format
-   * 
-   * @param {Object} performance - Performance data from API
-   * @returns {Object} Transformed resources data
-   */
-  const transformResources = (performance) => {
-    if (!performance || typeof performance !== 'object') {
-      return {
-        cpu: { total: 'Unknown', usage: 0 },
-        memory: { total: 'Unknown', usage: 0 },
-        storage: { total: 'Unknown', usage: 0 },
-        bandwidth: { total: 'Unknown', usage: 0 }
-      };
-    }
-
     return {
       cpu: {
-        total: 'Unknown', // API doesn't provide total resource information
-        usage: validateUsagePercentage(performance.cpu_usage)
+        total: 'Unknown',
+        usage: validatePercentage(performance.cpu_usage)
       },
       memory: {
         total: 'Unknown',
-        usage: validateUsagePercentage(performance.memory_usage)
+        usage: validatePercentage(performance.memory_usage)
       },
       storage: {
         total: 'Unknown',
-        usage: validateUsagePercentage(performance.storage_usage)
+        usage: validatePercentage(performance.storage_usage)
       },
       bandwidth: {
         total: 'Unknown',
-        usage: validateUsagePercentage(performance.bandwidth_usage)
+        usage: validatePercentage(performance.bandwidth_usage)
       }
     };
-  };
-
+  }, []);
+  
   /**
-   * Validate and normalize usage percentage values
-   * 
-   * @param {number|string} usage - Raw usage value
-   * @returns {number} Validated usage percentage (0-100)
+   * Transform API performance data to resources format
    */
-  const validateUsagePercentage = (usage) => {
-    const numericUsage = Number(usage);
-    if (isNaN(numericUsage)) return 0;
-    return Math.max(0, Math.min(100, numericUsage));
-  };
-
+  const transformAPIResources = useCallback((performance) => {
+    if (!performance) return getDefaultResources();
+    
+    return {
+      cpu: {
+        total: performance.cpu_cores ? `${performance.cpu_cores} cores` : 'Unknown',
+        usage: validatePercentage(performance.cpu_usage)
+      },
+      memory: {
+        total: performance.memory_gb ? `${performance.memory_gb} GB` : 'Unknown',
+        usage: validatePercentage(performance.memory_usage)
+      },
+      storage: {
+        total: performance.storage_gb ? `${performance.storage_gb} GB` : 'Unknown',
+        usage: validatePercentage(performance.storage_usage)
+      },
+      bandwidth: {
+        total: performance.bandwidth_mbps ? `${performance.bandwidth_mbps} Mbps` : 'Unknown',
+        usage: validatePercentage(performance.bandwidth_usage)
+      }
+    };
+  }, []);
+  
   /**
-   * Parse earnings value from various formats
-   * 
-   * @param {string|number} earnings - Raw earnings value
-   * @returns {number} Parsed earnings as number
+   * Get default resources structure
    */
-  const parseEarnings = (earnings) => {
-    if (typeof earnings === 'string') {
-      const parsed = parseFloat(earnings);
-      return isNaN(parsed) ? 0 : parsed;
-    }
-    if (typeof earnings === 'number') {
-      return earnings;
-    }
-    return 0;
-  };
-
+  const getDefaultResources = () => ({
+    cpu: { total: 'Unknown', usage: 0 },
+    memory: { total: 'Unknown', usage: 0 },
+    storage: { total: 'Unknown', usage: 0 },
+    bandwidth: { total: 'Unknown', usage: 0 }
+  });
+  
   /**
-   * Calculate uptime based on timestamps
-   * 
-   * @param {string|null} lastSeen - Last seen timestamp
-   * @param {string} createdAt - Creation timestamp
-   * @returns {string} Formatted uptime string
+   * Validate percentage value
    */
-  const calculateUptime = (lastSeen, createdAt) => {
+  const validatePercentage = (value) => {
+    const num = Number(value);
+    return isNaN(num) ? 0 : Math.max(0, Math.min(100, Math.round(num));
+  };
+  
+  /**
+   * Normalize node status
+   */
+  const normalizeNodeStatus = (status) => {
+    const statusMap = {
+      'active': 'online',
+      'running': 'online',
+      'stopped': 'offline',
+      'error': 'offline',
+      'registered': 'pending',
+      'initializing': 'pending'
+    };
+    return statusMap[status] || status || 'offline';
+  };
+  
+  /**
+   * Calculate uptime
+   */
+  const calculateUptime = (lastHeartbeat, createdAt) => {
     if (!createdAt) return '0 days, 0 hours';
     
     const now = new Date();
     const created = new Date(createdAt);
     
-    // If never seen or seen too long ago, consider as no uptime
-    if (!lastSeen) return '0 days, 0 hours';
+    if (!lastHeartbeat) return '0 days, 0 hours';
     
-    const lastSeenDate = new Date(lastSeen);
-    const isRecentlyActive = (now - lastSeenDate) < (10 * 60 * 1000); // 10 minutes threshold
+    const lastSeen = new Date(lastHeartbeat);
+    const isOnline = (now - lastSeen) < (10 * 60 * 1000); // 10 minutes
     
-    if (!isRecentlyActive) return '0 days, 0 hours';
+    if (!isOnline) return '0 days, 0 hours';
     
     const diffMs = now - created;
     const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
@@ -323,133 +392,179 @@ export default function NodesPage() {
     
     return `${days} days, ${hours} hours`;
   };
-
-  /**
-   * Update node statistics based on current nodes data
-   * 
-   * @param {Array} nodesData - Array of transformed node data
-   */
-  const updateNodeStatistics = (nodesData) => {
-    const stats = {
-      total: nodesData.length,
-      online: nodesData.filter(node => node.status === 'online' || node.status === 'active').length,
-      offline: nodesData.filter(node => node.status === 'offline').length,
-      pending: nodesData.filter(node => node.status === 'pending' || node.status === 'registered').length
-    };
-    
-    setNodeStats(stats);
-  };
-
-  /**
-   * Update blockchain integration statistics
-   * 
-   * @param {Array} nodesData - Array of transformed node data
-   */
-  const updateBlockchainStatistics = (nodesData) => {
-    const blockchainNodes = nodesData.filter(node => 
-      node.blockchainIntegrations && node.blockchainIntegrations.length > 0
-    ).length;
-    
-    // Calculate potential earnings for non-integrated online nodes
-    const eligibleNodes = nodesData.filter(node => 
-      (node.status === 'online' || node.status === 'active') && 
-      node.blockchainIntegrations.length === 0
-    );
-    
-    // Simplified earnings estimation (can be made more sophisticated)
-    const potentialEarnings = eligibleNodes.length * 12.5; // $12.5 per month per node
-
-    setBlockchainStats({
-      totalNodes: nodesData.length,
-      blockchainNodes,
-      potentialEarnings
-    });
-  };
-
-  /**
-   * Handle errors during data fetching
-   * 
-   * @param {Error} err - The error object
-   */
-  const handleFetchError = (err) => {
-    let errorMessage = err.message || ERROR_MESSAGES.API_ERROR;
-    
-    // Handle specific error cases
-    if (err.message && err.message.includes('no nodes')) {
-      // Not really an error - user just has no nodes yet
-      setNodes([]);
-      setNodeStats({ total: 0, online: 0, offline: 0, pending: 0 });
-      setBlockchainStats({ totalNodes: 0, blockchainNodes: 0, potentialEarnings: 0 });
-      setError(null);
-      return;
-    }
-    
-    if (err.message && err.message.includes('Network error')) {
-      errorMessage = ERROR_MESSAGES.NETWORK_ERROR;
-    }
-    
-    setError(errorMessage);
-  };
-
-  // ==================== UI EVENT HANDLERS ====================
   
   /**
-   * Handle manual refresh of nodes data
+   * Check node performance and create alerts
    */
-  const handleRefreshNodes = useCallback(() => {
-    fetchNodesData();
-  }, [fetchNodesData]);
-
-  /**
-   * Handle node selection for blockchain integration
-   * 
-   * @param {Object} node - Selected node object
-   */
-  const handleNodeSelect = useCallback((node) => {
-    setSelectedNode(node);
-    setShowBlockchainModal(true);
+  const checkNodePerformance = useCallback((node) => {
+    const alerts = [];
+    const { CPU_WARNING, CPU_CRITICAL, MEMORY_WARNING, MEMORY_CRITICAL } = MONITOR_CONFIG.PERFORMANCE_THRESHOLD;
+    
+    if (node.resources.cpu.usage >= CPU_CRITICAL) {
+      alerts.push({
+        nodeId: node.id,
+        type: 'cpu',
+        severity: 'critical',
+        message: `CPU usage critical: ${node.resources.cpu.usage}%`,
+        timestamp: new Date()
+      });
+    } else if (node.resources.cpu.usage >= CPU_WARNING) {
+      alerts.push({
+        nodeId: node.id,
+        type: 'cpu',
+        severity: 'warning',
+        message: `CPU usage high: ${node.resources.cpu.usage}%`,
+        timestamp: new Date()
+      });
+    }
+    
+    if (node.resources.memory.usage >= MEMORY_CRITICAL) {
+      alerts.push({
+        nodeId: node.id,
+        type: 'memory',
+        severity: 'critical',
+        message: `Memory usage critical: ${node.resources.memory.usage}%`,
+        timestamp: new Date()
+      });
+    } else if (node.resources.memory.usage >= MEMORY_WARNING) {
+      alerts.push({
+        nodeId: node.id,
+        type: 'memory',
+        severity: 'warning',
+        message: `Memory usage high: ${node.resources.memory.usage}%`,
+        timestamp: new Date()
+      });
+    }
+    
+    if (alerts.length > 0) {
+      setPerformanceAlerts(prev => [...alerts, ...prev].slice(0, 10)); // Keep last 10 alerts
+    }
   }, []);
-
+  
+  // ==================== FALLBACK API POLLING ====================
+  
   /**
-   * Fetch detailed status for a specific node
-   * 
-   * @param {string} referenceCode - Node reference code
-   * @returns {Promise<Object|null>} Node details or null
+   * Fetch nodes data via API (fallback when WebSocket unavailable)
    */
-  const fetchNodeDetails = useCallback(async (referenceCode) => {
-    if (!wallet.connected || !referenceCode) return null;
+  const fetchNodesViaAPI = useCallback(async () => {
+    if (!wallet.connected || !wallet.address) return;
+    
+    setIsFallbackLoading(true);
+    setError(null);
     
     try {
       const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       const message = messageResponse.data.message;
       const formattedMessage = formatMessageForSigning(message);
       const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
-
-      const detailsResponse = await nodeRegistrationService.getNodeDetailedStatus(
+      
+      const overviewResponse = await nodeRegistrationService.getUserNodesOverview(
         wallet.address,
         signature,
         message,
-        referenceCode,
         'okx'
       );
-
-      if (detailsResponse.success) {
-        return detailsResponse.data;
+      
+      if (overviewResponse.success && overviewResponse.data) {
+        const { summary, nodes: nodesByStatus } = overviewResponse.data;
+        
+        const allNodes = [
+          ...(nodesByStatus.online || []),
+          ...(nodesByStatus.active || []),
+          ...(nodesByStatus.offline || [])
+        ];
+        
+        processNodesUpdate(allNodes, 'api');
+        
+        // Update stats
+        setNodeStats({
+          total: summary.total_nodes || 0,
+          online: summary.online_nodes || 0,
+          active: summary.active_nodes || 0,
+          offline: summary.offline_nodes || 0,
+          pending: Math.max(0, (summary.total_nodes || 0) - 
+                            (summary.online_nodes || 0) - 
+                            (summary.active_nodes || 0) - 
+                            (summary.offline_nodes || 0))
+        });
+        
+        setIsInitialLoading(false);
       }
     } catch (err) {
-      console.error('Failed to fetch node details:', err);
+      console.error('API fetch error:', err);
+      setError(err.message || 'Failed to fetch nodes data');
+      
+      // Handle no nodes case
+      if (err.message?.includes('no nodes')) {
+        setNodes([]);
+        setNodeStats({ total: 0, online: 0, active: 0, offline: 0, pending: 0 });
+        setError(null);
+      }
+    } finally {
+      setIsFallbackLoading(false);
     }
-    return null;
-  }, [wallet.connected, wallet.address, wallet.provider]);
-
-  // ==================== COMPUTED VALUES ====================
+  }, [wallet.connected, wallet.address, wallet.provider, processNodesUpdate]);
   
   /**
-   * Filter nodes based on current filter and search criteria
+   * Start fallback polling
    */
-  const filteredNodes = React.useMemo(() => {
+  const startFallbackPolling = useCallback(() => {
+    stopFallbackPolling();
+    
+    // Initial fetch
+    fetchNodesViaAPI();
+    
+    // Set up interval
+    fallbackIntervalRef.current = setInterval(() => {
+      if (!wsConnected || !wsAuthenticated) {
+        fetchNodesViaAPI();
+      }
+    }, MONITOR_CONFIG.FALLBACK_REFRESH_INTERVAL);
+  }, [wsConnected, wsAuthenticated, fetchNodesViaAPI]);
+  
+  /**
+   * Stop fallback polling
+   */
+  const stopFallbackPolling = useCallback(() => {
+    if (fallbackIntervalRef.current) {
+      clearInterval(fallbackIntervalRef.current);
+      fallbackIntervalRef.current = null;
+    }
+  }, []);
+  
+  // ==================== UI EVENT HANDLERS ====================
+  
+  const handleRefreshNodes = useCallback(() => {
+    if (wsConnected && wsAuthenticated) {
+      // For WebSocket, we could send a refresh request
+      // For now, just indicate refresh is automatic
+      setLastUpdate(new Date());
+    } else {
+      fetchNodesViaAPI();
+    }
+  }, [wsConnected, wsAuthenticated, fetchNodesViaAPI]);
+  
+  const handleNodeSelect = useCallback((node) => {
+    setSelectedNode(node);
+    setShowBlockchainModal(true);
+  }, []);
+  
+  const handleSubscribeToNode = useCallback((nodeId) => {
+    if (wsConnected && wsAuthenticated) {
+      subscribeToNode(nodeId);
+    }
+  }, [wsConnected, wsAuthenticated, subscribeToNode]);
+  
+  const handleUnsubscribeFromNode = useCallback((nodeId) => {
+    if (wsConnected && wsAuthenticated) {
+      unsubscribeFromNode(nodeId);
+    }
+  }, [wsConnected, wsAuthenticated, unsubscribeFromNode]);
+  
+  // ==================== COMPUTED VALUES ====================
+  
+  const filteredNodes = useMemo(() => {
     return nodes.filter(node => {
-      // Apply status filter
       let matchesFilter = false;
       
       switch (filter) {
@@ -469,24 +584,33 @@ export default function NodesPage() {
           matchesFilter = node.status === filter;
       }
       
-      // Apply search filter
       const matchesSearch = searchTerm === '' || 
         node.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        node.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        node.referenceCode.toLowerCase().includes(searchTerm.toLowerCase());
+        node.id.toLowerCase().includes(searchTerm.toLowerCase());
       
       return matchesFilter && matchesSearch;
     });
   }, [nodes, filter, searchTerm]);
-
-  // ==================== RENDER GUARDS ====================
   
-  // Redirect if wallet not connected
+  const connectionStatus = useMemo(() => {
+    if (wsConnected && wsAuthenticated && wsMonitoring) {
+      return { type: 'realtime', label: 'Real-time', color: 'green' };
+    } else if (wsConnected && wsAuthenticated) {
+      return { type: 'connected', label: 'Connected', color: 'blue' };
+    } else if (wsConnected) {
+      return { type: 'authenticating', label: 'Authenticating', color: 'yellow' };
+    } else if (fallbackIntervalRef.current) {
+      return { type: 'polling', label: 'Polling', color: 'orange' };
+    } else {
+      return { type: 'disconnected', label: 'Disconnected', color: 'red' };
+    }
+  }, [wsConnected, wsAuthenticated, wsMonitoring]);
+  
+  // ==================== RENDER ====================
+  
   if (!wallet.connected) {
     return null;
   }
-
-  // ==================== RENDER COMPONENT ====================
   
   return (
     <div className="min-h-screen flex flex-col bg-background">
@@ -512,17 +636,28 @@ export default function NodesPage() {
             </div>
             
             {/* Action Buttons */}
-            <div className="flex gap-3">
+            <div className="flex items-center gap-3">
+              {/* Connection Status */}
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-md bg-${connectionStatus.color}-900/30 border border-${connectionStatus.color}-800`}>
+                <div className={`w-2 h-2 rounded-full bg-${connectionStatus.color}-500 animate-pulse`}></div>
+                <span className={`text-sm text-${connectionStatus.color}-400`}>
+                  {connectionStatus.label}
+                </span>
+              </div>
+              
               <button 
                 onClick={handleRefreshNodes}
-                disabled={isLoading}
-                className={`button-outline flex items-center gap-2 ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                aria-label="Refresh nodes data"
+                disabled={isInitialLoading || isFallbackLoading}
+                className={`button-outline flex items-center gap-2 ${
+                  isInitialLoading || isFallbackLoading ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
               >
-                <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${isLoading ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${
+                  isFallbackLoading ? 'animate-spin' : ''
+                }`} viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
                 </svg>
-                {isLoading ? 'Refreshing...' : 'Refresh'}
+                {isFallbackLoading ? 'Refreshing...' : 'Refresh'}
               </button>
               
               <Link 
@@ -537,6 +672,35 @@ export default function NodesPage() {
             </div>
           </div>
         </div>
+
+        {/* Real-time Monitor Toggle */}
+        {MONITOR_CONFIG.ENABLE_REALTIME && wsConnected && (
+          <div className="mb-6">
+            <button
+              onClick={() => setShowRealtimeMonitor(!showRealtimeMonitor)}
+              className="text-sm text-primary hover:text-primary-400 flex items-center gap-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 transition-transform ${
+                showRealtimeMonitor ? 'rotate-90' : ''
+              }`} viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+              </svg>
+              {showRealtimeMonitor ? 'Hide' : 'Show'} Real-time Monitor
+            </button>
+          </div>
+        )}
+
+        {/* Real-time Monitor Component */}
+        {MONITOR_CONFIG.ENABLE_REALTIME && showRealtimeMonitor && wsConnected && (
+          <RealTimeNodeMonitor 
+            nodes={nodes}
+            performanceAlerts={performanceAlerts}
+            lastUpdate={lastUpdate}
+            updateSource={updateSource}
+            connectionStatus={connectionStatus}
+            onClearAlerts={() => setPerformanceAlerts([])}
+          />
+        )}
 
         {/* Error Display */}
         {error && (
@@ -558,7 +722,7 @@ export default function NodesPage() {
         )}
 
         {/* Node Statistics */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
           <div className="card glass-effect">
             <h3 className="text-sm text-gray-400 mb-1">Total Nodes</h3>
             <div className="text-2xl font-bold">{nodeStats.total}</div>
@@ -566,6 +730,10 @@ export default function NodesPage() {
           <div className="card glass-effect">
             <h3 className="text-sm text-gray-400 mb-1">Online</h3>
             <div className="text-2xl font-bold text-green-500">{nodeStats.online}</div>
+          </div>
+          <div className="card glass-effect">
+            <h3 className="text-sm text-gray-400 mb-1">Active</h3>
+            <div className="text-2xl font-bold text-blue-500">{nodeStats.active}</div>
           </div>
           <div className="card glass-effect">
             <h3 className="text-sm text-gray-400 mb-1">Offline</h3>
@@ -581,7 +749,6 @@ export default function NodesPage() {
         <div className="mb-8">
           <div className="card glass-effect overflow-hidden">
             <div className="flex flex-col md:flex-row">
-              {/* Stats and Info */}
               <div className="p-6 md:w-1/2">
                 <div className="flex items-center gap-2 mb-3">
                   <svg viewBox="0 0 24 24" className="h-6 w-6 text-primary" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -596,29 +763,6 @@ export default function NodesPage() {
                   Supercharge your AeroNyx nodes by integrating with leading blockchains. Unlock additional revenue streams and contribute to decentralized networks.
                 </p>
                 
-                <div className="space-y-5 mb-6">
-                  <div className="flex justify-between items-center">
-                    <div className="text-sm">
-                      <div className="text-gray-400">Nodes with blockchain integrations</div>
-                      <div className="flex items-center gap-1">
-                        <div className="font-bold text-lg">{blockchainStats.blockchainNodes}</div>
-                        <div className="text-xs text-gray-400">of {blockchainStats.totalNodes}</div>
-                      </div>
-                    </div>
-                    
-                    <div className="h-10 w-10 rounded-full bg-background-100 flex items-center justify-center">
-                      <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center text-xs font-bold">
-                        {blockchainStats.totalNodes > 0 ? Math.round((blockchainStats.blockchainNodes / blockchainStats.totalNodes) * 100) : 0}%
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div className="text-sm text-gray-400 mb-1">Potential additional monthly earnings</div>
-                    <div className="text-2xl font-bold">${blockchainStats.potentialEarnings.toFixed(2)}</div>
-                  </div>
-                </div>
-                
                 <button
                   onClick={() => setShowBlockchainModal(true)}
                   className="button-primary w-full py-3"
@@ -627,43 +771,28 @@ export default function NodesPage() {
                 </button>
               </div>
               
-              {/* Blockchain Logos */}
-              <div className="md:w-1/2 bg-gradient-to-br from-background-100 via-background-50 to-background-100 p-6 flex flex-col justify-between">
-                <div>
-                  <div className="text-sm text-gray-400 mb-4">Compatible with leading blockchains</div>
-                  
-                  <div className="grid grid-cols-3 gap-4 mb-8">
-                    <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
-                      <img src="/images/solana-logo.svg" alt="Solana" className="h-8 mb-2" />
-                      <div className="text-xs font-medium text-center">Solana</div>
-                    </div>
-                    
-                    <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
-                      <img src="/images/monad-logo.svg" alt="Monad" className="h-8 mb-2" />
-                      <div className="text-xs font-medium text-center">Monad</div>
-                    </div>
-                    
-                    <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
-                      <div className="h-8 mb-2 flex items-center justify-center text-gray-400">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                        </svg>
-                      </div>
-                      <div className="text-xs font-medium text-center text-gray-400">Coming Soon</div>
-                    </div>
-                  </div>
-                </div>
+              <div className="md:w-1/2 bg-gradient-to-br from-background-100 via-background-50 to-background-100 p-6">
+                <div className="text-sm text-gray-400 mb-4">Compatible with leading blockchains</div>
                 
-                <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-500" viewBox="0 0 20 20" fill="currentColor">
-                      <path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 5.757a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464A1 1 0 106.464 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zM5 10a1 1 0 01-1 1H3a1 1 0 110-2h1a1 1 0 011 1zM8 16v-1h4v1a2 2 0 11-4 0zM12 14c.015-.34.208-.646.477-.859a4 4 0 10-4.954 0c.27.213.462.519.476.859h4.002z" />
-                    </svg>
-                    <h4 className="font-bold">Pro tip</h4>
+                <div className="grid grid-cols-3 gap-4 mb-8">
+                  <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
+                    <img src="/images/solana-logo.svg" alt="Solana" className="h-8 mb-2" />
+                    <div className="text-xs font-medium text-center">Solana</div>
                   </div>
-                  <p className="text-xs text-gray-300">
-                    Nodes with blockchain integrations report 35% higher total earnings on average. Validators on multiple networks create resilient, diversified income streams.
-                  </p>
+                  
+                  <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
+                    <img src="/images/monad-logo.svg" alt="Monad" className="h-8 mb-2" />
+                    <div className="text-xs font-medium text-center">Monad</div>
+                  </div>
+                  
+                  <div className="bg-white/5 backdrop-blur-sm rounded-lg p-4 flex flex-col items-center">
+                    <div className="h-8 mb-2 flex items-center justify-center text-gray-400">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                    </div>
+                    <div className="text-xs font-medium text-center text-gray-400">Coming Soon</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -672,7 +801,6 @@ export default function NodesPage() {
 
         {/* Filter and Search Controls */}
         <div className="flex flex-col md:flex-row gap-4 mb-6">
-          {/* Status Filter */}
           <div className="flex">
             {[
               { key: 'all', label: 'All' },
@@ -696,7 +824,6 @@ export default function NodesPage() {
             ))}
           </div>
           
-          {/* Search Input */}
           <div className="flex-grow">
             <div className="relative">
               <input
@@ -716,7 +843,7 @@ export default function NodesPage() {
         </div>
 
         {/* Nodes List or Empty State */}
-        {isLoading ? (
+        {isInitialLoading ? (
           <div className="flex justify-center items-center h-64">
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
           </div>
@@ -724,7 +851,13 @@ export default function NodesPage() {
           <NodeList 
             nodes={filteredNodes} 
             onBlockchainIntegrate={handleNodeSelect}
-            onNodeDetails={fetchNodeDetails}
+            onNodeDetails={async (referenceCode) => {
+              // Detailed node status can be fetched here if needed
+              return null;
+            }}
+            onNodeSubscribe={handleSubscribeToNode}
+            onNodeUnsubscribe={handleUnsubscribeFromNode}
+            isRealtime={wsConnected && wsMonitoring}
           />
         ) : (
           <div className="card glass-effect p-8 text-center">
@@ -749,10 +882,11 @@ export default function NodesPage() {
           </div>
         )}
         
-        {/* Refresh Information */}
-        {lastRefresh && (
+        {/* Update Information */}
+        {lastUpdate && (
           <div className="mt-6 text-center text-sm text-gray-400">
-            Last updated: {lastRefresh.toLocaleString()}
+            Last updated: {lastUpdate.toLocaleString()} 
+            {updateSource && ` (via ${updateSource})`}
           </div>
         )}
       </main>
@@ -766,19 +900,6 @@ export default function NodesPage() {
         />
       )}
       
-      {/* Debug Component (Development Only) */}
-      {process.env.NODE_ENV === 'development' && rawApiResponse && (
-        <div className="fixed bottom-4 right-4 z-50">
-          <details className="bg-black text-green-400 p-4 rounded-md border border-gray-600 font-mono text-xs max-w-md">
-            <summary className="cursor-pointer text-white font-bold mb-2">🐛 Debug Data</summary>
-            <pre className="whitespace-pre-wrap break-all max-h-64 overflow-auto">
-              {JSON.stringify(rawApiResponse, null, 2)}
-            </pre>
-          </details>
-        </div>
-      )}
-      
-      {/* Footer */}
       <footer className="bg-background-100 border-t border-background-200 py-4">
         <div className="container-custom">
           <div className="text-sm text-gray-400 text-center">
