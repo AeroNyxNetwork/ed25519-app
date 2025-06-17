@@ -1,5 +1,6 @@
 /**
  * Node Performance Chart Component for AeroNyx Dashboard
+ * Enhanced version with signature prop support
  * 
  * File Path: src/components/dashboard/NodePerformanceChart.js
  * 
@@ -11,12 +12,13 @@
  * - Real-time performance data visualization
  * - Multiple time range support (1h, 6h, 24h, 3d, 7d)
  * - Multiple chart types (CPU, Memory, Bandwidth, Storage)
+ * - Uses provided signature to avoid repeated auth requests
  * - Intelligent caching for performance optimization
  * - Graceful fallback to mock data during development
  * - Responsive SVG-based charts
  * - Comprehensive error handling
  * 
- * @version 1.0.0
+ * @version 1.1.0
  * @author AeroNyx Development Team
  */
 
@@ -24,6 +26,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
 import nodeRegistrationService from '../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../lib/utils/walletSignature';
+import { useSignature } from '../../hooks/useSignature';
 
 /**
  * Chart configuration constants
@@ -51,8 +54,15 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache duration
  * @param {Object} props - Component props
  * @param {string} props.nodeId - Node reference code for fetching data
  * @param {number} props.height - Chart height in pixels (default: 300)
+ * @param {string} props.signature - Optional pre-generated signature
+ * @param {string} props.message - Optional pre-generated message
  */
-export default function NodePerformanceChart({ nodeId, height = 300 }) {
+export default function NodePerformanceChart({ 
+  nodeId, 
+  height = 300,
+  signature: providedSignature,
+  message: providedMessage 
+}) {
   const { wallet } = useWallet();
   
   // ==================== STATE MANAGEMENT ====================
@@ -63,6 +73,16 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
   const [timeRange, setTimeRange] = useState(24); // Default to 24 hours
   const [chartType, setChartType] = useState('cpu'); // Default to CPU
   const [cache, setCache] = useState(new Map());
+
+  // Use provided signature or generate new one
+  const { 
+    signature: generatedSignature, 
+    message: generatedMessage,
+    isGenerating: isGeneratingSignature
+  } = useSignature('performanceChart');
+  
+  const signature = providedSignature || generatedSignature;
+  const message = providedMessage || generatedMessage;
 
   // ==================== MEMOIZED VALUES ====================
   
@@ -88,7 +108,7 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
    * Fetch performance data from API with caching
    */
   const fetchPerformanceData = useCallback(async () => {
-    if (!wallet.connected || !nodeId) return;
+    if (!wallet.connected || !nodeId || !signature || !message) return;
 
     // Check cache first
     const cachedData = cache.get(cacheKey);
@@ -101,18 +121,7 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
     setError(null);
 
     try {
-      // Generate signature for API authentication
-      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-      
-      if (!messageResponse.success) {
-        throw new Error(messageResponse.message || 'Failed to generate signature message');
-      }
-
-      const message = messageResponse.data.message;
-      const formattedMessage = formatMessageForSigning(message);
-      const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
-
-      // Fetch performance history from API
+      // Fetch performance history from API using provided or generated signature
       const performanceResponse = await nodeRegistrationService.getNodePerformanceHistory(
         wallet.address,
         signature,
@@ -150,7 +159,7 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
     } finally {
       setLoading(false);
     }
-  }, [wallet.connected, wallet.address, wallet.provider, nodeId, timeRange, cacheKey, cache, isCacheValid]);
+  }, [wallet.connected, wallet.address, nodeId, timeRange, cacheKey, cache, isCacheValid, signature, message]);
 
   /**
    * Generate mock performance data for development/demo
@@ -232,10 +241,10 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
   // ==================== LIFECYCLE HOOKS ====================
   
   useEffect(() => {
-    if (nodeId && wallet.connected) {
+    if (nodeId && wallet.connected && signature && message) {
       fetchPerformanceData();
     }
-  }, [nodeId, wallet.connected, timeRange, fetchPerformanceData]);
+  }, [nodeId, wallet.connected, timeRange, signature, message, fetchPerformanceData]);
 
   // ==================== EVENT HANDLERS ====================
   
@@ -411,7 +420,7 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
 
   // ==================== MAIN RENDER ====================
   
-  if (loading) {
+  if (loading || isGeneratingSignature) {
     return (
       <div className="bg-background-100 rounded-lg p-4">
         <div className="flex items-center justify-center" style={{ height: `${height}px` }}>
@@ -485,6 +494,13 @@ export default function NodePerformanceChart({ nodeId, height = 300 }) {
       
       {/* Chart Visualization */}
       <LineChart />
+      
+      {/* Signature Status (Development Only) */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="mt-2 text-xs text-gray-500">
+          Using {providedSignature ? 'provided' : 'generated'} signature
+        </div>
+      )}
     </div>
   );
 }
