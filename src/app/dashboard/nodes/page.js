@@ -1,12 +1,12 @@
 /**
- * Enhanced AeroNyx Nodes Management Dashboard with Real-time Updates
+ * Enhanced AeroNyx Nodes Management Dashboard with Real-time Updates and Caching
  * 
  * File Path: src/app/dashboard/nodes/page.js
  * 
  * Production-ready dashboard with real-time WebSocket monitoring,
- * automatic updates, and performance optimizations.
+ * automatic updates, performance optimizations, and proper caching.
  * 
- * @version 2.0.0
+ * @version 2.1.0
  * @author AeroNyx Development Team
  */
 
@@ -21,8 +21,9 @@ import NodeList from '../../../components/dashboard/NodeList';
 import BlockchainIntegrationModule from '../../../components/dashboard/BlockchainIntegrationModule';
 import RealTimeNodeMonitor from '../../../components/dashboard/RealTimeNodeMonitor';
 import { useUserMonitorWebSocket } from '../../../hooks/useWebSocket';
-import nodeRegistrationService from '../../../lib/api/nodeRegistration';
-import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
+import nodeRegistrationCachedService from '../../../lib/api/nodeRegistrationCached';
+import { useSignature } from '../../../hooks/useSignature';
+import { apiCacheService } from '../../../lib/services/ApiCacheService';
 
 /**
  * Configuration constants
@@ -40,11 +41,14 @@ const MONITOR_CONFIG = {
 };
 
 /**
- * Enhanced Nodes Management Page with Real-time Updates
+ * Enhanced Nodes Management Page with Real-time Updates and Caching
  */
 export default function NodesPage() {
   const { wallet } = useWallet();
   const router = useRouter();
+  
+  // Use cached signature
+  const { signature, message, isLoading: signatureLoading } = useSignature('nodesPage');
   
   // ==================== STATE MANAGEMENT ====================
   
@@ -81,32 +85,17 @@ export default function NodesPage() {
   
   // ==================== WEBSOCKET SETUP ====================
   
-  // Initialize wallet credentials for WebSocket
+  // Initialize wallet credentials for WebSocket using cached signature
   useEffect(() => {
-    const initCredentials = async () => {
-      if (!wallet.connected || !wallet.address) return;
-      
-      try {
-        const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-        const message = messageResponse.data.message;
-        const formattedMessage = formatMessageForSigning(message);
-        const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
-        
-        setWalletCredentials({
-          walletAddress: wallet.address,
-          signature,
-          message,
-          walletType: 'okx'
-        });
-      } catch (error) {
-        console.error('Failed to initialize WebSocket credentials:', error);
-        // Fallback to API polling if WebSocket auth fails
-        startFallbackPolling();
-      }
-    };
+    if (!wallet.connected || !wallet.address || !signature || !message || signatureLoading) return;
     
-    initCredentials();
-  }, [wallet.connected, wallet.address, wallet.provider]);
+    setWalletCredentials({
+      walletAddress: wallet.address,
+      signature,
+      message,
+      walletType: 'okx'
+    });
+  }, [wallet.connected, wallet.address, signature, message, signatureLoading]);
   
   // WebSocket hook
   const {
@@ -138,12 +127,14 @@ export default function NodesPage() {
     // Initial data load with delay to prevent flash
     const loadTimer = setTimeout(() => {
       if (!wsConnected || !wsAuthenticated) {
-        fetchNodesViaAPI();
+        if (signature && message && !signatureLoading) {
+          fetchNodesViaAPI();
+        }
       }
     }, MONITOR_CONFIG.INITIAL_LOAD_DELAY);
     
     return () => clearTimeout(loadTimer);
-  }, [wallet.connected, wsConnected, wsAuthenticated, router]);
+  }, [wallet.connected, wsConnected, wsAuthenticated, router, signature, message, signatureLoading]);
   
   /**
    * Start WebSocket monitoring when authenticated
@@ -447,18 +438,13 @@ export default function NodesPage() {
    * Fetch nodes data via API (fallback when WebSocket unavailable)
    */
   const fetchNodesViaAPI = useCallback(async () => {
-    if (!wallet.connected || !wallet.address) return;
+    if (!wallet.connected || !wallet.address || !signature || !message) return;
     
     setIsFallbackLoading(true);
     setError(null);
     
     try {
-      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-      const message = messageResponse.data.message;
-      const formattedMessage = formatMessageForSigning(message);
-      const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
-      
-      const overviewResponse = await nodeRegistrationService.getUserNodesOverview(
+      const overviewResponse = await nodeRegistrationCachedService.getUserNodesOverview(
         wallet.address,
         signature,
         message,
@@ -503,7 +489,7 @@ export default function NodesPage() {
     } finally {
       setIsFallbackLoading(false);
     }
-  }, [wallet.connected, wallet.address, wallet.provider, processNodesUpdate]);
+  }, [wallet.connected, wallet.address, signature, message, processNodesUpdate]);
   
   /**
    * Start fallback polling
@@ -512,15 +498,17 @@ export default function NodesPage() {
     stopFallbackPolling();
     
     // Initial fetch
-    fetchNodesViaAPI();
+    if (signature && message) {
+      fetchNodesViaAPI();
+    }
     
     // Set up interval
     fallbackIntervalRef.current = setInterval(() => {
-      if (!wsConnected || !wsAuthenticated) {
+      if ((!wsConnected || !wsAuthenticated) && signature && message) {
         fetchNodesViaAPI();
       }
     }, MONITOR_CONFIG.FALLBACK_REFRESH_INTERVAL);
-  }, [wsConnected, wsAuthenticated, fetchNodesViaAPI]);
+  }, [wsConnected, wsAuthenticated, fetchNodesViaAPI, signature, message]);
   
   /**
    * Stop fallback polling
@@ -540,9 +528,11 @@ export default function NodesPage() {
       // For now, just indicate refresh is automatic
       setLastUpdate(new Date());
     } else {
+      // Clear cache for fresh data
+      apiCacheService.clearCacheByPattern(`nodesOverview|walletAddress:${wallet.address}`);
       fetchNodesViaAPI();
     }
-  }, [wsConnected, wsAuthenticated, fetchNodesViaAPI]);
+  }, [wsConnected, wsAuthenticated, fetchNodesViaAPI, wallet.address]);
   
   const handleNodeSelect = useCallback((node) => {
     setSelectedNode(node);
@@ -560,6 +550,31 @@ export default function NodesPage() {
       unsubscribeFromNode(nodeId);
     }
   }, [wsConnected, wsAuthenticated, unsubscribeFromNode]);
+  
+  /**
+   * Fetch node details (used by NodeList)
+   */
+  const fetchNodeDetails = useCallback(async (referenceCode) => {
+    if (!signature || !message) return null;
+    
+    try {
+      const response = await nodeRegistrationCachedService.getNodeDetailedStatus(
+        wallet.address,
+        signature,
+        message,
+        referenceCode,
+        'okx'
+      );
+      
+      if (response.success) {
+        return response.data;
+      }
+    } catch (error) {
+      console.error('Failed to fetch node details:', error);
+    }
+    
+    return null;
+  }, [wallet.address, signature, message]);
   
   // ==================== COMPUTED VALUES ====================
   
@@ -612,6 +627,8 @@ export default function NodesPage() {
     return null;
   }
   
+  const isLoading = isInitialLoading || signatureLoading;
+  
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <Header />
@@ -647,9 +664,9 @@ export default function NodesPage() {
               
               <button 
                 onClick={handleRefreshNodes}
-                disabled={isInitialLoading || isFallbackLoading}
+                disabled={isLoading || isFallbackLoading}
                 className={`button-outline flex items-center gap-2 ${
-                  isInitialLoading || isFallbackLoading ? 'opacity-50 cursor-not-allowed' : ''
+                  isLoading || isFallbackLoading ? 'opacity-50 cursor-not-allowed' : ''
                 }`}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${
@@ -843,7 +860,7 @@ export default function NodesPage() {
         </div>
 
         {/* Nodes List or Empty State */}
-        {isInitialLoading ? (
+        {isLoading ? (
           <div className="flex justify-center items-center h-64">
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
           </div>
@@ -851,13 +868,12 @@ export default function NodesPage() {
           <NodeList 
             nodes={filteredNodes} 
             onBlockchainIntegrate={handleNodeSelect}
-            onNodeDetails={async (referenceCode) => {
-              // Detailed node status can be fetched here if needed
-              return null;
-            }}
+            onNodeDetails={fetchNodeDetails}
             onNodeSubscribe={handleSubscribeToNode}
             onNodeUnsubscribe={handleUnsubscribeFromNode}
             isRealtime={wsConnected && wsMonitoring}
+            signature={signature}
+            message={message}
           />
         ) : (
           <div className="card glass-effect p-8 text-center">
