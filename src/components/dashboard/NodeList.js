@@ -1,18 +1,20 @@
 /**
  * Enhanced Node List Component for AeroNyx Dashboard - Production Ready
+ * Fixed version with compatible icons
  * 
  * File Path: src/components/dashboard/NodeList.js
  * 
  * Production-ready node list component without earnings display,
  * focusing on operational metrics and node health.
  * 
- * @version 2.0.0
+ * @version 2.1.0
  * @author AeroNyx Development Team
  */
 
 import React, { useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import NodePerformanceChart from './NodePerformanceChart';
+import { useSignature } from '../../hooks/useSignature';
 
 // Node type configuration
 const NODE_TYPE_CONFIG = {
@@ -84,6 +86,9 @@ const STATUS_CONFIG = {
 export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }) {
   const [expandedNode, setExpandedNode] = useState(null);
   const [performanceData, setPerformanceData] = useState({});
+  
+  // Use cached signature
+  const { signature, message } = useSignature('nodeList');
 
   // Utility functions
   const formatDate = useCallback((dateString) => {
@@ -406,6 +411,31 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
     </div>
   ), [handleBlockchainIntegration]);
 
+  // Fixed render method for the performance section
+  const renderPerformanceSection = useCallback((node) => {
+    if (!node.referenceCode) return null;
+
+    return (
+      <div className="mt-4 pt-4 border-t border-background-200">
+        <h4 className="font-bold mb-3 flex items-center gap-2">
+          {/* Fixed SVG icon - using simpler bar chart icon */}
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="13" width="4" height="8" rx="1" />
+            <rect x="10" y="8" width="4" height="13" rx="1" />
+            <rect x="17" y="3" width="4" height="18" rx="1" />
+          </svg>
+          24h Performance
+        </h4>
+        <NodePerformanceChart 
+          nodeId={node.referenceCode}
+          height={200}
+          signature={signature}
+          message={message}
+        />
+      </div>
+    );
+  }, [signature, message]);
+
   return (
     <div className="space-y-4">
       {nodesWithComputedData.map((node) => (
@@ -533,20 +563,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
                 <div>
                   {renderNodeControls(node)}
                   
-                  {node.referenceCode && (
-                    <div className="mt-4 pt-4 border-t border-background-200">
-                      <h4 className="font-bold mb-3 flex items-center gap-2">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
-                          <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
-                        </svg>
-                        24h Performance
-                      </h4>
-                      <NodePerformanceChart 
-                        nodeId={node.referenceCode}
-                        height={200}
-                      />
-                    </div>
-                  )}
+                  {renderPerformanceSection(node)}
                   
                   {renderBlockchainIntegration(node)}
                   
