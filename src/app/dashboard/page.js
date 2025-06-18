@@ -1,443 +1,585 @@
 /**
- * AeroNyx Dashboard Page - Production Ready
+ * Enhanced Dashboard Page for AeroNyx Platform
+ * Production-ready version with WebSocket integration
  * 
  * File Path: src/app/dashboard/page.js
  * 
- * Production-ready dashboard focusing on node management without financial metrics.
- * Implements comprehensive caching and performance optimizations.
+ * Features:
+ * - Real-time data updates via WebSocket
+ * - Intelligent fallback to REST API
+ * - Comprehensive error handling
+ * - Performance monitoring
+ * - Financial metrics display
+ * - Responsive design
  * 
- * @version 2.0.0
+ * @version 3.0.0
  * @author AeroNyx Development Team
  */
 
 'use client';
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useWallet } from '../../components/wallet/WalletProvider';
-import useEnhancedDashboardWithWebSocket from '../../hooks/useEnhancedDashboardWithWebSocket';
+import { useWebSocketContext } from '../../components/providers/WebSocketProvider';
+import { useDashboard } from '../../hooks/useDashboardData';
+import { useSignature } from '../../hooks/useSignature';
 
-// Components
+// Dashboard Components
 import DashboardStatsCard from '../../components/dashboard/DashboardStatsCard';
-import MetricsOverview from '../../components/dashboard/MetricsOverview';
+import NodeList from '../../components/dashboard/NodeList';
 import QuickActionButton from '../../components/dashboard/QuickActionButton';
+import MetricsOverview from '../../components/dashboard/MetricsOverview';
+import RealTimeNodeMonitor from '../../components/dashboard/RealTimeDashboard';
 import BlockchainIntegrationModule from '../../components/dashboard/BlockchainIntegrationModule';
 
-// Loading and error components
-const LoadingDashboard = () => (
-  <div className="animate-pulse space-y-6">
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-      {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="h-32 bg-background-100 rounded-lg"></div>
-      ))}
-    </div>
-    <div className="h-96 bg-background-100 rounded-lg"></div>
-  </div>
-);
+// API Service
+import nodeRegistrationService from '../../lib/api/nodeRegistration';
 
-const ErrorDashboard = ({ error, onRetry, connectionHealth }) => (
-  <div className="text-center py-12">
-    <div className="max-w-md mx-auto">
-      <div className="text-red-400 mb-4">
-        <svg className="h-16 w-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
-                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 19c-.77.833.192 2.5 1.732 2.5z" />
-        </svg>
-      </div>
-      <h3 className="text-lg font-semibold text-white mb-2">Dashboard Connection Error</h3>
-      <p className="text-gray-400 mb-4">
-        {error?.message || 'Failed to load dashboard data'}
-      </p>
-      <div className="mb-4">
-        <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm 
-          bg-${connectionHealth.color}-900/30 text-${connectionHealth.color}-400 
-          border border-${connectionHealth.color}-800`}>
-          <div className={`w-2 h-2 rounded-full bg-${connectionHealth.color}-500 mr-2`}></div>
-          {connectionHealth.label}
-        </span>
-      </div>
-      <button
-        onClick={onRetry}
-        className="button-primary"
-      >
-        Retry Connection
-      </button>
-    </div>
-  </div>
-);
-
+/**
+ * Main Dashboard Page Component
+ * Provides comprehensive overview of user's AeroNyx nodes with real-time monitoring
+ */
 export default function DashboardPage() {
+  const router = useRouter();
   const { wallet } = useWallet();
-  const [selectedBlockchainNode, setSelectedBlockchainNode] = useState(null);
-  const [showDataSourceSelector, setShowDataSourceSelector] = useState(false);
+  const { userMonitorService, isInitialized: wsInitialized } = useWebSocketContext();
+  const { signature, message } = useSignature('dashboard');
 
-  // Enhanced dashboard hook with WebSocket integration
+  // ==================== STATE MANAGEMENT ====================
+  
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [blockchainModalOpen, setBlockchainModalOpen] = useState(false);
+  const [performanceAlerts, setPerformanceAlerts] = useState([]);
+  const [selectedTimeframe, setSelectedTimeframe] = useState('24h');
+  const [showAllNodes, setShowAllNodes] = useState(false);
+
+  // ==================== WEBSOCKET DATA HOOK ====================
+  
   const {
     dashboardData,
     nodesOverview,
-    isLoading,
+    stats,
+    isInitialLoading,
     isRefreshing,
+    hasData,
     error,
     dataSource,
-    dataSourceInfo,
     connectionHealth,
-    wsConnected,
-    wsMonitoring,
-    stats,
-    refresh,
-    switchDataSource,
-    startRealtimeMonitoring,
-    stopRealtimeMonitoring,
     isRealtime,
-    hasRealTimeData,
-    hasRESTData
-  } = useEnhancedDashboardWithWebSocket({
+    lastUpdate,
+    refresh,
+    startRealtimeMonitoring,
+    stopRealtimeMonitoring
+  } = useDashboard({
     preferWebSocket: true,
     enableRESTFallback: true,
     hybridMode: true,
+    restInterval: 60000, // Refresh every minute if not using WebSocket
+    enableCache: true,
     onDataUpdate: handleDataUpdate,
-    onError: handleDashboardError
+    onError: handleDataError
   });
 
+  // ==================== DATA PROCESSING ====================
+  
   /**
-   * Handle data updates
+   * Process nodes for display
+   */
+  const displayNodes = useMemo(() => {
+    if (!nodesOverview?.nodes) return [];
+    
+    const allNodes = [];
+    
+    // Flatten grouped nodes
+    if (nodesOverview.nodes.online) {
+      allNodes.push(...nodesOverview.nodes.online);
+    }
+    if (nodesOverview.nodes.active) {
+      allNodes.push(...nodesOverview.nodes.active);
+    }
+    if (nodesOverview.nodes.offline) {
+      allNodes.push(...nodesOverview.nodes.offline);
+    }
+    
+    // Sort by status (online first) and name
+    allNodes.sort((a, b) => {
+      if (a.is_connected && !b.is_connected) return -1;
+      if (!a.is_connected && b.is_connected) return 1;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+    
+    // Return limited nodes for dashboard preview
+    return showAllNodes ? allNodes : allNodes.slice(0, 4);
+  }, [nodesOverview, showAllNodes]);
+
+  /**
+   * Calculate financial metrics
+   */
+  const financialMetrics = useMemo(() => {
+    const totalEarnings = parseFloat(stats.totalEarnings) || 0;
+    const activeNodes = stats.activeNodes || 0;
+    const totalNodes = stats.totalNodes || 0;
+    
+    // Calculate metrics
+    const dailyYield = activeNodes > 0 ? totalEarnings / 30 : 0; // Rough estimate
+    const monthlyProjection = dailyYield * 30;
+    const apy = totalNodes > 0 ? (monthlyProjection * 12 / (totalNodes * 100)) * 100 : 0; // Rough APY
+    const roi = totalEarnings > 0 ? ((totalEarnings / (totalNodes * 100)) * 100) : 0; // Rough ROI
+    
+    return {
+      totalValue: totalEarnings,
+      dailyYield: dailyYield.toFixed(2),
+      monthlyProjection: monthlyProjection.toFixed(2),
+      apy: apy.toFixed(2),
+      roi: roi.toFixed(2),
+      riskScore: activeNodes === totalNodes ? 10 : 30, // Simple risk calculation
+      efficiencyRating: stats.resourceUtilization || 0,
+      diversificationScore: 75 // Placeholder
+    };
+  }, [stats]);
+
+  /**
+   * Calculate performance trends
+   */
+  const performanceTrends = useMemo(() => {
+    // Calculate trends based on recent data
+    const trends = {
+      earningsTrend: {
+        direction: 'up',
+        percentage: 5.2 // Placeholder - would calculate from historical data
+      },
+      nodeTrend: {
+        direction: stats.activeNodes > 0 ? 'up' : 'stable',
+        percentage: 0
+      },
+      healthTrend: {
+        direction: 'stable',
+        percentage: 0
+      }
+    };
+    
+    return trends;
+  }, [stats]);
+
+  // ==================== EVENT HANDLERS ====================
+  
+  /**
+   * Handle data updates from WebSocket/REST
    */
   function handleDataUpdate(data, source) {
-    console.log(`[Dashboard] Data updated from ${source}:`, data);
+    console.log(`[Dashboard] Data updated from ${source}`);
+    
+    // Check for performance alerts
+    if (data.nodes) {
+      const alerts = [];
+      const criticalNodes = [];
+      
+      data.nodes.forEach(node => {
+        const cpu = node.performance?.cpu_usage || 0;
+        const memory = node.performance?.memory_usage || 0;
+        
+        if (cpu > 90) {
+          alerts.push({
+            nodeId: node.reference_code,
+            message: `High CPU usage (${cpu}%) on ${node.name}`,
+            severity: 'critical',
+            timestamp: new Date()
+          });
+          criticalNodes.push(node);
+        }
+        
+        if (memory > 90) {
+          alerts.push({
+            nodeId: node.reference_code,
+            message: `High memory usage (${memory}%) on ${node.name}`,
+            severity: 'critical',
+            timestamp: new Date()
+          });
+          if (!criticalNodes.includes(node)) {
+            criticalNodes.push(node);
+          }
+        }
+        
+        // Check for offline nodes
+        if (node.status === 'offline' && node.connection_details?.offline_duration_seconds < 300) {
+          alerts.push({
+            nodeId: node.reference_code,
+            message: `Node ${node.name} went offline`,
+            severity: 'warning',
+            timestamp: new Date()
+          });
+        }
+      });
+      
+      if (alerts.length > 0) {
+        setPerformanceAlerts(prev => [...prev, ...alerts].slice(-20)); // Keep last 20 alerts
+      }
+    }
   }
-
+  
   /**
-   * Handle dashboard errors
+   * Handle data errors
    */
-  function handleDashboardError(error, source) {
+  function handleDataError(error, source) {
     console.error(`[Dashboard] Error from ${source}:`, error);
+    
+    // Add error alert
+    setPerformanceAlerts(prev => [...prev, {
+      nodeId: 'system',
+      message: `Data source error: ${error.message}`,
+      severity: 'error',
+      timestamp: new Date()
+    }].slice(-20));
   }
 
   /**
-   * Handle blockchain integration modal
+   * Handle blockchain integration
    */
-  const handleBlockchainIntegration = useCallback((node) => {
-    setSelectedBlockchainNode(node);
+  const handleBlockchainIntegrate = useCallback((node) => {
+    setSelectedNode(node);
+    setBlockchainModalOpen(true);
   }, []);
 
   /**
-   * Close blockchain integration modal
+   * Handle node details request
    */
-  const closeBlockchainIntegration = useCallback(() => {
-    setSelectedBlockchainNode(null);
+  const handleNodeDetails = useCallback(async (referenceCode) => {
+    if (!signature || !message) return null;
+    
+    try {
+      const response = await nodeRegistrationService.getNodeDetailedStatus(
+        wallet.address,
+        signature,
+        message,
+        referenceCode,
+        'okx'
+      );
+      
+      return response.success ? response.data : null;
+    } catch (error) {
+      console.error('Failed to fetch node details:', error);
+      return null;
+    }
+  }, [wallet.address, signature, message]);
+
+  /**
+   * Clear performance alerts
+   */
+  const clearAlerts = useCallback(() => {
+    setPerformanceAlerts([]);
   }, []);
 
   /**
    * Toggle real-time monitoring
    */
   const toggleRealtimeMonitoring = useCallback(() => {
-    if (wsMonitoring) {
+    if (isRealtime) {
       stopRealtimeMonitoring();
     } else {
       startRealtimeMonitoring();
     }
-  }, [wsMonitoring, startRealtimeMonitoring, stopRealtimeMonitoring]);
+  }, [isRealtime, startRealtimeMonitoring, stopRealtimeMonitoring]);
 
   /**
-   * Switch between data sources
+   * Handle metric selection
    */
-  const handleDataSourceSwitch = useCallback((source) => {
-    switchDataSource(source);
-    setShowDataSourceSelector(false);
-  }, [switchDataSource]);
+  const handleMetricSelect = useCallback((metricId) => {
+    console.log('Selected metric:', metricId);
+    // Could navigate to detailed view or show modal
+  }, []);
 
   /**
-   * Generate dashboard statistics cards
+   * Handle export request
    */
-  const statsCards = useMemo(() => {
-    if (!dashboardData?.stats) return [];
+  const handleExportMetrics = useCallback((metrics, selectedMetric) => {
+    console.log('Exporting metrics:', { metrics, selectedMetric });
+    // Implement export functionality
+  }, []);
 
-    return [
-      {
-        title: 'Total Nodes',
-        value: dashboardData.stats.totalNodes,
-        subtitle: `${dashboardData.stats.activeNodes} active`,
-        icon: 'servers',
-        color: 'primary',
-        trend: { direction: 'up', percentage: 2.1 }
-      },
-      {
-        title: 'Network Status',
-        value: dashboardData.stats.activeNodes > 0 ? 'Online' : 'Offline',
-        subtitle: `${dashboardData.stats.offlineNodes} offline`,
-        icon: 'network',
-        color: dashboardData.stats.activeNodes > 0 ? 'success' : 'error',
-        trend: { direction: dashboardData.stats.activeNodes > 0 ? 'up' : 'down', percentage: 1.2 }
-      },
-      {
-        title: 'Total Earnings',
-        value: dashboardData.stats.totalEarnings,
-        subtitle: 'AeroNyx tokens',
-        icon: 'earnings',
-        color: 'accent',
-        trend: { direction: 'up', percentage: 5.7 }
-      },
-      {
-        title: 'Network Health',
-        value: `${Math.round((dashboardData.stats.activeNodes / Math.max(1, dashboardData.stats.totalNodes)) * 100)}%`,
-        subtitle: 'Overall health score',
-        icon: 'health',
-        color: dashboardData.stats.totalNodes > 0 ? 'success' : 'neutral',
-        trend: { direction: 'stable', percentage: 0.3 }
-      }
-    ];
-  }, [dashboardData]);
+  // ==================== LIFECYCLE ====================
+  
+  useEffect(() => {
+    if (!wallet.connected) {
+      router.push('/');
+    }
+  }, [wallet.connected, router]);
 
-  /**
-   * Render data source indicator
-   */
-  const DataSourceIndicator = () => (
-    <div className="flex items-center gap-2">
-      <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm 
-        bg-${connectionHealth.color}-900/30 text-${connectionHealth.color}-400 
-        border border-${connectionHealth.color}-800`}>
-        <div className={`w-2 h-2 rounded-full bg-${connectionHealth.color}-500 mr-2 
-          ${isRealtime ? 'animate-pulse' : ''}`}></div>
-        {connectionHealth.label}
-      </span>
-      
-      {dataSourceInfo.lastUpdate && (
-        <span className="text-xs text-gray-500">
-          Updated {new Date(dataSourceInfo.lastUpdate).toLocaleTimeString()}
-        </span>
-      )}
-      
-      <button
-        onClick={() => setShowDataSourceSelector(!showDataSourceSelector)}
-        className="text-xs text-gray-400 hover:text-white transition-colors"
-        title="Switch data source"
-      >
-        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
-                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-      </button>
-      
-      {showDataSourceSelector && (
-        <div className="absolute top-8 right-0 bg-background-50 border border-background-200 rounded-lg shadow-lg z-10 p-2">
-          <button
-            onClick={() => handleDataSourceSwitch('websocket')}
-            className={`block w-full text-left px-3 py-2 text-sm rounded transition-colors
-              ${dataSource === 'websocket' ? 'bg-primary text-white' : 'hover:bg-background-100'}`}
-          >
-            🔄 WebSocket (Real-time)
-          </button>
-          <button
-            onClick={() => handleDataSourceSwitch('rest')}
-            className={`block w-full text-left px-3 py-2 text-sm rounded transition-colors
-              ${dataSource === 'rest' ? 'bg-primary text-white' : 'hover:bg-background-100'}`}
-          >
-            📡 REST API (Periodic)
-          </button>
-          <button
-            onClick={() => handleDataSourceSwitch('hybrid')}
-            className="block w-full text-left px-3 py-2 text-sm rounded hover:bg-background-100"
-          >
-            🔀 Hybrid Mode
-          </button>
-        </div>
-      )}
-    </div>
-  );
+  // ==================== RENDER ====================
+  
+  if (!wallet.connected) {
+    return null;
+  }
 
-  // Handle wallet not connected
-  if (!wallet?.connected) {
+  if (isInitialLoading) {
     return (
-      <div className="text-center py-12">
-        <h2 className="text-2xl font-bold mb-4">Connect Your Wallet</h2>
-        <p className="text-gray-400 mb-6">
-          Please connect your wallet to access the dashboard
-        </p>
+      <div className="container-custom mx-auto px-4 py-8">
+        <div className="flex items-center justify-center min-h-[600px]">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary mx-auto mb-4"></div>
+            <h3 className="text-lg font-semibold mb-2">Loading Dashboard</h3>
+            <p className="text-gray-400">Connecting to AeroNyx network...</p>
+          </div>
+        </div>
       </div>
     );
   }
 
-  // Handle loading state
-  if (isLoading && !dashboardData) {
-    return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold">Dashboard</h1>
-          <div className="animate-pulse h-8 w-32 bg-background-100 rounded"></div>
-        </div>
-        <LoadingDashboard />
-      </div>
-    );
-  }
-
-  // Handle error state
-  if (error && !dashboardData) {
-    return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold">Dashboard</h1>
-          <DataSourceIndicator />
-        </div>
-        <ErrorDashboard 
-          error={error} 
-          onRetry={refresh}
-          connectionHealth={connectionHealth}
-        />
-      </div>
-    );
-  }
+  const hasNodes = stats.totalNodes > 0;
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
-        <div>
-          <h1 className="text-3xl font-bold mb-2">Dashboard</h1>
-          <p className="text-gray-400">
-            Monitor and manage your AeroNyx network nodes
-          </p>
-        </div>
-        
-        <div className="flex items-center gap-4">
-          {/* Real-time toggle */}
-          {wsConnected && (
+    <div className="container-custom mx-auto px-4 py-8">
+      {/* Page Header */}
+      <div className="mb-8">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold mb-2">Dashboard</h1>
+            <p className="text-gray-400">
+              Welcome back, {wallet.address.slice(0, 6)}...{wallet.address.slice(-4)}
+            </p>
+          </div>
+          
+          <div className="flex flex-wrap gap-3">
+            {/* Real-time Monitoring Toggle */}
             <button
               onClick={toggleRealtimeMonitoring}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                wsMonitoring 
-                  ? 'bg-green-700 hover:bg-green-600 text-white' 
-                  : 'bg-background-100 hover:bg-background-200 text-gray-300'
+              className={`px-4 py-2 rounded-md flex items-center gap-2 transition-colors ${
+                isRealtime 
+                  ? 'bg-green-900/30 text-green-400 border border-green-800' 
+                  : 'bg-background-100 text-gray-400 hover:bg-background-200'
               }`}
             >
-              {wsMonitoring ? '🔴 Stop Real-time' : '🟢 Start Real-time'}
+              <div className={`w-2 h-2 rounded-full ${
+                isRealtime ? 'bg-green-500 animate-pulse' : 'bg-gray-500'
+              }`}></div>
+              {isRealtime ? 'Live Monitoring' : 'Enable Live Updates'}
             </button>
-          )}
-          
-          {/* Refresh button */}
-          <button
-            onClick={refresh}
-            disabled={isRefreshing}
-            className="button-outline flex items-center gap-2"
-          >
-            <svg className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} 
-                 fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
-                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            {isRefreshing ? 'Refreshing...' : 'Refresh'}
-          </button>
-          
-          {/* Data source indicator */}
-          <div className="relative">
-            <DataSourceIndicator />
+            
+            {/* Refresh Button */}
+            <button
+              onClick={() => refresh(true)}
+              disabled={isRefreshing}
+              className="button-outline flex items-center gap-2"
+            >
+              <svg 
+                xmlns="http://www.w3.org/2000/svg" 
+                className={`h-5 w-5 ${isRefreshing ? 'animate-spin' : ''}`} 
+                viewBox="0 0 20 20" 
+                fill="currentColor"
+              >
+                <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+              </svg>
+              {isRefreshing ? 'Refreshing...' : 'Refresh'}
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Statistics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        {statsCards.map((card, index) => (
-          <DashboardStatsCard
-            key={index}
-            title={card.title}
-            value={card.value}
-            subtitle={card.subtitle}
-            icon={card.icon}
-            color={card.color}
-            trend={card.trend}
-          />
-        ))}
-      </div>
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-        <QuickActionButton
-          href="/dashboard/register"
-          icon="plus"
-          title="Register New Node"
-          description="Add a new node to the AeroNyx network"
-          color="primary"
-        />
-        
-        <QuickActionButton
-          href="/dashboard/nodes"
-          icon="servers"
-          title="Manage Nodes"
-          description="View and configure your existing nodes"
-          color="secondary"
-          badge={dashboardData?.stats?.totalNodes || 0}
-        />
-        
-        <QuickActionButton
-          icon="blockchain"
-          title="Blockchain Integration"
-          description="Connect nodes to blockchain networks"
-          color="accent"
-          onClick={() => handleBlockchainIntegration(null)}
-        />
-      </div>
-
-      {/* Financial Metrics Overview */}
-      {dashboardData && (
-        <div className="mb-8">
-          <MetricsOverview
-            financialMetrics={{
-              totalValue: dashboardData.stats.totalEarnings * 1.2, // Mock multiplier
-              apy: 12.5,
-              roi: 15.7,
-              dailyYield: dashboardData.stats.totalEarnings / 30,
-              monthlyProjection: dashboardData.stats.totalEarnings * 1.1,
-              riskScore: 25,
-              efficiencyRating: dashboardData.stats.resourceUtilization || 75,
-              diversificationScore: 85
-            }}
-            trends={{
-              earningsTrend: { direction: 'up', percentage: 5.2 }
-            }}
-            timeframe="24h"
-            onMetricSelect={(metricId) => console.log('Selected metric:', metricId)}
-            onExport={(metrics, selectedMetric) => {
-              console.log('Exporting:', metrics, selectedMetric);
-            }}
-          />
-        </div>
-      )}
-
-      {/* Real-time Status Banner */}
-      {isRealtime && (
-        <div className="mb-6 p-4 bg-green-900/20 border border-green-800 rounded-lg">
+      {/* Error Display */}
+      {error && (
+        <div className="mb-6 p-4 bg-red-900/30 border border-red-800 rounded-lg">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-              <div>
-                <h4 className="font-semibold text-green-400">Real-time Monitoring Active</h4>
-                <p className="text-sm text-green-300">
-                  Receiving live updates from {stats?.realtimeMetrics?.messagesReceived || 0} messages
-                  {stats?.realtimeMetrics?.latency && ` • ${stats.realtimeMetrics.latency}ms latency`}
-                </p>
-              </div>
+            <div className="flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              </svg>
+              <span className="text-red-400">{error.message || 'Failed to load dashboard data'}</span>
             </div>
             <button
-              onClick={stopRealtimeMonitoring}
-              className="text-green-400 hover:text-green-300 text-sm"
+              onClick={() => refresh(true)}
+              className="text-sm text-red-300 hover:text-red-200 underline"
             >
-              Disable
+              Retry
             </button>
           </div>
         </div>
       )}
 
-      {/* Performance Alerts */}
-      {stats?.dataSource === 'rest' && (
-        <div className="mb-6 p-4 bg-yellow-900/20 border border-yellow-800 rounded-lg">
-          <div className="flex items-center gap-3">
-            <svg className="h-5 w-5 text-yellow-500" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+      {/* Real-time Monitor */}
+      {hasNodes && (
+        <RealTimeNodeMonitor
+          nodes={displayNodes}
+          performanceAlerts={performanceAlerts}
+          lastUpdate={lastUpdate}
+          updateSource={dataSource}
+          connectionStatus={connectionHealth}
+          onClearAlerts={clearAlerts}
+        />
+      )}
+
+      {/* Statistics Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <DashboardStatsCard
+          icon="servers"
+          title="Total Nodes"
+          value={stats.totalNodes}
+          subtitle={`${stats.activeNodes} active, ${stats.offlineNodes} offline`}
+          color="primary"
+          trend={stats.totalNodes > 0 ? 'up' : 'stable'}
+          trendValue={performanceTrends.nodeTrend.percentage}
+        />
+        
+        <DashboardStatsCard
+          icon="earnings"
+          title="Total Earnings"
+          value={`$${parseFloat(stats.totalEarnings).toFixed(2)}`}
+          subtitle="Lifetime earnings"
+          color="success"
+          trend={performanceTrends.earningsTrend.direction}
+          trendValue={performanceTrends.earningsTrend.percentage}
+        />
+        
+        <DashboardStatsCard
+          icon="network"
+          title="Network Contribution"
+          value={stats.networkContribution}
+          subtitle="Your share of the network"
+          color="accent"
+        />
+        
+        <DashboardStatsCard
+          icon="performance"
+          title="Resource Utilization"
+          value={`${stats.resourceUtilization}%`}
+          subtitle="Average across all nodes"
+          color={stats.resourceUtilization > 80 ? 'warning' : 'secondary'}
+        />
+      </div>
+
+      {hasNodes ? (
+        <>
+          {/* Financial Metrics */}
+          <MetricsOverview
+            financialMetrics={financialMetrics}
+            trends={performanceTrends}
+            timeframe={selectedTimeframe}
+            onMetricSelect={handleMetricSelect}
+            onExport={handleExportMetrics}
+          />
+
+          {/* Quick Actions */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <QuickActionButton
+              href="/dashboard/register"
+              icon="plus"
+              title="Register New Node"
+              description="Expand your network presence"
+              color="primary"
+            />
+            
+            <QuickActionButton
+              href="/dashboard/nodes"
+              icon="servers"
+              title="Manage Nodes"
+              description={`${stats.totalNodes} nodes registered`}
+              color="secondary"
+              badge={stats.offlineNodes > 0 ? stats.offlineNodes : null}
+              badgeColor="error"
+            />
+            
+            <QuickActionButton
+              onClick={() => window.open('https://docs.aeronyx.network', '_blank')}
+              icon="document"
+              title="Documentation"
+              description="Learn about node management"
+              color="neutral"
+              external
+            />
+          </div>
+
+          {/* Recent Nodes */}
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">Recent Nodes</h2>
+              <div className="flex items-center gap-4">
+                {displayNodes.length < stats.totalNodes && (
+                  <button
+                    onClick={() => setShowAllNodes(!showAllNodes)}
+                    className="text-sm text-primary hover:text-primary-400 transition-colors"
+                  >
+                    {showAllNodes ? 'Show Less' : `Show All (${stats.totalNodes})`}
+                  </button>
+                )}
+                <Link 
+                  href="/dashboard/nodes" 
+                  className="text-sm text-primary hover:text-primary-400 transition-colors flex items-center gap-1"
+                >
+                  View All Nodes
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                  </svg>
+                </Link>
+              </div>
+            </div>
+            
+            <NodeList 
+              nodes={displayNodes}
+              onBlockchainIntegrate={handleBlockchainIntegrate}
+              onNodeDetails={handleNodeDetails}
+            />
+          </div>
+        </>
+      ) : (
+        /* Empty State */
+        <div className="card glass-effect p-12 text-center">
+          <div className="max-w-md mx-auto">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-24 w-24 mx-auto mb-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
             </svg>
-            <div>
-              <h4 className="font-semibold text-yellow-400">Using Periodic Updates</h4>
-              <p className="text-sm text-yellow-300">
-                Enable real-time monitoring for live data updates
-              </p>
+            
+            <h3 className="text-2xl font-bold mb-4">Welcome to AeroNyx</h3>
+            <p className="text-gray-400 mb-8">
+              Get started by registering your first node to begin earning rewards
+              and contributing to the decentralized network.
+            </p>
+            
+            <QuickActionButton
+              href="/dashboard/register"
+              icon="plus"
+              title="Register Your First Node"
+              description="Join the network and start earning"
+              color="primary"
+              className="mx-auto max-w-sm"
+            />
+            
+            <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
+              <div className="p-4 bg-background-100 rounded-lg">
+                <div className="text-primary mb-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <h4 className="font-semibold mb-1">Easy Setup</h4>
+                <p className="text-sm text-gray-400">
+                  Register and configure your node in minutes
+                </p>
+              </div>
+              
+              <div className="p-4 bg-background-100 rounded-lg">
+                <div className="text-success mb-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M8.433 7.418c.155-.103.346-.196.567-.267v1.698a2.305 2.305 0 01-.567-.267C8.07 8.34 8 8.114 8 8c0-.114.07-.34.433-.582zM11 12.849v-1.698c.22.071.412.164.567.267.364.243.433.468.433.582 0 .114-.07.34-.433.582a2.305 2.305 0 01-.567.267z" />
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a1 1 0 10-2 0v.092a4.535 4.535 0 00-1.676.662C6.602 6.234 6 7.009 6 8c0 .99.602 1.765 1.324 2.246.48.32 1.054.545 1.676.662v1.941c-.391-.127-.68-.317-.843-.504a1 1 0 10-1.51 1.31c.562.649 1.413 1.076 2.353 1.253V15a1 1 0 102 0v-.092a4.535 4.535 0 001.676-.662C13.398 13.766 14 12.991 14 12c0-.99-.602-1.765-1.324-2.246A4.535 4.535 0 0011 9.092V7.151c.391.127.68.317.843.504a1 1 0 101.511-1.31c-.563-.649-1.413-1.076-2.354-1.253V5z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <h4 className="font-semibold mb-1">Earn Rewards</h4>
+                <p className="text-sm text-gray-400">
+                  Generate passive income from your computing resources
+                </p>
+              </div>
+              
+              <div className="p-4 bg-background-100 rounded-lg">
+                <div className="text-accent mb-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" />
+                  </svg>
+                </div>
+                <h4 className="font-semibold mb-1">Join Community</h4>
+                <p className="text-sm text-gray-400">
+                  Be part of the decentralized computing revolution
+                </p>
+              </div>
             </div>
           </div>
         </div>
@@ -445,10 +587,46 @@ export default function DashboardPage() {
 
       {/* Blockchain Integration Modal */}
       <BlockchainIntegrationModule
-        isOpen={!!selectedBlockchainNode}
-        onClose={closeBlockchainIntegration}
-        selectedNode={selectedBlockchainNode}
+        isOpen={blockchainModalOpen}
+        onClose={() => {
+          setBlockchainModalOpen(false);
+          setSelectedNode(null);
+        }}
+        selectedNode={selectedNode}
       />
+
+      {/* Footer Info */}
+      <div className="mt-12 text-center text-xs text-gray-500">
+        <div className="flex items-center justify-center gap-4 mb-2">
+          <span>
+            Data source: {dataSource === 'websocket' ? '🔄 Real-time WebSocket' : 
+                         dataSource === 'cache' ? '💾 Cached' : '📡 REST API'}
+          </span>
+          {lastUpdate && (
+            <span>Last updated: {lastUpdate.toLocaleTimeString()}</span>
+          )}
+          {wsInitialized && (
+            <span className="text-green-400">WebSocket Ready</span>
+          )}
+        </div>
+        
+        <div className="flex items-center justify-center gap-6">
+          <Link href="/dashboard/settings" className="hover:text-gray-300 transition-colors">
+            Settings
+          </Link>
+          <Link href="/dashboard/help" className="hover:text-gray-300 transition-colors">
+            Help & Support
+          </Link>
+          <a 
+            href="https://docs.aeronyx.network" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="hover:text-gray-300 transition-colors"
+          >
+            Documentation ↗
+          </a>
+        </div>
+      </div>
     </div>
   );
 }
