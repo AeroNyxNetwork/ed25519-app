@@ -1,16 +1,17 @@
 /**
  * WebSocket Manager for AeroNyx Platform
  * 
+ * File Path: src/lib/websocket/WebSocketManager.js
+ * 
  * Centralized manager for all WebSocket connections with
  * lifecycle management and unified interface.
  * 
  * @class WebSocketManager
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import NodeWebSocketService from './NodeWebSocketService';
 import UserMonitorWebSocketService from './UserMonitorWebSocketService';
-import SystemMonitorWebSocketService from './SystemMonitorWebSocketService';
 
 export default class WebSocketManager {
   constructor() {
@@ -52,25 +53,6 @@ export default class WebSocketManager {
     
     if (!this.services.has(key)) {
       const service = new UserMonitorWebSocketService(walletCredentials, {
-        ...this.defaultOptions,
-        ...options
-      });
-      
-      this.services.set(key, service);
-    }
-    
-    return this.services.get(key);
-  }
-
-  /**
-   * Create or get system monitor WebSocket service
-   * @param {Object} options - Service options
-   */
-  getSystemMonitorService(options = {}) {
-    const key = 'systemMonitor';
-    
-    if (!this.services.has(key)) {
-      const service = new SystemMonitorWebSocketService({
         ...this.defaultOptions,
         ...options
       });
@@ -141,7 +123,7 @@ export default class WebSocketManager {
 
   /**
    * Get services by type
-   * @param {string} type - Service type (node, userMonitor, systemMonitor)
+   * @param {string} type - Service type (node, userMonitor)
    */
   getServicesByType(type) {
     const services = [];
