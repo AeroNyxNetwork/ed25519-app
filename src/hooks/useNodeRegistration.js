@@ -1,6 +1,14 @@
 /**
- * src/hooks/useNodeRegistration.js
- * Enhanced custom hook for handling node registration and monitoring with new APIs
+ * Enhanced Node Registration Hook for AeroNyx Platform
+ * 
+ * File Path: src/hooks/useNodeRegistration.js
+ * 
+ * Production-ready hook for handling node registration status and processes
+ * with accurate data mapping based on actual API responses.
+ * 
+ * @version 2.0.0
+ * @author AeroNyx Development Team
+ * @since 2025-01-18
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -8,7 +16,185 @@ import nodeRegistrationService from '../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../lib/utils/walletSignature';
 
 /**
+ * Normalize node data from REST API response
+ * 
+ * @param {Object} node - Raw node data from API
+ * @param {string} source - Data source identifier ('api' or 'websocket')
+ * @returns {Object} Normalized node data
+ */
+function normalizeNodeData(node, source = 'api') {
+  const now = new Date();
+  
+  // Handle different data structures between REST API and WebSocket
+  const baseNode = {
+    id: node.id || node.reference_code,
+    referenceCode: node.reference_code,
+    name: node.name || 'Unnamed Node',
+    status: node.status,
+    createdAt: node.created_at,
+    lastSeen: node.last_seen, // Correct field name from API
+    uptime: node.uptime || '0 days, 0 hours',
+    earnings: parseFloat(node.earnings || 0),
+    
+    // Node type handling
+    type: typeof node.node_type === 'object' 
+      ? node.node_type.id 
+      : node.node_type || 'general',
+    nodeTypeInfo: typeof node.node_type === 'object'
+      ? node.node_type
+      : { id: node.node_type || 'general', name: 'General Purpose' },
+    
+    // Connection status from API (exact field names)
+    isConnected: node.is_connected || false,
+    connectionStatus: node.connection_status || 'offline',
+    
+    // Additional fields for enhanced functionality
+    activatedAt: node.activated_at,
+    registrationStatus: node.registration_status || {},
+    
+    // Metadata
+    source,
+    lastUpdate: now
+  };
+
+  // Handle performance data - different structures for REST vs WebSocket
+  if (source === 'api') {
+    baseNode.resources = transformAPIResources(node.performance);
+    
+    // Connection details from REST API
+    if (node.connection_details) {
+      baseNode.heartbeatCount = node.connection_details.heartbeat_count || 0;
+      baseNode.lastHeartbeat = node.connection_details.last_heartbeat;
+      baseNode.connectionDuration = node.connection_details.connection_duration_seconds;
+      baseNode.offlineDuration = node.connection_details.offline_duration_formatted;
+    }
+  } else if (source === 'websocket') {
+    baseNode.resources = transformWebSocketResources(node.performance);
+    
+    // Connection details from WebSocket
+    if (node.connection) {
+      baseNode.isConnected = node.connection.connected || false;
+      baseNode.heartbeatCount = node.connection.heartbeat_count || 0;
+      baseNode.lastHeartbeat = node.connection.last_heartbeat;
+    }
+  }
+
+  // Calculate real-time status for monitoring
+  baseNode.isRealtime = calculateRealTimeStatus(baseNode);
+  
+  return baseNode;
+}
+
+/**
+ * Transform REST API performance data to standardized format
+ * 
+ * @param {Object} performance - Performance data from REST API
+ * @returns {Object} Standardized resource data
+ */
+function transformAPIResources(performance) {
+  if (!performance) {
+    return {
+      cpu: { total: 'Unknown', usage: 0 },
+      memory: { total: 'Unknown', usage: 0 },
+      storage: { total: 'Unknown', usage: 0 },
+      bandwidth: { total: 'Unknown', usage: 0 }
+    };
+  }
+
+  return {
+    cpu: {
+      total: 'Unknown', // Not provided in API response
+      usage: Math.round(performance.cpu_usage || 0)
+    },
+    memory: {
+      total: 'Unknown',
+      usage: Math.round(performance.memory_usage || 0)
+    },
+    storage: {
+      total: 'Unknown',
+      usage: Math.round(performance.storage_usage || 0)
+    },
+    bandwidth: {
+      total: 'Unknown',
+      usage: Math.round(performance.bandwidth_usage || 0)
+    }
+  };
+}
+
+/**
+ * Transform WebSocket performance data to standardized format
+ * 
+ * @param {Object} performance - Performance data from WebSocket
+ * @returns {Object} Standardized resource data
+ */
+function transformWebSocketResources(performance) {
+  if (!performance) {
+    return {
+      cpu: { total: 'Unknown', usage: 0 },
+      memory: { total: 'Unknown', usage: 0 },
+      storage: { total: 'Unknown', usage: 0 },
+      bandwidth: { total: 'Unknown', usage: 0 }
+    };
+  }
+
+  return {
+    cpu: {
+      total: 'Unknown',
+      usage: Math.round(performance.cpu_usage || 0)
+    },
+    memory: {
+      total: 'Unknown',
+      usage: Math.round(performance.memory_usage || 0)
+    },
+    storage: {
+      total: 'Unknown',
+      usage: Math.round(performance.storage_usage || 0)
+    },
+    bandwidth: {
+      total: 'Unknown',
+      usage: Math.round(performance.bandwidth_usage || 0)
+    }
+  };
+}
+
+/**
+ * Calculate if node should be considered real-time active
+ * Based on connection status and recent activity
+ * 
+ * @param {Object} node - Normalized node data
+ * @returns {boolean} Whether node is real-time active
+ */
+function calculateRealTimeStatus(node) {
+  // Must be connected via WebSocket
+  if (!node.isConnected || node.connectionStatus !== 'online') {
+    return false;
+  }
+  
+  // Must have active status
+  if (node.status !== 'active') {
+    return false;
+  }
+  
+  // Check recent heartbeat (within 5 minutes)
+  if (node.lastHeartbeat) {
+    const lastHeartbeatTime = new Date(node.lastHeartbeat);
+    const minutesSinceHeartbeat = (Date.now() - lastHeartbeatTime.getTime()) / (1000 * 60);
+    return minutesSinceHeartbeat <= 5;
+  }
+  
+  // Fallback to last_seen check
+  if (node.lastSeen) {
+    const lastSeenTime = new Date(node.lastSeen);
+    const minutesSinceLastSeen = (Date.now() - lastSeenTime.getTime()) / (1000 * 60);
+    return minutesSinceLastSeen <= 5;
+  }
+  
+  return false;
+}
+
+/**
  * Enhanced custom hook for handling node registration status and processes
+ * 
  * @param {Object} wallet - Wallet information containing address and provider
  * @returns {Object} Registration status and handlers
  */
@@ -57,7 +243,7 @@ export default function useNodeRegistration(wallet) {
   }, [wallet?.connected, wallet?.address, wallet?.provider]);
 
   /**
-   * Refresh nodes overview using the new API
+   * Refresh nodes overview using the API
    */
   const refreshNodesOverview = useCallback(async () => {
     if (!wallet?.connected) return;
@@ -68,7 +254,7 @@ export default function useNodeRegistration(wallet) {
     try {
       const { signature, message } = await generateSignature();
       
-      // Get nodes overview
+      // Get nodes overview with exact API structure
       const overviewResponse = await nodeRegistrationService.getUserNodesOverview(
         wallet.address,
         signature,
@@ -77,39 +263,32 @@ export default function useNodeRegistration(wallet) {
       );
       
       if (overviewResponse.success && overviewResponse.data) {
-        const { summary, nodes: nodesByStatus } = overviewResponse.data;
+        const { summary, nodes: nodesByStatus, wallet_info, performance_stats } = overviewResponse.data;
         
-        // Combine all nodes from different status categories
+        // Combine all nodes from different status categories with proper structure
         const allNodes = [
-          ...(nodesByStatus.online || []),
-          ...(nodesByStatus.active || []),
-          ...(nodesByStatus.offline || [])
+          ...(nodesByStatus.online || []).map(node => ({ ...node, _category: 'online' })),
+          ...(nodesByStatus.active || []).map(node => ({ ...node, _category: 'active' })),
+          ...(nodesByStatus.offline || []).map(node => ({ ...node, _category: 'offline' }))
         ];
 
-        // Transform nodes to match component expectations
-        const transformedNodes = allNodes.map(node => ({
-          id: node.reference_code || node.id,
-          name: node.name || 'Unnamed Node',
-          status: node.status,
-          type: node.node_type || 'general',
-          registeredDate: node.created_at || new Date().toISOString(),
-          lastSeen: node.last_heartbeat || null,
-          uptime: calculateUptime(node.last_heartbeat, node.created_at),
-          earnings: node.total_earnings || 0,
-          resources: transformResources(node.resources),
-          blockchainIntegrations: node.blockchain_integrations || [],
-          referenceCode: node.reference_code,
-          // Additional fields from API
-          totalTasks: node.total_tasks || 0,
-          completedTasks: node.completed_tasks || 0,
-          nodeVersion: node.node_version || 'Unknown',
-          publicIp: node.public_ip || null
-        }));
+        // Transform nodes using exact API structure
+        const transformedNodes = allNodes.map(node => normalizeNodeData(node, 'api'));
 
         setNodes(transformedNodes);
         setNodesOverview({
-          summary,
-          walletInfo: overviewResponse.data.wallet_info
+          summary: {
+            ...summary,
+            // Use exact values from API response
+            total_nodes: summary.total_nodes || 0,
+            online_nodes: summary.online_nodes || 0,
+            active_nodes: summary.active_nodes || 0,
+            offline_nodes: summary.offline_nodes || 0,
+            real_time_connections: summary.real_time_connections || 0,
+            total_earnings: parseFloat(summary.total_earnings || 0)
+          },
+          walletInfo: wallet_info,
+          performanceStats: performance_stats
         });
       } else {
         throw new Error(overviewResponse.message || 'Failed to fetch nodes overview');
@@ -120,11 +299,18 @@ export default function useNodeRegistration(wallet) {
       console.error('Error refreshing nodes overview:', err);
       setError(err.message || 'Failed to refresh nodes overview');
       
-      // If it's a "no nodes found" error, set empty state instead of error
+      // Handle "no nodes found" case
       if (err.message && (err.message.includes('No nodes found') || err.message.includes('no nodes'))) {
         setNodes([]);
         setNodesOverview({
-          summary: { total_nodes: 0, online_nodes: 0, active_nodes: 0, offline_nodes: 0 },
+          summary: { 
+            total_nodes: 0, 
+            online_nodes: 0, 
+            active_nodes: 0, 
+            offline_nodes: 0,
+            real_time_connections: 0,
+            total_earnings: 0
+          },
           walletInfo: { wallet_address: wallet.address, wallet_type: 'okx' }
         });
         setError(null);
@@ -140,10 +326,10 @@ export default function useNodeRegistration(wallet) {
   const getNodeDetailedStatus = useCallback(async (referenceCode) => {
     if (!wallet?.connected || !referenceCode) return null;
     
-    // Check cache first
+    // Check cache first (1 minute TTL)
     const cacheKey = `${referenceCode}_details`;
     const cached = selectedNodeDetails[cacheKey];
-    if (cached && (Date.now() - cached.timestamp) < 60000) { // 1 minute cache
+    if (cached && (Date.now() - cached.timestamp) < 60000) {
       return cached.data;
     }
 
@@ -184,10 +370,10 @@ export default function useNodeRegistration(wallet) {
   const getNodePerformanceHistory = useCallback(async (referenceCode, hours = 24) => {
     if (!wallet?.connected || !referenceCode) return null;
     
-    // Check cache first
+    // Check cache first (5 minute TTL)
     const cacheKey = `${referenceCode}_perf_${hours}h`;
     const cached = performanceCache[cacheKey];
-    if (cached && (Date.now() - cached.timestamp) < 300000) { // 5 minute cache
+    if (cached && (Date.now() - cached.timestamp) < 300000) {
       return cached.data;
     }
 
@@ -224,7 +410,7 @@ export default function useNodeRegistration(wallet) {
   }, [wallet?.connected, wallet?.address, generateSignature, performanceCache]);
 
   /**
-   * Check a specific node's status (legacy method, kept for compatibility)
+   * Check a specific node's status (legacy compatibility)
    */
   const checkNodeStatus = useCallback(async (referenceCode) => {
     if (!wallet?.connected || !referenceCode) return null;
@@ -279,82 +465,46 @@ export default function useNodeRegistration(wallet) {
   }, []);
 
   /**
-   * Helper function to calculate uptime
-   */
-  const calculateUptime = useCallback((lastHeartbeat, createdAt) => {
-    if (!lastHeartbeat || !createdAt) return '0 days, 0 hours';
-    
-    const now = new Date();
-    const created = new Date(createdAt);
-    const lastSeen = new Date(lastHeartbeat);
-    
-    // If last heartbeat is too old, consider offline
-    const isOnline = (now - lastSeen) < (10 * 60 * 1000); // 10 minutes
-    
-    if (!isOnline) return '0 days, 0 hours';
-    
-    const diffMs = now - created;
-    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    
-    return `${days} days, ${hours} hours`;
-  }, []);
-
-  /**
-   * Helper function to transform resource data
-   */
-  const transformResources = useCallback((resources) => {
-    if (!resources) {
-      return {
-        cpu: { total: 'Unknown', usage: 0 },
-        memory: { total: 'Unknown', usage: 0 },
-        storage: { total: 'Unknown', usage: 0 },
-        bandwidth: { total: 'Unknown', usage: 0 }
-      };
-    }
-
-    return {
-      cpu: {
-        total: resources.cpu_cores ? `${resources.cpu_cores} cores` : 'Unknown',
-        usage: resources.cpu_usage || 0
-      },
-      memory: {
-        total: resources.memory_gb ? `${resources.memory_gb} GB` : 'Unknown',
-        usage: resources.memory_usage || 0
-      },
-      storage: {
-        total: resources.storage_gb ? `${resources.storage_gb} GB` : 'Unknown',
-        usage: resources.storage_usage || 0
-      },
-      bandwidth: {
-        total: resources.bandwidth_mbps ? `${resources.bandwidth_mbps} Mbps` : 'Unknown',
-        usage: resources.bandwidth_usage || 0
-      }
-    };
-  }, []);
-
-  /**
-   * Get summary statistics
+   * Get comprehensive statistics with real-time metrics
    */
   const getStatistics = useCallback(() => {
     if (!nodesOverview || !nodes.length) {
       return {
+        // Basic stats
         total: 0,
         online: 0,
         offline: 0,
         pending: 0,
         totalEarnings: 0,
-        avgHealthScore: 0
+        avgHealthScore: 0,
+        
+        // Real-time monitoring stats
+        realtimeNodes: 0,
+        totalHeartbeats: 0,
+        avgCpuUsage: 0,
+        avgMemoryUsage: 0,
+        realTimeConnections: 0
       };
     }
 
-    const totalEarnings = nodes.reduce((sum, node) => sum + (node.earnings || 0), 0);
+    // Use exact API summary values
+    const summary = nodesOverview.summary;
+    const performanceStats = nodesOverview.performanceStats;
     
-    // Calculate average health score (simplified)
+    // Calculate real-time active nodes
+    const realtimeNodes = nodes.filter(n => n.isRealtime);
+    const totalHeartbeats = realtimeNodes.reduce((sum, n) => sum + (n.heartbeatCount || 0), 0);
+    
+    // Use performance stats from API if available
+    const avgCpuUsage = performanceStats?.cpu?.average || 0;
+    const avgMemoryUsage = performanceStats?.memory?.average || 0;
+    
+    // Calculate health scores
     const healthScores = nodes.map(node => {
       let score = 100;
       if (node.status === 'offline') score -= 50;
       if (node.status === 'pending') score -= 20;
+      if (!node.isConnected) score -= 30;
       if (node.resources?.cpu?.usage > 80) score -= 10;
       if (node.resources?.memory?.usage > 80) score -= 10;
       return Math.max(0, score);
@@ -365,12 +515,20 @@ export default function useNodeRegistration(wallet) {
       : 0;
 
     return {
-      total: nodesOverview.summary.total_nodes || 0,
-      online: nodesOverview.summary.online_nodes || 0,
-      offline: nodesOverview.summary.offline_nodes || 0,
-      pending: Math.max(0, (nodesOverview.summary.total_nodes || 0) - (nodesOverview.summary.online_nodes || 0) - (nodesOverview.summary.offline_nodes || 0)),
-      totalEarnings,
-      avgHealthScore
+      // Basic stats from API summary
+      total: summary.total_nodes,
+      online: summary.online_nodes,
+      offline: summary.offline_nodes,
+      pending: Math.max(0, summary.total_nodes - summary.online_nodes - summary.active_nodes - summary.offline_nodes),
+      totalEarnings: summary.total_earnings,
+      avgHealthScore,
+      
+      // Real-time monitoring stats
+      realtimeNodes: realtimeNodes.length,
+      totalHeartbeats,
+      avgCpuUsage: Math.round(avgCpuUsage),
+      avgMemoryUsage: Math.round(avgMemoryUsage),
+      realTimeConnections: summary.real_time_connections || 0
     };
   }, [nodesOverview, nodes]);
 
