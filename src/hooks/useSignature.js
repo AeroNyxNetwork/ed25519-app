@@ -1,15 +1,17 @@
 /**
  * React Hook for Wallet Signature with Caching
  * 
- * Prevents repeated signature requests
+ * File Path: src/hooks/useSignature.js
  * 
- * @version 1.0.0
+ * Prevents repeated signature requests using the unified cache service
+ * 
+ * @version 2.0.0
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
-import { signatureCacheService } from '../lib/services/SignatureCacheService';
-import nodeRegistrationCachedService from '../lib/api/nodeRegistrationCached';
+import { cacheService, CacheNamespace } from '../lib/services/CacheService';
+import nodeRegistrationService from '../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../lib/utils/walletSignature';
 
 export function useSignature(action = 'default') {
@@ -28,23 +30,30 @@ export function useSignature(action = 'default') {
     setError(null);
 
     try {
-      const result = await signatureCacheService.getOrGenerateSignature(
-        wallet.address,
-        async () => {
-          const messageResponse = await nodeRegistrationCachedService.generateSignatureMessage(wallet.address);
-          
-          if (!messageResponse.success) {
-            throw new Error(messageResponse.message || 'Failed to generate signature message');
-          }
+      // Check cache first
+      const cacheKey = cacheService.generateKey('signature', wallet.address, action);
+      const cachedSignature = cacheService.get(CacheNamespace.SIGNATURE, cacheKey);
+      
+      if (cachedSignature) {
+        setSignature(cachedSignature);
+        return cachedSignature;
+      }
 
-          const message = messageResponse.data.message;
-          const formattedMessage = formatMessageForSigning(message);
-          const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
+      // Generate new signature
+      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+      
+      if (!messageResponse.success) {
+        throw new Error(messageResponse.message || 'Failed to generate signature message');
+      }
 
-          return { signature, message };
-        },
-        action
-      );
+      const message = messageResponse.data.message;
+      const formattedMessage = formatMessageForSigning(message);
+      const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
+
+      const result = { signature, message };
+      
+      // Cache the signature
+      cacheService.set(CacheNamespace.SIGNATURE, cacheKey, result, 10 * 60 * 1000); // 10 minutes
 
       setSignature(result);
       return result;
@@ -67,7 +76,9 @@ export function useSignature(action = 'default') {
   useEffect(() => {
     if (!wallet.connected && signature) {
       setSignature(null);
-      signatureCacheService.clearWalletCache(wallet.address);
+      // Clear signature cache for this wallet
+      const pattern = new RegExp(`signature:${wallet.address}:`);
+      cacheService.clear(CacheNamespace.SIGNATURE, pattern);
     }
   }, [wallet.connected, wallet.address, signature]);
 
