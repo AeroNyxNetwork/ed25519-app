@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import Header from '../../../components/layout/Header';
 import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
-import NetworkStatusChart from '../../../components/dashboard/NetworkStatusChart';
 
 // Mock data for network stats
 const mockNetworkData = {
@@ -181,11 +180,6 @@ export default function NetworkPage() {
                   All
                 </button>
               </div>
-            </div>
-
-            {/* Network Status Chart */}
-            <div className="card glass-effect mb-8">
-              <NetworkStatusChart data={networkData} timeRange={timeRange} />
             </div>
 
             {/* Resources Section */}
