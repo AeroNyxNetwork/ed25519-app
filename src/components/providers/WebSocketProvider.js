@@ -23,7 +23,6 @@ const WebSocketContext = createContext(null);
 export function WebSocketProvider({ children }) {
   const { wallet } = useWallet();
   const [userMonitorService, setUserMonitorService] = useState(null);
-  const [systemMonitorService, setSystemMonitorService] = useState(null);
   const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
@@ -97,23 +96,9 @@ export function WebSocketProvider({ children }) {
     };
   }, [wallet.connected, wallet.address, wallet.provider]);
 
-  // Initialize system monitor (optional, can be enabled based on user role)
-  useEffect(() => {
-    if (process.env.NEXT_PUBLIC_ENABLE_SYSTEM_MONITOR === 'true') {
-      const service = wsManager.getSystemMonitorService();
-      setSystemMonitorService(service);
-      service.connect();
-
-      return () => {
-        wsManager.removeService('systemMonitor');
-      };
-    }
-  }, []);
-
   const value = {
     wsManager,
     userMonitorService,
-    systemMonitorService,
     isInitialized,
     getNodeService: (referenceCode, options) => wsManager.getNodeService(referenceCode, options)
   };
