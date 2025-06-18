@@ -19,7 +19,6 @@ import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
 import NodeList from '../../../components/dashboard/NodeList';
 import BlockchainIntegrationModule from '../../../components/dashboard/BlockchainIntegrationModule';
-import RealTimeNodeMonitor from '../../../components/dashboard/RealTimeNodeMonitor';
 import { useUserMonitorWebSocket } from '../../../hooks/useWebSocket';
 import nodeRegistrationCachedService from '../../../lib/api/nodeRegistrationCached';
 import { useSignature } from '../../../hooks/useSignature';
@@ -705,18 +704,6 @@ export default function NodesPage() {
               {showRealtimeMonitor ? 'Hide' : 'Show'} Real-time Monitor
             </button>
           </div>
-        )}
-
-        {/* Real-time Monitor Component */}
-        {MONITOR_CONFIG.ENABLE_REALTIME && showRealtimeMonitor && wsConnected && (
-          <RealTimeNodeMonitor 
-            nodes={nodes}
-            performanceAlerts={performanceAlerts}
-            lastUpdate={lastUpdate}
-            updateSource={updateSource}
-            connectionStatus={connectionStatus}
-            onClearAlerts={() => setPerformanceAlerts([])}
-          />
         )}
 
         {/* Error Display */}
