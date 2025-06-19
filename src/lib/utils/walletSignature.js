@@ -1,14 +1,18 @@
 /**
  * Wallet Signature utilities for AeroNyx platform
- * Handles message signing and verification for wallet authentication
+ * Fixed signature format to match backend expectations
+ * 
+ * @version 2.0.0
  */
 
 /**
  * Sign a message with a wallet provider
+ * Ensures proper encoding and format for backend verification
+ * 
  * @param {Object} provider - Web3 provider from wallet
  * @param {string} message - Message to sign
  * @param {string} address - Wallet address
- * @returns {Promise<string>} Signature
+ * @returns {Promise<string>} Signature with 0x prefix
  */
 export async function signMessage(provider, message, address) {
   try {
@@ -16,26 +20,69 @@ export async function signMessage(provider, message, address) {
       throw new Error('No wallet provider available');
     }
     
+    // Ensure address is lowercase for consistency
+    const normalizedAddress = address.toLowerCase();
+    
+    // Sign the message exactly as received from backend
     const signature = await provider.request({
       method: 'personal_sign',
-      params: [message, address]
+      params: [message, normalizedAddress]
     });
     
-    return signature;
+    // Ensure signature has 0x prefix
+    const formattedSignature = signature.startsWith('0x') ? signature : `0x${signature}`;
+    
+    console.log('[WalletSignature] Message signed successfully');
+    
+    return formattedSignature;
   } catch (error) {
-    console.error('Signature error:', error);
+    console.error('[WalletSignature] Signature error:', error);
     throw error;
   }
 }
 
 /**
- * Format message for better readability before signing
- * @param {string} message - Raw message
- * @returns {string} Formatted message
+ * Format message for signing - returns message as-is
+ * The backend expects the exact message without modifications
+ * 
+ * @param {string} message - Raw message from backend
+ * @returns {string} Message unchanged
  */
 export function formatMessageForSigning(message) {
-  // Return the message as is to match exactly what the backend expects
+  // Return the message exactly as received from backend
+  // No formatting or modifications
   return message;
+}
+
+/**
+ * Verify signature format
+ * Ensures signature meets backend requirements
+ * 
+ * @param {string} signature - Signature to verify
+ * @returns {boolean} Is valid format
+ */
+export function isValidSignatureFormat(signature) {
+  if (!signature || typeof signature !== 'string') {
+    return false;
+  }
+  
+  // Must have 0x prefix
+  if (!signature.startsWith('0x')) {
+    return false;
+  }
+  
+  // Must be at least 132 characters (0x + 130 hex chars)
+  if (signature.length < 132) {
+    return false;
+  }
+  
+  // Must be valid hex
+  const hexRegex = /^0x[0-9a-fA-F]+$/;
+  if (!hexRegex.test(signature)) {
+    return false;
+  }
+  
+  return true;
 }
 
 /**
@@ -100,5 +147,16 @@ export function getStoredSignatureInfo() {
   } catch (error) {
     console.error('Failed to retrieve signature info:', error);
     return null;
+  }
+}
+
+/**
+ * Clear stored signature information
+ */
+export function clearStoredSignatureInfo() {
+  try {
+    localStorage.removeItem('aeroNyxSignatureInfo');
+  } catch (error) {
+    console.error('Failed to clear signature info:', error);
   }
 }
