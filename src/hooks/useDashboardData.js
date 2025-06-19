@@ -120,12 +120,28 @@ export function useDashboard(config = {}) {
   const processDashboardData = useCallback((data, source) => {
     if (!data) return null;
     
-    // Extract nodes and calculate stats
-    const nodes = data.nodes || [];
+    // Extract nodes array from different possible structures
+    let nodesArray = [];
+    
+    // Handle different API response structures
+    if (data.nodes) {
+      if (Array.isArray(data.nodes)) {
+        // Direct array
+        nodesArray = data.nodes;
+      } else if (typeof data.nodes === 'object') {
+        // Grouped by status (REST API structure)
+        nodesArray = [
+          ...(data.nodes.online || []),
+          ...(data.nodes.active || []),
+          ...(data.nodes.offline || [])
+        ];
+      }
+    }
+    
     const summary = data.summary || {};
     
     const processedStats = {
-      totalNodes: summary.total_nodes || nodes.length,
+      totalNodes: summary.total_nodes || nodesArray.length,
       activeNodes: summary.online_nodes || 0,
       offlineNodes: summary.offline_nodes || 0,
       pendingNodes: Math.max(0, 
@@ -134,25 +150,27 @@ export function useDashboard(config = {}) {
         (summary.offline_nodes || 0)
       ),
       totalEarnings: parseFloat(summary.total_earnings || 0),
-      networkContribution: calculateNetworkContribution(nodes),
-      resourceUtilization: calculateResourceUtilization(nodes)
+      networkContribution: calculateNetworkContribution(nodesArray),
+      resourceUtilization: calculateResourceUtilization(nodesArray)
     };
     
     return {
       dashboardData: {
         stats: processedStats,
-        nodes: nodes.slice(0, 4), // Dashboard preview
+        nodes: nodesArray.slice(0, 4), // Dashboard preview
         timestamp: new Date().toISOString(),
         source
       },
       stats: processedStats
     };
-  }, []);
+  }, [calculateNetworkContribution, calculateResourceUtilization]);
   
   /**
    * Calculate network contribution
    */
   const calculateNetworkContribution = useCallback((nodes) => {
+    if (!Array.isArray(nodes)) return '0%';
+    
     const activeNodes = nodes.filter(n => 
       n.status === 'active' || n.status === 'online'
     ).length;
@@ -164,6 +182,8 @@ export function useDashboard(config = {}) {
    * Calculate resource utilization
    */
   const calculateResourceUtilization = useCallback((nodes) => {
+    if (!Array.isArray(nodes)) return 0;
+    
     const activeNodes = nodes.filter(n => 
       n.status === 'active' || n.status === 'online'
     );
