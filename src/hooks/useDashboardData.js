@@ -1,21 +1,12 @@
 /**
  * Unified Dashboard Hook for AeroNyx Platform
  * 
- * File Path: src/hooks/useDashboard.js
+ * File Path: src/hooks/useDashboardData.js
  * 
  * Production-grade React hook providing comprehensive dashboard data management
  * with intelligent switching between REST API and WebSocket data sources.
- * Follows Google's engineering standards for reliability and performance.
  * 
- * Features:
- * - Intelligent data source selection (REST vs WebSocket)
- * - Automatic fallback mechanisms
- * - Unified caching strategy
- * - Performance monitoring
- * - Error recovery
- * - Memory-efficient data management
- * 
- * @version 2.0.0
+ * @version 2.0.1
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -25,7 +16,7 @@ import { useWallet } from '../components/wallet/WalletProvider';
 import { useDashboardWebSocket } from './useWebSocket';
 import { useSignature } from './useSignature';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
-import { cacheService, CacheNamespace } from '../lib/services/CacheService';
+import CacheService, { cacheService, CacheNamespace } from '../lib/services/CacheService';
 import { mergeWebSocketUpdate } from '../lib/utils/websocketDataTransformer';
 
 /**
@@ -40,35 +31,10 @@ export const DataSource = {
 };
 
 /**
- * Dashboard configuration
- * @typedef {Object} DashboardConfig
- * @property {boolean} preferWebSocket - Prefer WebSocket over REST (default: true)
- * @property {boolean} enableRESTFallback - Enable REST fallback (default: true)
- * @property {boolean} hybridMode - Use both sources (default: true)
- * @property {number} restInterval - REST refresh interval in ms (default: 60000)
- * @property {boolean} enableCache - Enable caching (default: true)
- * @property {Function} onDataUpdate - Data update callback
- * @property {Function} onError - Error callback
- */
-
-/**
- * Dashboard state
- * @typedef {Object} DashboardState
- * @property {Object} dashboardData - Main dashboard data
- * @property {Object} nodesOverview - Nodes overview data
- * @property {boolean} isLoading - Loading state
- * @property {boolean} isRefreshing - Refreshing state
- * @property {Object} error - Current error
- * @property {string} dataSource - Current data source
- * @property {Date} lastUpdate - Last update timestamp
- * @property {Object} stats - Dashboard statistics
- */
-
-/**
  * Unified Dashboard Hook
  * 
- * @param {DashboardConfig} config - Hook configuration
- * @returns {DashboardState & Object} Dashboard state and controls
+ * @param {Object} config - Hook configuration
+ * @returns {Object} Dashboard state and controls
  */
 export function useDashboard(config = {}) {
   const {
@@ -236,9 +202,9 @@ export function useDashboard(config = {}) {
     
     setStats(processed.stats);
     
-    // Cache the data
+    // Cache the data - Fixed to use static method
     if (enableCache) {
-      const cacheKey = cacheService.generateKey('dashboard', wallet.address);
+      const cacheKey = CacheService.generateKey('dashboard', wallet.address);
       cacheService.set(CacheNamespace.API, cacheKey, data, 5 * 60 * 1000);
     }
     
@@ -270,9 +236,9 @@ export function useDashboard(config = {}) {
     if (!wallet.connected || !signature || !message) return;
     if (requestInProgressRef.current) return;
     
-    // Check cache first
+    // Check cache first - Fixed to use static method
     if (enableCache && !forceRefresh) {
-      const cacheKey = cacheService.generateKey('dashboard', wallet.address);
+      const cacheKey = CacheService.generateKey('dashboard', wallet.address);
       const cachedData = cacheService.get(CacheNamespace.API, cacheKey);
       
       if (cachedData) {
@@ -336,9 +302,9 @@ export function useDashboard(config = {}) {
     
     setStats(processed.stats);
     
-    // Cache the data
+    // Cache the data - Fixed to use static method
     if (enableCache && !fromCache) {
-      const cacheKey = cacheService.generateKey('dashboard', wallet.address);
+      const cacheKey = CacheService.generateKey('dashboard', wallet.address);
       cacheService.set(CacheNamespace.API, cacheKey, data, 5 * 60 * 1000);
     }
     
