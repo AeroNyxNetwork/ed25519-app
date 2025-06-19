@@ -5,8 +5,9 @@
  * 
  * Production-grade React hook providing comprehensive dashboard data management
  * with intelligent switching between REST API and WebSocket data sources.
+ * Fixed initialization and import issues.
  * 
- * @version 2.0.1
+ * @version 2.0.2
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -16,7 +17,7 @@ import { useWallet } from '../components/wallet/WalletProvider';
 import { useDashboardWebSocket } from './useWebSocket';
 import { useSignature } from './useSignature';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
-import CacheService, { cacheService, CacheNamespace } from '../lib/services/CacheService';
+import { cacheService, CacheNamespace } from '../lib/services/CacheService';
 import { mergeWebSocketUpdate } from '../lib/utils/websocketDataTransformer';
 
 /**
@@ -115,6 +116,40 @@ export function useDashboard(config = {}) {
   // ==================== DATA PROCESSING ====================
   
   /**
+   * Calculate network contribution
+   */
+  const calculateNetworkContribution = useCallback((nodes) => {
+    if (!Array.isArray(nodes)) return '0%';
+    
+    const activeNodes = nodes.filter(n => 
+      n.status === 'active' || n.status === 'online'
+    ).length;
+    
+    return `${(activeNodes * 0.0015).toFixed(4)}%`;
+  }, []);
+  
+  /**
+   * Calculate resource utilization
+   */
+  const calculateResourceUtilization = useCallback((nodes) => {
+    if (!Array.isArray(nodes)) return 0;
+    
+    const activeNodes = nodes.filter(n => 
+      n.status === 'active' || n.status === 'online'
+    );
+    
+    if (activeNodes.length === 0) return 0;
+    
+    const totalUtil = activeNodes.reduce((sum, node) => {
+      const cpu = node.performance?.cpu_usage || 0;
+      const memory = node.performance?.memory_usage || 0;
+      return sum + ((cpu + memory) / 2);
+    }, 0);
+    
+    return Math.round(totalUtil / activeNodes.length);
+  }, []);
+  
+  /**
    * Process dashboard data from any source
    */
   const processDashboardData = useCallback((data, source) => {
@@ -165,40 +200,6 @@ export function useDashboard(config = {}) {
     };
   }, [calculateNetworkContribution, calculateResourceUtilization]);
   
-  /**
-   * Calculate network contribution
-   */
-  const calculateNetworkContribution = useCallback((nodes) => {
-    if (!Array.isArray(nodes)) return '0%';
-    
-    const activeNodes = nodes.filter(n => 
-      n.status === 'active' || n.status === 'online'
-    ).length;
-    
-    return `${(activeNodes * 0.0015).toFixed(4)}%`;
-  }, []);
-  
-  /**
-   * Calculate resource utilization
-   */
-  const calculateResourceUtilization = useCallback((nodes) => {
-    if (!Array.isArray(nodes)) return 0;
-    
-    const activeNodes = nodes.filter(n => 
-      n.status === 'active' || n.status === 'online'
-    );
-    
-    if (activeNodes.length === 0) return 0;
-    
-    const totalUtil = activeNodes.reduce((sum, node) => {
-      const cpu = node.performance?.cpu_usage || 0;
-      const memory = node.performance?.memory_usage || 0;
-      return sum + ((cpu + memory) / 2);
-    }, 0);
-    
-    return Math.round(totalUtil / activeNodes.length);
-  }, []);
-  
   // ==================== WEBSOCKET HANDLERS ====================
   
   /**
@@ -232,9 +233,9 @@ export function useDashboard(config = {}) {
       setStats(processed.stats);
     }
     
-    // Cache the data - Fixed to use static method
+    // Cache the data
     if (enableCache) {
-      const cacheKey = CacheService.generateKey('dashboard', wallet.address);
+      const cacheKey = cacheService.generateKey('dashboard', wallet.address);
       cacheService.set(CacheNamespace.API, cacheKey, normalizedData, 5 * 60 * 1000);
     }
     
@@ -266,9 +267,9 @@ export function useDashboard(config = {}) {
     if (!wallet.connected || !signature || !message) return;
     if (requestInProgressRef.current) return;
     
-    // Check cache first - Fixed to use static method
+    // Check cache first
     if (enableCache && !forceRefresh) {
-      const cacheKey = CacheService.generateKey('dashboard', wallet.address);
+      const cacheKey = cacheService.generateKey('dashboard', wallet.address);
       const cachedData = cacheService.get(CacheNamespace.API, cacheKey);
       
       if (cachedData) {
@@ -342,9 +343,9 @@ export function useDashboard(config = {}) {
       setStats(processed.stats);
     }
     
-    // Cache the data - Fixed to use static method
+    // Cache the data
     if (enableCache && !fromCache) {
-      const cacheKey = CacheService.generateKey('dashboard', wallet.address);
+      const cacheKey = cacheService.generateKey('dashboard', wallet.address);
       cacheService.set(CacheNamespace.API, cacheKey, normalizedData, 5 * 60 * 1000);
     }
     
