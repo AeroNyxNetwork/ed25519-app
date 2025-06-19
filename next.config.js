@@ -76,23 +76,6 @@ const nextConfig = {
     ];
   },
 
-  // Redirects
-  async redirects() {
-    return [
-      {
-        source: '/dashboard',
-        has: [
-          {
-            type: 'host',
-            value: 'localhost',
-          },
-        ],
-        permanent: false,
-        destination: '/',
-      },
-    ];
-  },
-
   // Webpack configuration
   webpack: (config, { isServer, dev }) => {
     // Resolve fallbacks for client-side
@@ -112,7 +95,8 @@ const nextConfig = {
         os: false,
         path: false,
         util: false,
-        events: require.resolve('events/'),
+        // Remove the events polyfill as it's not needed
+        events: false,
       };
     }
 
