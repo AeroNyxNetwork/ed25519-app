@@ -15,7 +15,6 @@
 
 import NodeWebSocketService from './NodeWebSocketService';
 import UserMonitorWebSocketService from './UserMonitorWebSocketService';
-import SystemMonitorWebSocketService from './SystemMonitorWebSocketService';
 import ErrorRecoveryStrategy from './ErrorRecoveryStrategy';
 
 /**
