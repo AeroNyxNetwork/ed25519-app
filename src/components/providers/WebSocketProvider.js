@@ -6,10 +6,12 @@
  * Provides WebSocket context and services to the application
  * with automatic connection management using the unified cache service.
  * 
- * @version 2.0.0
+ * @version 2.0.1
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
+
+'use client';
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
@@ -24,6 +26,8 @@ export function WebSocketProvider({ children }) {
   const { wallet } = useWallet();
   const [userMonitorService, setUserMonitorService] = useState(null);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [nodes, setNodes] = useState([]);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -33,14 +37,16 @@ export function WebSocketProvider({ children }) {
         setUserMonitorService(null);
       }
       setIsInitialized(false);
+      setConnectionStatus('disconnected');
+      setNodes([]);
       return;
     }
 
     // Initialize user monitor when wallet connected
     const initializeUserMonitor = async () => {
       try {
-        // Check cache for existing signature
-        const cacheKey = cacheService.generateKey('signature', wallet.address, 'websocket');
+        // Check cache for existing signature - Fixed to use static method
+        const cacheKey = CacheService.generateKey('signature', wallet.address, 'websocket');
         let signatureData = cacheService.get(CacheNamespace.SIGNATURE, cacheKey);
         
         if (!signatureData) {
@@ -73,16 +79,31 @@ export function WebSocketProvider({ children }) {
         const service = wsManager.getUserMonitorService(walletCredentials);
         setUserMonitorService(service);
 
-        // Connect and start monitoring
-        await service.connect();
-        
-        service.once('auth_success', () => {
+        // Setup event handlers
+        service.on('connectionStatusChanged', (status) => {
+          setConnectionStatus(status);
+        });
+
+        service.on('nodes_updated', (data) => {
+          setNodes(data.nodes || []);
+        });
+
+        service.on('auth_success', () => {
+          setConnectionStatus('authenticated');
           service.startMonitoring();
         });
 
+        service.on('monitoring_started', () => {
+          setConnectionStatus('monitoring');
+        });
+
+        // Connect and start monitoring
+        await service.connect();
+        
         setIsInitialized(true);
       } catch (error) {
         console.error('Failed to initialize user monitor:', error);
+        setConnectionStatus('error');
       }
     };
 
@@ -100,6 +121,8 @@ export function WebSocketProvider({ children }) {
     wsManager,
     userMonitorService,
     isInitialized,
+    connectionStatus,
+    nodes,
     getNodeService: (referenceCode, options) => wsManager.getNodeService(referenceCode, options)
   };
 
@@ -119,3 +142,6 @@ export function useWebSocketContext() {
   
   return context;
 }
+
+// Import CacheService class for static method
+import CacheService from '../../lib/services/CacheService';
