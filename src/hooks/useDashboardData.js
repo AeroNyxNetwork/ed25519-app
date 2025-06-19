@@ -207,12 +207,20 @@ export function useDashboard(config = {}) {
   function handleWebSocketData(data) {
     if (!mountedRef.current) return;
     
-    const processed = processDashboardData(data, DataSource.WEBSOCKET);
+    // Ensure data has correct structure
+    const normalizedData = {
+      summary: data.summary || {},
+      nodes: data.nodes || { online: [], active: [], offline: [] },
+      wallet_info: data.wallet_info,
+      performance_stats: data.performance_stats
+    };
+    
+    const processed = processDashboardData(normalizedData, DataSource.WEBSOCKET);
     
     setState(prev => ({
       ...prev,
-      dashboardData: processed.dashboardData,
-      nodesOverview: data,
+      dashboardData: processed?.dashboardData,
+      nodesOverview: normalizedData,
       dataSource: DataSource.WEBSOCKET,
       lastUpdate: new Date(),
       lastWSUpdate: new Date(),
@@ -220,15 +228,17 @@ export function useDashboard(config = {}) {
       isLoading: false
     }));
     
-    setStats(processed.stats);
+    if (processed) {
+      setStats(processed.stats);
+    }
     
     // Cache the data - Fixed to use static method
     if (enableCache) {
       const cacheKey = CacheService.generateKey('dashboard', wallet.address);
-      cacheService.set(CacheNamespace.API, cacheKey, data, 5 * 60 * 1000);
+      cacheService.set(CacheNamespace.API, cacheKey, normalizedData, 5 * 60 * 1000);
     }
     
-    onDataUpdate?.(processed.dashboardData, DataSource.WEBSOCKET);
+    onDataUpdate?.(processed?.dashboardData, DataSource.WEBSOCKET);
   }
   
   /**
@@ -308,28 +318,38 @@ export function useDashboard(config = {}) {
   const handleRESTData = useCallback((data, fromCache) => {
     if (!mountedRef.current) return;
     
-    const processed = processDashboardData(data, fromCache ? DataSource.CACHE : DataSource.REST);
+    // Ensure data has correct structure
+    const normalizedData = {
+      summary: data.summary || {},
+      nodes: data.nodes || { online: [], active: [], offline: [] },
+      wallet_info: data.wallet_info,
+      performance_stats: data.performance_stats
+    };
+    
+    const processed = processDashboardData(normalizedData, fromCache ? DataSource.CACHE : DataSource.REST);
     
     setState(prev => ({
       ...prev,
-      dashboardData: processed.dashboardData,
-      nodesOverview: data,
+      dashboardData: processed?.dashboardData,
+      nodesOverview: normalizedData,
       dataSource: fromCache ? DataSource.CACHE : DataSource.REST,
       lastUpdate: new Date(),
       lastRESTUpdate: fromCache ? prev.lastRESTUpdate : new Date(),
       error: null
     }));
     
-    setStats(processed.stats);
+    if (processed) {
+      setStats(processed.stats);
+    }
     
     // Cache the data - Fixed to use static method
     if (enableCache && !fromCache) {
       const cacheKey = CacheService.generateKey('dashboard', wallet.address);
-      cacheService.set(CacheNamespace.API, cacheKey, data, 5 * 60 * 1000);
+      cacheService.set(CacheNamespace.API, cacheKey, normalizedData, 5 * 60 * 1000);
     }
     
-    onDataUpdate?.(processed.dashboardData, fromCache ? DataSource.CACHE : DataSource.REST);
-  }, [enableCache, processDashboardData, onDataUpdate]);
+    onDataUpdate?.(processed?.dashboardData, fromCache ? DataSource.CACHE : DataSource.REST);
+  }, [enableCache, processDashboardData, onDataUpdate, wallet.address]);
   
   /**
    * Handle REST error
