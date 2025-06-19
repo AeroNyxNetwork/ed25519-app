@@ -4,19 +4,9 @@
  * File Path: src/lib/services/CacheService.js
  * 
  * Production-grade caching service following Google's engineering standards.
- * Provides a centralized caching mechanism with TTL support, memory management,
- * and performance optimization for all platform components.
+ * Fixed initialization issues by ensuring proper export order.
  * 
- * Features:
- * - Multiple cache namespaces (signature, api, websocket)
- * - Automatic TTL-based expiration
- * - Memory-efficient storage with size limits
- * - LRU (Least Recently Used) eviction policy
- * - Performance metrics and monitoring
- * - Thread-safe operations
- * - Serialization support for complex objects
- * 
- * @version 2.0.0
+ * @version 2.0.1
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -109,6 +99,7 @@ class CacheService {
     this.set = this.set.bind(this);
     this.delete = this.delete.bind(this);
     this.clear = this.clear.bind(this);
+    this.generateKey = CacheService.generateKey.bind(this);
   }
   
   /**
@@ -309,12 +300,22 @@ class CacheService {
   static generateKey(...params) {
     return params
       .map(param => {
-        if (typeof param === 'object') {
+        if (typeof param === 'object' && param !== null) {
           return JSON.stringify(param, Object.keys(param).sort());
         }
         return String(param);
       })
       .join(':');
+  }
+  
+  /**
+   * Instance method wrapper for generateKey
+   * 
+   * @param {...*} params - Parameters to include in key
+   * @returns {string} Cache key
+   */
+  generateKey(...params) {
+    return CacheService.generateKey(...params);
   }
   
   /**
@@ -457,8 +458,11 @@ class CacheService {
   }
 }
 
-// Export singleton instance
-export const cacheService = new CacheService();
+// Create singleton instance
+const cacheService = new CacheService();
 
-// Export class for testing
+// Export singleton instance as named export
+export { cacheService };
+
+// Export class as default for testing
 export default CacheService;
