@@ -5,8 +5,9 @@
  * 
  * Provides WebSocket context and services to the application
  * with automatic connection management using the unified cache service.
+ * Fixed import issues and signature generation.
  * 
- * @version 2.0.1
+ * @version 2.0.2
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -45,8 +46,8 @@ export function WebSocketProvider({ children }) {
     // Initialize user monitor when wallet connected
     const initializeUserMonitor = async () => {
       try {
-        // Check cache for existing signature - Fixed to use static method
-        const cacheKey = CacheService.generateKey('signature', wallet.address, 'websocket');
+        // Check cache for existing signature
+        const cacheKey = cacheService.generateKey('signature', wallet.address, 'websocket');
         let signatureData = cacheService.get(CacheNamespace.SIGNATURE, cacheKey);
         
         if (!signatureData) {
@@ -58,8 +59,7 @@ export function WebSocketProvider({ children }) {
           }
 
           const message = messageResponse.data.message;
-          const formattedMessage = formatMessageForSigning(message);
-          const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
+          const signature = await signMessage(wallet.provider, message, wallet.address);
           
           signatureData = { signature, message };
           
@@ -142,6 +142,3 @@ export function useWebSocketContext() {
   
   return context;
 }
-
-// Import CacheService class for static method
-import CacheService from '../../lib/services/CacheService';
