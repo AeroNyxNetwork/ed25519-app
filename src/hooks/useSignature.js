@@ -5,12 +5,12 @@
  * 
  * Prevents repeated signature requests using the unified cache service
  * 
- * @version 2.0.0
+ * @version 2.0.1
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
-import { cacheService, CacheNamespace } from '../lib/services/CacheService';
+import CacheService, { cacheService, CacheNamespace } from '../lib/services/CacheService';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../lib/utils/walletSignature';
 
@@ -30,8 +30,8 @@ export function useSignature(action = 'default') {
     setError(null);
 
     try {
-      // Check cache first
-      const cacheKey = cacheService.generateKey('signature', wallet.address, action);
+      // Check cache first - Fixed to use static method
+      const cacheKey = CacheService.generateKey('signature', wallet.address, action);
       const cachedSignature = cacheService.get(CacheNamespace.SIGNATURE, cacheKey);
       
       if (cachedSignature) {
@@ -48,9 +48,9 @@ export function useSignature(action = 'default') {
 
       const message = messageResponse.data.message;
       const formattedMessage = formatMessageForSigning(message);
-      const signature = await signMessage(wallet.provider, formattedMessage, wallet.address);
+      const signatureValue = await signMessage(wallet.provider, formattedMessage, wallet.address);
 
-      const result = { signature, message };
+      const result = { signature: signatureValue, message };
       
       // Cache the signature
       cacheService.set(CacheNamespace.SIGNATURE, cacheKey, result, 10 * 60 * 1000); // 10 minutes
