@@ -3,9 +3,9 @@
  * 
  * File Path: src/components/providers/WebSocketProvider.js
  * 
- * Fixed version with better error handling and signature optimization
+ * Final fixed version with proper variable scoping and error handling
  * 
- * @version 3.0.0
+ * @version 4.0.0
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -15,9 +15,7 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
 import { wsManager } from '../../lib/websocket/WebSocketManager';
-import { signMessage } from '../../lib/utils/walletSignature';
-import nodeRegistrationService from '../../lib/api/nodeRegistration';
-import { cacheService, CacheNamespace } from '../../lib/services/CacheService';
+import { useSignature } from '../../hooks/useSignature';
 
 const WebSocketContext = createContext(null);
 
@@ -28,21 +26,33 @@ export function WebSocketProvider({ children }) {
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [nodes, setNodes] = useState([]);
   
+  // Use the shared signature hook
+  const { signature, message, error: signatureError } = useSignature('websocket');
+  
   // Refs to prevent multiple initialization attempts
   const initializingRef = useRef(false);
-  const signatureRef = useRef(null);
+  const serviceKeyRef = useRef(null);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
       // Cleanup when wallet disconnected
-      if (userMonitorService) {
-        wsManager.removeService(`userMonitor:${wallet.address}`);
-        setUserMonitorService(null);
+      if (serviceKeyRef.current) {
+        wsManager.removeService(serviceKeyRef.current);
+        serviceKeyRef.current = null;
       }
+      setUserMonitorService(null);
       setIsInitialized(false);
       setConnectionStatus('disconnected');
       setNodes([]);
-      signatureRef.current = null;
+      return;
+    }
+
+    // Wait for signature
+    if (!signature || !message) {
+      if (signatureError) {
+        console.error('Signature error:', signatureError);
+        setConnectionStatus('error');
+      }
       return;
     }
 
@@ -51,54 +61,24 @@ export function WebSocketProvider({ children }) {
       return;
     }
 
-    // Initialize user monitor when wallet connected
+    // Initialize user monitor when wallet connected and signature ready
     const initializeUserMonitor = async () => {
       initializingRef.current = true;
       
       try {
-        // Check if we already have a valid signature
-        let signatureData = signatureRef.current;
-        
-        if (!signatureData) {
-          // Check cache for existing signature
-          const cacheKey = cacheService.generateKey('signature', wallet.address, 'websocket');
-          signatureData = cacheService.get(CacheNamespace.SIGNATURE, cacheKey);
-        }
-        
-        if (!signatureData) {
-          try {
-            // Generate new signature
-            const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-            
-            if (!messageResponse.success) {
-              throw new Error(messageResponse.message || 'Failed to generate signature message');
-            }
-
-            const message = messageResponse.data.message;
-            const signature = await signMessage(wallet.provider, message, wallet.address);
-            
-            signatureData = { signature, message };
-            signatureRef.current = signatureData;
-            
-            // Cache the signature
-            cacheService.set(CacheNamespace.SIGNATURE, cacheKey, signatureData, 10 * 60 * 1000);
-          } catch (error) {
-            console.error('Failed to generate signature:', error);
-            setConnectionStatus('error');
-            return;
-          }
-        }
-
         // Create wallet credentials
         const walletCredentials = {
           walletAddress: wallet.address,
-          signature: signatureData.signature,
-          message: signatureData.message,
+          signature: signature,
+          message: message,
           walletType: 'okx'
         };
 
         // Get or create user monitor service
         const service = wsManager.getUserMonitorService(walletCredentials);
+        const serviceKey = `userMonitor:${wallet.address}`;
+        serviceKeyRef.current = serviceKey;
+        
         setUserMonitorService(service);
 
         // Setup event handlers
@@ -112,7 +92,15 @@ export function WebSocketProvider({ children }) {
 
         service.on('auth_success', () => {
           setConnectionStatus('authenticated');
-          service.startMonitoring();
+          // Start monitoring after successful auth
+          service.startMonitoring().catch(err => {
+            console.warn('Failed to start monitoring:', err);
+          });
+        });
+
+        service.on('auth_failed', (data) => {
+          console.error('WebSocket auth failed:', data);
+          setConnectionStatus('auth_failed');
         });
 
         service.on('monitoring_started', () => {
@@ -122,7 +110,6 @@ export function WebSocketProvider({ children }) {
         service.on('error', (error) => {
           console.error('WebSocket error:', error);
           // Don't fail initialization on WebSocket errors
-          // as we have REST API fallback
         });
 
         // Connect with error handling
@@ -148,11 +135,12 @@ export function WebSocketProvider({ children }) {
 
     // Cleanup
     return () => {
-      if (wallet.address) {
-        wsManager.removeService(`userMonitor:${wallet.address}`);
+      if (serviceKeyRef.current) {
+        wsManager.removeService(serviceKeyRef.current);
+        serviceKeyRef.current = null;
       }
     };
-  }, [wallet.connected, wallet.address, wallet.provider, isInitialized]);
+  }, [wallet.connected, wallet.address, signature, message, signatureError, isInitialized]);
 
   const value = {
     wsManager,
