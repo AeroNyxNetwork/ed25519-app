@@ -3,10 +3,10 @@
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * Contains the main dashboard UI logic separated from the page component
- * to avoid circular dependencies and SSR issues.
+ * Production-ready dashboard UI for Web3 tool platform
+ * Focused on node management and operational metrics
  * 
- * @version 1.0.0
+ * @version 2.0.0
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -20,7 +20,6 @@ import Link from 'next/link';
 import DashboardStatsCard from './DashboardStatsCard';
 import NodeList from './NodeList';
 import QuickActionButton from './QuickActionButton';
-import MetricsOverview from './MetricsOverview';
 import RealTimeNodeMonitor from './RealTimeDashboard';
 import BlockchainIntegrationModule from './BlockchainIntegrationModule';
 
@@ -51,22 +50,6 @@ export default function DashboardContent() {
     enableRESTFallback: true,
     hybridMode: true
   });
-
-  // Calculate derived metrics
-  const financialMetrics = {
-    totalValue: stats.totalEarnings * 1.5 || 0,
-    apy: 12.5,
-    roi: 15.3,
-    dailyYield: stats.totalEarnings / 30 || 0,
-    monthlyProjection: stats.totalEarnings || 0,
-    riskScore: 25,
-    efficiencyRating: stats.resourceUtilization || 0,
-    diversificationScore: 75
-  };
-
-  const trends = {
-    earningsTrend: { direction: 'up', percentage: 5.2 }
-  };
 
   // Event handlers
   const handleBlockchainIntegration = useCallback((node) => {
@@ -190,19 +173,19 @@ export default function DashboardContent() {
         />
         
         <DashboardStatsCard
-          title="Total Earnings"
-          value={`$${stats.totalEarnings.toFixed(2)}`}
-          subtitle="Lifetime earnings"
-          icon="earnings"
+          title="Resource Usage"
+          value={`${stats.resourceUtilization}%`}
+          subtitle="Average utilization"
+          icon="performance"
           color="accent"
-          trend="up"
-          trendValue={5.2}
+          trend={stats.resourceUtilization > 70 ? 'up' : 'stable'}
+          trendValue={stats.resourceUtilization > 70 ? 5.2 : 0}
         />
         
         <DashboardStatsCard
-          title="Network Contribution"
+          title="Network Share"
           value={stats.networkContribution}
-          subtitle="Your share"
+          subtitle="Your contribution"
           icon="network"
           color="secondary"
         />
@@ -212,13 +195,6 @@ export default function DashboardContent() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column - Main Content */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Financial Metrics */}
-          <MetricsOverview
-            financialMetrics={financialMetrics}
-            trends={trends}
-            timeframe="24h"
-          />
-          
           {/* Node List */}
           <div className="card glass-effect">
             <div className="p-6">
