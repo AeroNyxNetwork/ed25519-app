@@ -3,11 +3,9 @@
  * 
  * File Path: src/hooks/useDashboardData.js
  * 
- * Production-grade React hook providing comprehensive dashboard data management
- * with intelligent switching between REST API and WebSocket data sources.
- * Fixed initialization and import issues.
+ * Fixed version with better error handling and reduced signature requests
  * 
- * @version 2.0.2
+ * @version 3.0.0
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -18,7 +16,6 @@ import { useDashboardWebSocket } from './useWebSocket';
 import { useSignature } from './useSignature';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
 import { cacheService, CacheNamespace } from '../lib/services/CacheService';
-import { mergeWebSocketUpdate } from '../lib/utils/websocketDataTransformer';
 
 /**
  * Data source types
@@ -27,7 +24,6 @@ import { mergeWebSocketUpdate } from '../lib/utils/websocketDataTransformer';
 export const DataSource = {
   WEBSOCKET: 'websocket',
   REST: 'rest',
-  HYBRID: 'hybrid',
   CACHE: 'cache'
 };
 
@@ -41,7 +37,6 @@ export function useDashboard(config = {}) {
   const {
     preferWebSocket = true,
     enableRESTFallback = true,
-    hybridMode = true,
     restInterval = 60000,
     enableCache = true,
     onDataUpdate,
@@ -49,7 +44,7 @@ export function useDashboard(config = {}) {
   } = config;
   
   const { wallet } = useWallet();
-  const { signature, message, isLoading: signatureLoading } = useSignature('dashboard');
+  const { signature, message, isLoading: signatureLoading, error: signatureError } = useSignature('dashboard');
   
   // ==================== STATE MANAGEMENT ====================
   
@@ -60,9 +55,7 @@ export function useDashboard(config = {}) {
     isRefreshing: false,
     error: null,
     dataSource: null,
-    lastUpdate: null,
-    lastRESTUpdate: null,
-    lastWSUpdate: null
+    lastUpdate: null
   });
   
   const [stats, setStats] = useState({
@@ -80,6 +73,7 @@ export function useDashboard(config = {}) {
   const mountedRef = useRef(true);
   const refreshTimerRef = useRef(null);
   const requestInProgressRef = useRef(false);
+  const lastFetchRef = useRef(0);
   
   // ==================== WEBSOCKET SETUP ====================
   
@@ -100,13 +94,9 @@ export function useDashboard(config = {}) {
     monitoring: wsMonitoring,
     data: wsData,
     error: wsError,
-    connect: wsConnect,
-    disconnect: wsDisconnect,
-    startMonitoring: wsStartMonitoring,
-    stopMonitoring: wsStopMonitoring,
     connectionHealth: wsConnectionHealth
   } = useDashboardWebSocket(wsCredentials, {
-    autoConnect: preferWebSocket && !signatureLoading,
+    autoConnect: preferWebSocket && !signatureLoading && !signatureError,
     autoMonitor: true,
     enableCache,
     onData: handleWebSocketData,
@@ -114,40 +104,6 @@ export function useDashboard(config = {}) {
   });
   
   // ==================== DATA PROCESSING ====================
-  
-  /**
-   * Calculate network contribution
-   */
-  const calculateNetworkContribution = useCallback((nodes) => {
-    if (!Array.isArray(nodes)) return '0%';
-    
-    const activeNodes = nodes.filter(n => 
-      n.status === 'active' || n.status === 'online'
-    ).length;
-    
-    return `${(activeNodes * 0.0015).toFixed(4)}%`;
-  }, []);
-  
-  /**
-   * Calculate resource utilization
-   */
-  const calculateResourceUtilization = useCallback((nodes) => {
-    if (!Array.isArray(nodes)) return 0;
-    
-    const activeNodes = nodes.filter(n => 
-      n.status === 'active' || n.status === 'online'
-    );
-    
-    if (activeNodes.length === 0) return 0;
-    
-    const totalUtil = activeNodes.reduce((sum, node) => {
-      const cpu = node.performance?.cpu_usage || 0;
-      const memory = node.performance?.memory_usage || 0;
-      return sum + ((cpu + memory) / 2);
-    }, 0);
-    
-    return Math.round(totalUtil / activeNodes.length);
-  }, []);
   
   /**
    * Process dashboard data from any source
@@ -158,13 +114,10 @@ export function useDashboard(config = {}) {
     // Extract nodes array from different possible structures
     let nodesArray = [];
     
-    // Handle different API response structures
     if (data.nodes) {
       if (Array.isArray(data.nodes)) {
-        // Direct array
         nodesArray = data.nodes;
       } else if (typeof data.nodes === 'object') {
-        // Grouped by status (REST API structure)
         nodesArray = [
           ...(data.nodes.online || []),
           ...(data.nodes.active || []),
@@ -185,20 +138,41 @@ export function useDashboard(config = {}) {
         (summary.offline_nodes || 0)
       ),
       totalEarnings: parseFloat(summary.total_earnings || 0),
-      networkContribution: calculateNetworkContribution(nodesArray),
+      networkContribution: `${(Math.max(0, summary.online_nodes || 0) * 0.0015).toFixed(4)}%`,
       resourceUtilization: calculateResourceUtilization(nodesArray)
     };
     
     return {
       dashboardData: {
         stats: processedStats,
-        nodes: nodesArray.slice(0, 4), // Dashboard preview
+        nodes: nodesArray.slice(0, 4),
         timestamp: new Date().toISOString(),
         source
       },
       stats: processedStats
     };
-  }, [calculateNetworkContribution, calculateResourceUtilization]);
+  }, []);
+  
+  /**
+   * Calculate resource utilization
+   */
+  const calculateResourceUtilization = useCallback((nodes) => {
+    if (!Array.isArray(nodes) || nodes.length === 0) return 0;
+    
+    const activeNodes = nodes.filter(n => 
+      n.status === 'active' || n.status === 'online'
+    );
+    
+    if (activeNodes.length === 0) return 0;
+    
+    const totalUtil = activeNodes.reduce((sum, node) => {
+      const cpu = node.performance?.cpu_usage || 0;
+      const memory = node.performance?.memory_usage || 0;
+      return sum + ((cpu + memory) / 2);
+    }, 0);
+    
+    return Math.round(totalUtil / activeNodes.length);
+  }, []);
   
   // ==================== WEBSOCKET HANDLERS ====================
   
@@ -208,38 +182,29 @@ export function useDashboard(config = {}) {
   function handleWebSocketData(data) {
     if (!mountedRef.current) return;
     
-    // Ensure data has correct structure
-    const normalizedData = {
-      summary: data.summary || {},
-      nodes: data.nodes || { online: [], active: [], offline: [] },
-      wallet_info: data.wallet_info,
-      performance_stats: data.performance_stats
-    };
-    
-    const processed = processDashboardData(normalizedData, DataSource.WEBSOCKET);
-    
-    setState(prev => ({
-      ...prev,
-      dashboardData: processed?.dashboardData,
-      nodesOverview: normalizedData,
-      dataSource: DataSource.WEBSOCKET,
-      lastUpdate: new Date(),
-      lastWSUpdate: new Date(),
-      error: null,
-      isLoading: false
-    }));
+    const processed = processDashboardData(data, DataSource.WEBSOCKET);
     
     if (processed) {
+      setState(prev => ({
+        ...prev,
+        dashboardData: processed.dashboardData,
+        nodesOverview: data,
+        dataSource: DataSource.WEBSOCKET,
+        lastUpdate: new Date(),
+        error: null,
+        isLoading: false
+      }));
+      
       setStats(processed.stats);
+      
+      // Cache the data
+      if (enableCache && wallet.address) {
+        const cacheKey = cacheService.generateKey('dashboard', wallet.address);
+        cacheService.set(CacheNamespace.API, cacheKey, data, 5 * 60 * 1000);
+      }
+      
+      onDataUpdate?.(processed.dashboardData, DataSource.WEBSOCKET);
     }
-    
-    // Cache the data
-    if (enableCache) {
-      const cacheKey = cacheService.generateKey('dashboard', wallet.address);
-      cacheService.set(CacheNamespace.API, cacheKey, normalizedData, 5 * 60 * 1000);
-    }
-    
-    onDataUpdate?.(processed?.dashboardData, DataSource.WEBSOCKET);
   }
   
   /**
@@ -248,7 +213,7 @@ export function useDashboard(config = {}) {
   function handleWebSocketError(error) {
     if (!mountedRef.current) return;
     
-    console.error('[useDashboard] WebSocket error:', error);
+    console.warn('[useDashboard] WebSocket error:', error);
     
     // Fallback to REST if enabled
     if (enableRESTFallback && !state.dashboardData) {
@@ -261,11 +226,17 @@ export function useDashboard(config = {}) {
   // ==================== REST API FUNCTIONS ====================
   
   /**
-   * Fetch data from REST API
+   * Fetch data from REST API with rate limiting
    */
   const fetchRESTData = useCallback(async (forceRefresh = false) => {
     if (!wallet.connected || !signature || !message) return;
     if (requestInProgressRef.current) return;
+    
+    // Rate limiting - prevent too frequent requests
+    const now = Date.now();
+    if (!forceRefresh && (now - lastFetchRef.current) < 5000) {
+      return;
+    }
     
     // Check cache first
     if (enableCache && !forceRefresh) {
@@ -279,6 +250,7 @@ export function useDashboard(config = {}) {
     }
     
     requestInProgressRef.current = true;
+    lastFetchRef.current = now;
     
     setState(prev => ({
       ...prev,
@@ -296,6 +268,12 @@ export function useDashboard(config = {}) {
       
       if (response.success && response.data) {
         handleRESTData(response.data, false);
+      } else if (response.message?.includes('No nodes found')) {
+        // Handle empty state
+        handleRESTData({
+          summary: { total_nodes: 0, online_nodes: 0, offline_nodes: 0, total_earnings: 0 },
+          nodes: { online: [], active: [], offline: [] }
+        }, false);
       } else {
         throw new Error(response.message || 'Failed to fetch dashboard data');
       }
@@ -319,23 +297,14 @@ export function useDashboard(config = {}) {
   const handleRESTData = useCallback((data, fromCache) => {
     if (!mountedRef.current) return;
     
-    // Ensure data has correct structure
-    const normalizedData = {
-      summary: data.summary || {},
-      nodes: data.nodes || { online: [], active: [], offline: [] },
-      wallet_info: data.wallet_info,
-      performance_stats: data.performance_stats
-    };
-    
-    const processed = processDashboardData(normalizedData, fromCache ? DataSource.CACHE : DataSource.REST);
+    const processed = processDashboardData(data, fromCache ? DataSource.CACHE : DataSource.REST);
     
     setState(prev => ({
       ...prev,
       dashboardData: processed?.dashboardData,
-      nodesOverview: normalizedData,
+      nodesOverview: data,
       dataSource: fromCache ? DataSource.CACHE : DataSource.REST,
       lastUpdate: new Date(),
-      lastRESTUpdate: fromCache ? prev.lastRESTUpdate : new Date(),
       error: null
     }));
     
@@ -344,9 +313,9 @@ export function useDashboard(config = {}) {
     }
     
     // Cache the data
-    if (enableCache && !fromCache) {
+    if (enableCache && !fromCache && wallet.address) {
       const cacheKey = cacheService.generateKey('dashboard', wallet.address);
-      cacheService.set(CacheNamespace.API, cacheKey, normalizedData, 5 * 60 * 1000);
+      cacheService.set(CacheNamespace.API, cacheKey, data, 5 * 60 * 1000);
     }
     
     onDataUpdate?.(processed?.dashboardData, fromCache ? DataSource.CACHE : DataSource.REST);
@@ -360,25 +329,14 @@ export function useDashboard(config = {}) {
     
     console.error('[useDashboard] REST error:', error);
     
-    // Special case: user has no nodes
-    if (error.message?.includes('No nodes found')) {
-      const emptyData = {
-        summary: { total_nodes: 0, online_nodes: 0, offline_nodes: 0, total_earnings: 0 },
-        nodes: { online: [], active: [], offline: [] }
-      };
-      
-      handleRESTData(emptyData, false);
-      return;
-    }
-    
     setState(prev => ({
       ...prev,
-      error,
+      error: error.message || 'Failed to load dashboard data',
       dataSource: DataSource.REST
     }));
     
     onError?.(error, DataSource.REST);
-  }, [handleRESTData, onError]);
+  }, [onError]);
   
   // ==================== ACTIONS ====================
   
@@ -387,41 +345,11 @@ export function useDashboard(config = {}) {
    */
   const refresh = useCallback(async (force = true) => {
     if (preferWebSocket && wsMonitoring && !force) {
-      // WebSocket is active, no need to refresh
       return;
     }
     
     await fetchRESTData(force);
   }, [preferWebSocket, wsMonitoring, fetchRESTData]);
-  
-  /**
-   * Switch data source
-   */
-  const switchDataSource = useCallback((source) => {
-    switch (source) {
-      case DataSource.WEBSOCKET:
-        if (!wsConnected) {
-          wsConnect();
-        } else if (!wsMonitoring) {
-          wsStartMonitoring();
-        }
-        break;
-        
-      case DataSource.REST:
-        if (wsMonitoring) {
-          wsStopMonitoring();
-        }
-        refresh(true);
-        break;
-        
-      case DataSource.HYBRID:
-        if (!wsConnected) {
-          wsConnect();
-        }
-        refresh(false);
-        break;
-    }
-  }, [wsConnected, wsMonitoring, wsConnect, wsStartMonitoring, wsStopMonitoring, refresh]);
   
   // ==================== LIFECYCLE MANAGEMENT ====================
   
@@ -431,30 +359,40 @@ export function useDashboard(config = {}) {
   useEffect(() => {
     if (!wallet.connected || signatureLoading) return;
     
-    // Load initial data
-    if (!preferWebSocket || !wsConnected) {
+    // If signature failed, show error
+    if (signatureError) {
+      setState(prev => ({
+        ...prev,
+        error: 'Failed to authenticate. Please try reconnecting your wallet.',
+        isLoading: false
+      }));
+      return;
+    }
+    
+    // Load initial data if we have signature
+    if (signature && message) {
       fetchRESTData();
     }
-  }, [wallet.connected, signatureLoading, preferWebSocket, wsConnected, fetchRESTData]);
+  }, [wallet.connected, signature, message, signatureLoading, signatureError]);
   
   /**
    * Setup REST refresh interval
    */
   useEffect(() => {
-    if (!hybridMode || wsMonitoring) return;
-    
-    refreshTimerRef.current = setInterval(() => {
-      if (!wsMonitoring) {
-        fetchRESTData();
-      }
-    }, restInterval);
+    if (!preferWebSocket || !wsMonitoring) {
+      refreshTimerRef.current = setInterval(() => {
+        if (!wsMonitoring) {
+          fetchRESTData();
+        }
+      }, restInterval);
+    }
     
     return () => {
       if (refreshTimerRef.current) {
         clearInterval(refreshTimerRef.current);
       }
     };
-  }, [hybridMode, wsMonitoring, restInterval, fetchRESTData]);
+  }, [preferWebSocket, wsMonitoring, restInterval, fetchRESTData]);
   
   /**
    * Cleanup on unmount
@@ -496,16 +434,6 @@ export function useDashboard(config = {}) {
     return { status: 'disconnected', label: 'No Data', color: 'gray' };
   }, [wsMonitoring, wsConnectionHealth, state.error, state.dataSource]);
   
-  /**
-   * Loading states
-   */
-  const loadingStates = useMemo(() => ({
-    isInitialLoading: state.isLoading && !state.dashboardData,
-    isRefreshing: state.isRefreshing,
-    hasData: !!state.dashboardData,
-    hasError: !!state.error
-  }), [state]);
-  
   // ==================== PUBLIC API ====================
   
   return {
@@ -515,28 +443,19 @@ export function useDashboard(config = {}) {
     stats,
     
     // States
-    ...loadingStates,
+    isInitialLoading: state.isLoading && !state.dashboardData,
+    isRefreshing: state.isRefreshing,
     error: state.error,
     
     // Connection info
     dataSource: state.dataSource,
     connectionHealth,
-    isRealtime: wsMonitoring,
     
     // Timestamps
     lastUpdate: state.lastUpdate,
-    lastRESTUpdate: state.lastRESTUpdate,
-    lastWSUpdate: state.lastWSUpdate,
     
     // Actions
-    refresh,
-    switchDataSource,
-    
-    // WebSocket controls
-    connectWebSocket: wsConnect,
-    disconnectWebSocket: wsDisconnect,
-    startRealtimeMonitoring: wsStartMonitoring,
-    stopRealtimeMonitoring: wsStopMonitoring
+    refresh
   };
 }
 
