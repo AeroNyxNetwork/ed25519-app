@@ -3,21 +3,19 @@
  * 
  * File Path: src/components/providers/WebSocketProvider.js
  * 
- * Provides WebSocket context and services to the application
- * with automatic connection management using the unified cache service.
- * Fixed import issues and signature generation.
+ * Fixed version with better error handling and signature optimization
  * 
- * @version 2.0.2
+ * @version 3.0.0
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
 
 'use client';
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
 import { wsManager } from '../../lib/websocket/WebSocketManager';
-import { signMessage, formatMessageForSigning } from '../../lib/utils/walletSignature';
+import { signMessage } from '../../lib/utils/walletSignature';
 import nodeRegistrationService from '../../lib/api/nodeRegistration';
 import { cacheService, CacheNamespace } from '../../lib/services/CacheService';
 
@@ -29,6 +27,10 @@ export function WebSocketProvider({ children }) {
   const [isInitialized, setIsInitialized] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [nodes, setNodes] = useState([]);
+  
+  // Refs to prevent multiple initialization attempts
+  const initializingRef = useRef(false);
+  const signatureRef = useRef(null);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -40,31 +42,51 @@ export function WebSocketProvider({ children }) {
       setIsInitialized(false);
       setConnectionStatus('disconnected');
       setNodes([]);
+      signatureRef.current = null;
+      return;
+    }
+
+    // Prevent multiple initialization attempts
+    if (initializingRef.current || isInitialized) {
       return;
     }
 
     // Initialize user monitor when wallet connected
     const initializeUserMonitor = async () => {
+      initializingRef.current = true;
+      
       try {
-        // Check cache for existing signature
-        const cacheKey = cacheService.generateKey('signature', wallet.address, 'websocket');
-        let signatureData = cacheService.get(CacheNamespace.SIGNATURE, cacheKey);
+        // Check if we already have a valid signature
+        let signatureData = signatureRef.current;
         
         if (!signatureData) {
-          // Generate new signature
-          const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-          
-          if (!messageResponse.success) {
-            throw new Error(messageResponse.message || 'Failed to generate signature message');
-          }
+          // Check cache for existing signature
+          const cacheKey = cacheService.generateKey('signature', wallet.address, 'websocket');
+          signatureData = cacheService.get(CacheNamespace.SIGNATURE, cacheKey);
+        }
+        
+        if (!signatureData) {
+          try {
+            // Generate new signature
+            const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+            
+            if (!messageResponse.success) {
+              throw new Error(messageResponse.message || 'Failed to generate signature message');
+            }
 
-          const message = messageResponse.data.message;
-          const signature = await signMessage(wallet.provider, message, wallet.address);
-          
-          signatureData = { signature, message };
-          
-          // Cache the signature
-          cacheService.set(CacheNamespace.SIGNATURE, cacheKey, signatureData, 10 * 60 * 1000);
+            const message = messageResponse.data.message;
+            const signature = await signMessage(wallet.provider, message, wallet.address);
+            
+            signatureData = { signature, message };
+            signatureRef.current = signatureData;
+            
+            // Cache the signature
+            cacheService.set(CacheNamespace.SIGNATURE, cacheKey, signatureData, 10 * 60 * 1000);
+          } catch (error) {
+            console.error('Failed to generate signature:', error);
+            setConnectionStatus('error');
+            return;
+          }
         }
 
         // Create wallet credentials
@@ -97,13 +119,28 @@ export function WebSocketProvider({ children }) {
           setConnectionStatus('monitoring');
         });
 
-        // Connect and start monitoring
-        await service.connect();
+        service.on('error', (error) => {
+          console.error('WebSocket error:', error);
+          // Don't fail initialization on WebSocket errors
+          // as we have REST API fallback
+        });
+
+        // Connect with error handling
+        try {
+          await service.connect();
+        } catch (error) {
+          console.warn('WebSocket connection failed, will use REST API fallback:', error);
+          // Don't throw - allow app to continue with REST API
+        }
         
         setIsInitialized(true);
       } catch (error) {
         console.error('Failed to initialize user monitor:', error);
         setConnectionStatus('error');
+        // Still mark as initialized to prevent retry loop
+        setIsInitialized(true);
+      } finally {
+        initializingRef.current = false;
       }
     };
 
@@ -115,7 +152,7 @@ export function WebSocketProvider({ children }) {
         wsManager.removeService(`userMonitor:${wallet.address}`);
       }
     };
-  }, [wallet.connected, wallet.address, wallet.provider]);
+  }, [wallet.connected, wallet.address, wallet.provider, isInitialized]);
 
   const value = {
     wsManager,
