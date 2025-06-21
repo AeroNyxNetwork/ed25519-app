@@ -3,19 +3,9 @@
  * 
  * File Path: src/hooks/useWebSocket.js
  * 
- * Production-grade React hook providing a unified interface for all WebSocket
- * connections following Google's engineering standards. Supports multiple
- * connection types with automatic management and error recovery.
+ * Fixed version with proper event handling according to API docs
  * 
- * Features:
- * - Unified interface for all WebSocket types
- * - Automatic connection lifecycle management
- * - Built-in error recovery and reconnection
- * - Performance monitoring and metrics
- * - Memory leak prevention
- * - TypeScript-ready with JSDoc annotations
- * 
- * @version 2.0.0
+ * @version 3.0.0
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -23,7 +13,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { wsManager } from '../lib/websocket/WebSocketManager';
 import { cacheService, CacheNamespace } from '../lib/services/CacheService';
-import { transformWebSocketToREST, transformRESTToWebSocket } from '../lib/utils/websocketDataTransformer';
 
 /**
  * WebSocket connection types
@@ -50,42 +39,10 @@ export const ConnectionState = {
 };
 
 /**
- * WebSocket hook configuration
- * @typedef {Object} WebSocketConfig
- * @property {string} type - Connection type from WebSocketType enum
- * @property {boolean} autoConnect - Auto-connect on mount (default: true)
- * @property {boolean} autoMonitor - Auto-start monitoring after auth (default: true)
- * @property {boolean} enableCache - Enable response caching (default: true)
- * @property {number} cacheTimeout - Cache timeout in ms (default: 30000)
- * @property {Function} onConnect - Connection established callback
- * @property {Function} onDisconnect - Disconnection callback
- * @property {Function} onError - Error callback
- * @property {Function} onData - Data update callback
- * @property {Object} credentials - Authentication credentials
- */
-
-/**
- * WebSocket hook return value
- * @typedef {Object} WebSocketHookReturn
- * @property {boolean} connected - Connection status
- * @property {boolean} authenticated - Authentication status
- * @property {boolean} monitoring - Monitoring status
- * @property {string} connectionState - Current connection state
- * @property {Object} data - Current data
- * @property {Object} error - Current error
- * @property {Function} connect - Manual connect function
- * @property {Function} disconnect - Manual disconnect function
- * @property {Function} send - Send message function
- * @property {Function} startMonitoring - Start monitoring function
- * @property {Function} stopMonitoring - Stop monitoring function
- * @property {Object} metrics - Connection metrics
- */
-
-/**
  * Unified WebSocket Hook
  * 
- * @param {WebSocketConfig} config - Hook configuration
- * @returns {WebSocketHookReturn} WebSocket state and controls
+ * @param {Object} config - Hook configuration
+ * @returns {Object} WebSocket state and controls
  */
 export function useWebSocket(config = {}) {
   const {
@@ -222,11 +179,24 @@ export function useWebSocket(config = {}) {
       connectionState: ConnectionState.AUTHENTICATED
     }));
     
-    // Auto-start monitoring if configured
-    if (autoMonitor && serviceRef.current?.startMonitoring) {
-      serviceRef.current.startMonitoring();
+    // For user monitor, monitoring starts automatically after auth
+    if (type === WebSocketType.USER_MONITOR || type === WebSocketType.DASHBOARD) {
+      // Monitoring will be started by the service after subscribing to nodes
     }
-  }, [autoMonitor]);
+  }, [type]);
+  
+  const handleAuthFailed = useCallback((data) => {
+    if (!mountedRef.current) return;
+    
+    setState(prev => ({
+      ...prev,
+      authenticated: false,
+      connectionState: ConnectionState.ERROR,
+      error: data.message || 'Authentication failed'
+    }));
+    
+    onError?.(new Error(data.message || 'Authentication failed'));
+  }, [onError]);
   
   const handleMonitoringStarted = useCallback(() => {
     if (!mountedRef.current) return;
@@ -238,21 +208,12 @@ export function useWebSocket(config = {}) {
     }));
   }, []);
   
-  const handleDataUpdate = useCallback((data) => {
+  const handleNodesUpdate = useCallback((data) => {
     if (!mountedRef.current) return;
     
-    // Transform data based on type
-    let transformedData = data;
-    
-    if (type === WebSocketType.DASHBOARD) {
-      // Transform WebSocket data to dashboard format
-      transformedData = transformWebSocketToREST(data);
-    }
-    
-    // Update state
     setState(prev => ({
       ...prev,
-      data: transformedData,
+      data: data,
       lastUpdate: new Date()
     }));
     
@@ -267,21 +228,23 @@ export function useWebSocket(config = {}) {
       cacheService.set(
         CacheNamespace.WEBSOCKET,
         cacheKeyRef.current,
-        transformedData,
+        data,
         cacheTimeout
       );
     }
     
     // Trigger callback
-    onData?.(transformedData);
-  }, [type, enableCache, cacheTimeout, onData]);
+    onData?.(data);
+  }, [enableCache, cacheTimeout, onData]);
   
   const handleError = useCallback((error) => {
     if (!mountedRef.current) return;
     
+    const errorMessage = error.message || error.data?.message || 'WebSocket error';
+    
     setState(prev => ({
       ...prev,
-      error,
+      error: errorMessage,
       connectionState: ConnectionState.ERROR
     }));
     
@@ -290,7 +253,7 @@ export function useWebSocket(config = {}) {
       errors: prev.errors + 1
     }));
     
-    onError?.(error);
+    onError?.(new Error(errorMessage));
   }, [onError]);
   
   // ==================== ACTIONS ====================
@@ -378,10 +341,12 @@ export function useWebSocket(config = {}) {
     service.on('connected', handleConnected);
     service.on('disconnected', handleDisconnected);
     service.on('error', handleError);
+    service.on('error_received', handleError);
     
     // Authentication events
     service.on('auth_success', handleAuthSuccess);
-    service.on('auth_failed', handleError);
+    service.on('auth_failed', handleAuthFailed);
+    service.on('authentication_error', handleAuthFailed);
     
     // Monitoring events
     service.on('monitoring_started', handleMonitoringStarted);
@@ -393,12 +358,26 @@ export function useWebSocket(config = {}) {
     switch (type) {
       case WebSocketType.USER_MONITOR:
       case WebSocketType.DASHBOARD:
-        service.on('nodes_updated', handleDataUpdate);
-        service.on('real_time_update', handleDataUpdate);
+        // Main data update event
+        service.on('nodes_updated', handleNodesUpdate);
+        
+        // Other events
+        service.on('node_updated', (data) => {
+          setMetrics(prev => ({ ...prev, messagesReceived: prev.messagesReceived + 1 }));
+        });
+        
+        service.on('earnings_updated', (data) => {
+          setMetrics(prev => ({ ...prev, messagesReceived: prev.messagesReceived + 1 }));
+        });
+        
+        service.on('alert_received', (data) => {
+          setMetrics(prev => ({ ...prev, messagesReceived: prev.messagesReceived + 1 }));
+        });
         break;
+        
       case WebSocketType.NODE:
-        service.on('status_update', handleDataUpdate);
-        service.on('metrics_update', handleDataUpdate);
+        service.on('status_update', handleNodesUpdate);
+        service.on('metrics_update', handleNodesUpdate);
         break;
     }
     
@@ -406,7 +385,7 @@ export function useWebSocket(config = {}) {
     service.on('pong', (data) => {
       setMetrics(prev => ({ ...prev, latency: data.latency }));
     });
-  }, [type, handleConnected, handleDisconnected, handleError, handleAuthSuccess, handleMonitoringStarted, handleDataUpdate]);
+  }, [type, handleConnected, handleDisconnected, handleError, handleAuthSuccess, handleAuthFailed, handleMonitoringStarted, handleNodesUpdate]);
   
   // ==================== LIFECYCLE MANAGEMENT ====================
   
@@ -485,7 +464,7 @@ export function useWebSocket(config = {}) {
       case ConnectionState.RECONNECTING:
         return { status: 'connecting', label: 'Connecting...', color: 'yellow' };
       case ConnectionState.ERROR:
-        return { status: 'error', label: error?.message || 'Connection Error', color: 'red' };
+        return { status: 'error', label: error || 'Connection Error', color: 'red' };
       default:
         return { status: 'disconnected', label: 'Disconnected', color: 'gray' };
     }
@@ -520,7 +499,7 @@ export function useWebSocket(config = {}) {
  * 
  * @param {Object} credentials - Wallet credentials
  * @param {Object} options - Additional options
- * @returns {WebSocketHookReturn} WebSocket state and controls
+ * @returns {Object} WebSocket state and controls
  */
 export function useDashboardWebSocket(credentials, options = {}) {
   return useWebSocket({
@@ -536,7 +515,7 @@ export function useDashboardWebSocket(credentials, options = {}) {
  * 
  * @param {string} referenceCode - Node reference code
  * @param {Object} options - Additional options
- * @returns {WebSocketHookReturn} WebSocket state and controls
+ * @returns {Object} WebSocket state and controls
  */
 export function useNodeWebSocket(referenceCode, options = {}) {
   return useWebSocket({
@@ -552,7 +531,7 @@ export function useNodeWebSocket(referenceCode, options = {}) {
  * 
  * @param {Object} credentials - Wallet credentials
  * @param {Object} options - Additional options
- * @returns {WebSocketHookReturn} WebSocket state and controls
+ * @returns {Object} WebSocket state and controls
  */
 export function useUserMonitorWebSocket(credentials, options = {}) {
   return useWebSocket({
