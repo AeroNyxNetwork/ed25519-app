@@ -1,12 +1,11 @@
 /**
  * Base WebSocket Service for AeroNyx Platform
  * 
- * Provides a robust, production-ready WebSocket client with automatic
- * reconnection, exponential backoff, message queuing, and comprehensive
- * error handling following Google engineering standards.
+ * File Path: src/lib/websocket/WebSocketService.js
  * 
- * @class WebSocketService
- * @version 1.0.0
+ * Fixed version with correct message handling according to API docs
+ * 
+ * @version 2.0.0
  */
 
 import EventEmitter from 'events';
@@ -24,13 +23,15 @@ export const WebSocketCloseCode = {
   GOING_AWAY: 1001,
   PROTOCOL_ERROR: 1002,
   UNSUPPORTED_DATA: 1003,
+  CONNECTION_SETUP_FAILED: 4000,
   AUTH_TIMEOUT: 4001,
-  INACTIVE_CONNECTION: 4002,
-  SECURITY_VIOLATION: 4005,
+  CONNECTION_INACTIVE: 4002,
+  SECURITY_VIOLATIONS: 4005,
   ACCOUNT_LOCKED: 4006,
-  TOO_MANY_AUTH_ATTEMPTS: 4007,
+  AUTH_ATTEMPTS_EXCEEDED: 4007,
   IP_CONNECTION_LIMIT: 4008,
-  SERVER_CONNECTION_LIMIT: 4009
+  SERVER_CONNECTION_LIMIT: 4009,
+  INVALID_CLIENT: 4010
 };
 
 export default class WebSocketService extends EventEmitter {
@@ -61,7 +62,7 @@ export default class WebSocketService extends EventEmitter {
     this.authenticated = false;
     
     this.metrics = {
-      messagessSent: 0,
+      messagesSent: 0,
       messagesReceived: 0,
       connectionAttempts: 0,
       lastConnectedAt: null,
@@ -118,16 +119,13 @@ export default class WebSocketService extends EventEmitter {
       throw new Error('Invalid message data');
     }
 
-    const message = {
-      ...data,
-      timestamp: new Date().toISOString(),
-      client_version: '1.0.0'
-    };
+    // Don't add extra fields that might break API format
+    const message = { ...data };
 
     if (this.state === WebSocketState.OPEN && this.ws) {
       try {
         this.ws.send(JSON.stringify(message));
-        this.metrics.messagessSent++;
+        this.metrics.messagesSent++;
         this.emit('message_sent', message);
         return;
       } catch (error) {
@@ -160,6 +158,9 @@ export default class WebSocketService extends EventEmitter {
           
           this.log('info', 'WebSocket connected');
           this.emit('connected');
+          
+          // Emit connection established for authentication
+          this.emit('connection_established');
           
           this._processMessageQueue();
           resolve();
@@ -194,33 +195,56 @@ export default class WebSocketService extends EventEmitter {
       this.metrics.messagesReceived++;
       
       this.log('debug', 'Message received', data);
+      
+      // First emit raw message
       this.emit('message', data);
       
-      // Handle common message types
-      switch (data.type) {
-        case 'connection_established':
-          this._handleConnectionEstablished(data);
-          break;
+      // Handle messages based on type field
+      if (data.type) {
+        // Emit specific event for this message type
+        this.emit(data.type, data.data || data);
         
-        case 'auth_success':
-          this._handleAuthSuccess(data);
-          break;
-        
-        case 'auth_failed':
-          this._handleAuthFailed(data);
-          break;
-        
-        case 'heartbeat_ack':
-          this._handleHeartbeatAck(data);
-          break;
-        
-        case 'error':
-          this._handleError(data);
-          break;
-        
-        case 'pong':
-          this._handlePong(data);
-          break;
+        // Handle common message types
+        switch (data.type) {
+          case 'connection_established':
+            this._handleConnectionEstablished(data);
+            break;
+          
+          case 'auth_success':
+            this._handleAuthSuccess(data.data || data);
+            break;
+          
+          case 'auth_failed':
+            this._handleAuthFailed(data.data || data);
+            break;
+          
+          case 'heartbeat_ack':
+            this._handleHeartbeatAck(data);
+            break;
+          
+          case 'error':
+            this._handleError(data.data || data);
+            break;
+          
+          case 'pong':
+            this._handlePong(data);
+            break;
+            
+          // User monitor specific events
+          case 'node_status_update':
+          case 'real_time_update':
+          case 'earnings_update':
+          case 'node_alert':
+            // These are handled by UserMonitorWebSocketService
+            break;
+            
+          // Node specific events  
+          case 'config_update':
+          case 'task_assignment':
+          case 'system_announcement':
+            // These are handled by NodeWebSocketService
+            break;
+        }
       }
       
     } catch (error) {
@@ -234,8 +258,8 @@ export default class WebSocketService extends EventEmitter {
    * @private
    */
   _handleConnectionEstablished(data) {
-    this.connectionId = data.connection_id;
-    this.emit('connection_established', data);
+    this.connectionId = data.connection_id || data.data?.connection_id;
+    this.log('info', 'Connection established with ID:', this.connectionId);
   }
 
   /**
@@ -244,8 +268,9 @@ export default class WebSocketService extends EventEmitter {
    */
   _handleAuthSuccess(data) {
     this.authenticated = true;
-    this.emit('auth_success', data);
+    this.log('info', 'Authentication successful');
     
+    // Start heartbeat if interval provided
     if (data.heartbeat_interval) {
       this._startHeartbeat(data.heartbeat_interval * 1000);
     }
@@ -257,7 +282,10 @@ export default class WebSocketService extends EventEmitter {
    */
   _handleAuthFailed(data) {
     this.authenticated = false;
-    this.emit('auth_failed', data);
+    this.log('error', 'Authentication failed:', data.message || data);
+    
+    // Don't reconnect on auth failures
+    this.options.reconnect = false;
   }
 
   /**
@@ -274,8 +302,19 @@ export default class WebSocketService extends EventEmitter {
    * @private
    */
   _handleError(data) {
-    this.log('error', `Server error: ${data.error_code} - ${data.message}`);
-    this.emit('server_error', data);
+    const errorCode = data.code || data.error_code;
+    const errorMessage = data.message || 'Unknown error';
+    
+    this.log('error', `Server error: ${errorCode} - ${errorMessage}`);
+    
+    // Determine if we should reconnect based on error code
+    switch (errorCode) {
+      case 'AUTHENTICATION_FAILED':
+      case 'PERMISSION_DENIED':
+      case 'INVALID_CLIENT':
+        this.options.reconnect = false;
+        break;
+    }
   }
 
   /**
@@ -283,7 +322,7 @@ export default class WebSocketService extends EventEmitter {
    * @private
    */
   _handlePong(data) {
-    const latency = Date.now() - data.timestamp;
+    const latency = Date.now() - (data.timestamp || 0);
     this.emit('pong', { ...data, latency });
   }
 
@@ -328,10 +367,13 @@ export default class WebSocketService extends EventEmitter {
    * @private
    */
   _shouldReconnect(code) {
+    // Don't reconnect for these codes (from API docs)
     const noReconnectCodes = [
       WebSocketCloseCode.NORMAL_CLOSURE,
+      WebSocketCloseCode.SECURITY_VIOLATIONS,
       WebSocketCloseCode.ACCOUNT_LOCKED,
-      WebSocketCloseCode.TOO_MANY_AUTH_ATTEMPTS
+      WebSocketCloseCode.AUTH_ATTEMPTS_EXCEEDED,
+      WebSocketCloseCode.INVALID_CLIENT
     ];
     
     return !noReconnectCodes.includes(code) && 
@@ -426,7 +468,7 @@ export default class WebSocketService extends EventEmitter {
     
     this.heartbeatTimeoutTimer = setTimeout(() => {
       this.log('warn', 'Heartbeat timeout - closing connection');
-      this.ws?.close(WebSocketCloseCode.INACTIVE_CONNECTION, 'Heartbeat timeout');
+      this.ws?.close(WebSocketCloseCode.CONNECTION_INACTIVE, 'Heartbeat timeout');
     }, this.options.heartbeatTimeout);
   }
 
