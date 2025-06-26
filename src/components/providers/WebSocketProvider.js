@@ -3,9 +3,9 @@
  * 
  * File Path: src/components/providers/WebSocketProvider.js
  * 
- * Updated to use new authentication flow
+ * Fixed to follow correct two-step authentication flow
  * 
- * @version 5.0.0
+ * @version 6.0.0
  * @author AeroNyx Development Team
  */
 
@@ -14,7 +14,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
 import { wsManager } from '../../lib/websocket/WebSocketManager';
-import { useSignature } from '../../hooks/useSignature';
 
 const WebSocketContext = createContext(null);
 
@@ -25,36 +24,11 @@ export function WebSocketProvider({ children }) {
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [nodes, setNodes] = useState([]);
   const [sessionToken, setSessionToken] = useState(null);
-  
-  // Use the shared signature hook
-  const { signature, message, error: signatureError } = useSignature('websocket');
+  const [signatureMessage, setSignatureMessage] = useState(null);
   
   // Refs to prevent multiple initialization attempts
   const initializingRef = useRef(false);
   const serviceKeyRef = useRef(null);
-
-  // Handle signature message request
-  const requestSignatureMessage = useCallback(async (walletAddress) => {
-    if (!userMonitorService) return null;
-    
-    try {
-      await userMonitorService.requestSignatureMessage(walletAddress);
-      
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Signature message timeout'));
-        }, 10000);
-        
-        userMonitorService.once('signature_message_received', (data) => {
-          clearTimeout(timeout);
-          resolve(data);
-        });
-      });
-    } catch (error) {
-      console.error('Failed to request signature message:', error);
-      throw error;
-    }
-  }, [userMonitorService]);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -68,15 +42,7 @@ export function WebSocketProvider({ children }) {
       setConnectionStatus('disconnected');
       setNodes([]);
       setSessionToken(null);
-      return;
-    }
-
-    // Wait for signature
-    if (!signature || !message) {
-      if (signatureError) {
-        console.error('Signature error:', signatureError);
-        setConnectionStatus('error');
-      }
+      setSignatureMessage(null);
       return;
     }
 
@@ -85,21 +51,15 @@ export function WebSocketProvider({ children }) {
       return;
     }
 
-    // Initialize user monitor when wallet connected and signature ready
+    // Initialize user monitor when wallet connected
     const initializeUserMonitor = async () => {
       initializingRef.current = true;
       
       try {
-        // Create wallet credentials
-        const walletCredentials = {
-          walletAddress: wallet.address,
-          signature: signature,
-          message: message,
-          walletType: 'okx'
-        };
-
-        // Get or create user monitor service
-        const service = wsManager.getUserMonitorService(walletCredentials);
+        // Create user monitor service (without credentials for now)
+        const service = wsManager.getUserMonitorService({
+          walletAddress: wallet.address
+        });
         const serviceKey = `userMonitor:${wallet.address}`;
         serviceKeyRef.current = serviceKey;
         
@@ -110,16 +70,33 @@ export function WebSocketProvider({ children }) {
           setConnectionStatus(status);
         });
 
+        service.on('connected', () => {
+          console.log('WebSocket connected, waiting for server message');
+          setConnectionStatus('connected');
+        });
+
+        service.on('signature_message', (data) => {
+          console.log('Received signature message');
+          setSignatureMessage(data);
+          // Now sign and authenticate
+          handleSignAndAuth(service, data, wallet);
+        });
+
         service.on('nodes_updated', (data) => {
           setNodes(data.nodes || []);
         });
 
-        service.on('authentication_success', (data) => {
+        service.on('auth_success', (data) => {
+          console.log('Authentication successful');
           setConnectionStatus('authenticated');
           if (data.session_token) {
             setSessionToken(data.session_token);
             // Store session token in localStorage for reconnection
             localStorage.setItem('aeronyx_session_token', data.session_token);
+          }
+          // Initialize nodes from auth response
+          if (data.nodes) {
+            service._initializeNodesData(data.nodes);
           }
           // Auto-start monitoring after successful auth
           service.startMonitoring().catch(err => {
@@ -138,32 +115,12 @@ export function WebSocketProvider({ children }) {
           setConnectionStatus('monitoring');
         });
 
-        service.on('error', (error) => {
-          console.error('WebSocket error:', error);
+        service.on('error', (data) => {
+          console.error('WebSocket error:', data);
         });
 
-        // Connect with error handling
-        try {
-          await service.connect();
-          
-          // Try to use stored session token first
-          const storedToken = localStorage.getItem('aeronyx_session_token');
-          if (storedToken) {
-            try {
-              await service.authenticateWithToken(storedToken);
-            } catch (error) {
-              console.warn('Session token invalid, using signature auth');
-              localStorage.removeItem('aeronyx_session_token');
-              // Fall back to signature auth
-              await service.authenticate(walletCredentials);
-            }
-          } else {
-            // Use signature authentication
-            await service.authenticate(walletCredentials);
-          }
-        } catch (error) {
-          console.warn('WebSocket connection failed, will use REST API fallback:', error);
-        }
+        // Connect to WebSocket
+        await service.connect();
         
         setIsInitialized(true);
       } catch (error) {
@@ -172,6 +129,28 @@ export function WebSocketProvider({ children }) {
         setIsInitialized(true);
       } finally {
         initializingRef.current = false;
+      }
+    };
+
+    // Handle signing and authentication
+    const handleSignAndAuth = async (service, messageData, wallet) => {
+      try {
+        // Sign the message with wallet
+        const signature = await wallet.provider.request({
+          method: 'personal_sign',
+          params: [messageData.message, wallet.address.toLowerCase()]
+        });
+
+        // Send authentication with signature
+        await service.authenticateWithSignature({
+          wallet_address: wallet.address.toLowerCase(),
+          signature: signature,
+          message: messageData.message,
+          wallet_type: 'okx'
+        });
+      } catch (error) {
+        console.error('Failed to sign and authenticate:', error);
+        setConnectionStatus('auth_failed');
       }
     };
 
@@ -184,7 +163,7 @@ export function WebSocketProvider({ children }) {
         serviceKeyRef.current = null;
       }
     };
-  }, [wallet.connected, wallet.address, signature, message, signatureError, isInitialized]);
+  }, [wallet.connected, wallet.address, isInitialized]);
 
   const value = {
     wsManager,
@@ -193,7 +172,7 @@ export function WebSocketProvider({ children }) {
     connectionStatus,
     nodes,
     sessionToken,
-    requestSignatureMessage,
+    signatureMessage,
     getNodeService: (referenceCode, options) => wsManager.getNodeService(referenceCode, options)
   };
 
