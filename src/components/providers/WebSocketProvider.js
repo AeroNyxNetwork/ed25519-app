@@ -3,9 +3,9 @@
  * 
  * File Path: src/components/providers/WebSocketProvider.js
  * 
- * Fixed to follow correct two-step authentication flow
+ * Fixed to handle authentication flow correctly
  * 
- * @version 6.0.0
+ * @version 6.1.0
  * @author AeroNyx Development Team
  */
 
@@ -29,6 +29,7 @@ export function WebSocketProvider({ children }) {
   // Refs to prevent multiple initialization attempts
   const initializingRef = useRef(false);
   const serviceKeyRef = useRef(null);
+  const signatureHandledRef = useRef(false);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -43,6 +44,7 @@ export function WebSocketProvider({ children }) {
       setNodes([]);
       setSessionToken(null);
       setSignatureMessage(null);
+      signatureHandledRef.current = false;
       return;
     }
 
@@ -71,14 +73,22 @@ export function WebSocketProvider({ children }) {
         });
 
         service.on('connected', () => {
-          console.log('WebSocket connected, waiting for server message');
+          console.log('WebSocket connected successfully');
           setConnectionStatus('connected');
         });
 
         service.on('signature_message', (data) => {
-          console.log('Received signature message');
+          // Prevent handling the same signature message multiple times
+          if (signatureHandledRef.current) {
+            console.log('Signature message already handled, ignoring duplicate');
+            return;
+          }
+          
+          console.log('Received signature message from server');
+          signatureHandledRef.current = true;
           setSignatureMessage(data);
-          // Now sign and authenticate
+          
+          // Sign and authenticate
           handleSignAndAuth(service, data, wallet);
         });
 
@@ -96,7 +106,7 @@ export function WebSocketProvider({ children }) {
           }
           // Initialize nodes from auth response
           if (data.nodes) {
-            service._initializeNodesData(data.nodes);
+            setNodes(data.nodes);
           }
           // Auto-start monitoring after successful auth
           service.startMonitoring().catch(err => {
@@ -107,6 +117,7 @@ export function WebSocketProvider({ children }) {
         service.on('auth_failed', (data) => {
           console.error('WebSocket auth failed:', data);
           setConnectionStatus('auth_failed');
+          signatureHandledRef.current = false; // Reset so we can try again
           // Clear stored session token
           localStorage.removeItem('aeronyx_session_token');
         });
@@ -151,6 +162,7 @@ export function WebSocketProvider({ children }) {
       } catch (error) {
         console.error('Failed to sign and authenticate:', error);
         setConnectionStatus('auth_failed');
+        signatureHandledRef.current = false; // Reset so we can try again
       }
     };
 
@@ -162,6 +174,7 @@ export function WebSocketProvider({ children }) {
         wsManager.removeService(serviceKeyRef.current);
         serviceKeyRef.current = null;
       }
+      signatureHandledRef.current = false;
     };
   }, [wallet.connected, wallet.address, isInitialized]);
 
