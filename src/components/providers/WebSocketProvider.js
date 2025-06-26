@@ -35,6 +35,10 @@ export function WebSocketProvider({ children }) {
     if (!wallet.connected || !wallet.address) {
       // Cleanup when wallet disconnected
       if (serviceKeyRef.current) {
+        const service = wsManager.getService(serviceKeyRef.current);
+        if (service) {
+          service.disconnect();
+        }
         wsManager.removeService(serviceKeyRef.current);
         serviceKeyRef.current = null;
       }
@@ -48,8 +52,20 @@ export function WebSocketProvider({ children }) {
       return;
     }
 
+    // Check if service already exists
+    const existingServiceKey = `userMonitor:${wallet.address}`;
+    const existingService = wsManager.getService(existingServiceKey);
+    
+    if (existingService && existingService.state === 'OPEN') {
+      console.log('Using existing WebSocket service');
+      setUserMonitorService(existingService);
+      serviceKeyRef.current = existingServiceKey;
+      setIsInitialized(true);
+      return;
+    }
+
     // Prevent multiple initialization attempts
-    if (initializingRef.current || isInitialized) {
+    if (initializingRef.current || (isInitialized && serviceKeyRef.current)) {
       return;
     }
 
