@@ -40,33 +40,18 @@ export default class UserMonitorWebSocketService extends WebSocketService {
   _setupEventHandlers() {
     // Handle initial connection
     this.on('connected', (data) => {
-      if (this._handlingEvent) return;
-      this._handlingEvent = true;
-      
-      this.log('info', 'Received connected message from server');
-      this._requestSignatureMessage();
-      
-      this._handlingEvent = false;
+      this.log('info', 'Connected to WebSocket server');
+      // Connection established, wait for server to send next message
     });
     
-    // Handle signature message response
-    this.on('signature_message', (data) => {
-      if (this._handlingEvent) return;
-      this._handlingEvent = true;
-      
-      this.log('info', 'Received signature message', data);
-      
-      this._handlingEvent = false;
-      
-      // Emit for external handling - do this after resetting flag
-      this.emit('signature_message', data);
+    // Handle signature message response - Remove the duplicate handling
+    this.once('signature_message', (data) => {
+      this.log('info', 'Received signature message for authentication');
+      // The event will be handled by WebSocketProvider
     });
     
     // Handle successful authentication
     this.on('auth_success', (data) => {
-      if (this._handlingEvent) return;
-      this._handlingEvent = true;
-      
       this.log('info', 'Authentication successful');
       
       if (data.session_token) {
@@ -79,39 +64,22 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       }
       
       this.authenticated = true;
-      
-      this._handlingEvent = false;
     });
     
     // Handle authentication failure
     this.on('auth_failed', (data) => {
-      if (this._handlingEvent) return;
-      this._handlingEvent = true;
-      
       this.log('error', 'Authentication failed:', data);
       this.authenticated = false;
-      
-      this._handlingEvent = false;
     });
     
     // Handle status updates
     this.on('status_update', (data) => {
-      if (this._handlingEvent) return;
-      this._handlingEvent = true;
-      
       this._handleStatusUpdate(data);
-      
-      this._handlingEvent = false;
     });
     
     // Handle errors
     this.on('error', (data) => {
-      if (this._handlingEvent) return;
-      this._handlingEvent = true;
-      
       this._handleError(data);
-      
-      this._handlingEvent = false;
     });
   }
 
@@ -120,15 +88,8 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * @private
    */
   async _requestSignatureMessage() {
-    try {
-      await this.send({
-        type: 'get_message',
-        wallet_address: this.walletAddress
-      });
-    } catch (error) {
-      this.log('error', 'Failed to request signature message', error);
-      throw error;
-    }
+    // Do nothing - server will send signature_message automatically
+    this.log('info', 'Waiting for signature message from server');
   }
 
   /**
