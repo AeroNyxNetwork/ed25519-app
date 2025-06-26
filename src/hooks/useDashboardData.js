@@ -3,11 +3,10 @@
  * 
  * File Path: src/hooks/useDashboardData.js
  * 
- * Fixed version with better error handling and reduced signature requests
+ * Updated to prefer WebSocket for real-time data
  * 
- * @version 3.0.0
+ * @version 4.0.0
  * @author AeroNyx Development Team
- * @since 2025-01-19
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -37,7 +36,7 @@ export function useDashboard(config = {}) {
   const {
     preferWebSocket = true,
     enableRESTFallback = true,
-    restInterval = 60000,
+    restInterval = 300000, // 5 minutes for REST fallback
     enableCache = true,
     onDataUpdate,
     onError
@@ -74,6 +73,7 @@ export function useDashboard(config = {}) {
   const refreshTimerRef = useRef(null);
   const requestInProgressRef = useRef(false);
   const lastFetchRef = useRef(0);
+  const hasInitialDataRef = useRef(false);
   
   // ==================== WEBSOCKET SETUP ====================
   
@@ -111,7 +111,32 @@ export function useDashboard(config = {}) {
   const processDashboardData = useCallback((data, source) => {
     if (!data) return null;
     
-    // Extract nodes array from different possible structures
+    // Handle WebSocket data format
+    if (source === DataSource.WEBSOCKET && data.nodes && Array.isArray(data.nodes)) {
+      const nodes = data.nodes;
+      
+      const processedStats = {
+        totalNodes: nodes.length,
+        activeNodes: nodes.filter(n => n.status === 'active').length,
+        offlineNodes: nodes.filter(n => n.status === 'offline').length,
+        pendingNodes: nodes.filter(n => n.status === 'pending').length,
+        totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
+        networkContribution: `${(Math.max(0, nodes.filter(n => n.status === 'active').length) * 0.0015).toFixed(4)}%`,
+        resourceUtilization: calculateResourceUtilization(nodes)
+      };
+      
+      return {
+        dashboardData: {
+          stats: processedStats,
+          nodes: nodes.slice(0, 4), // Show first 4 nodes in dashboard
+          timestamp: new Date().toISOString(),
+          source
+        },
+        stats: processedStats
+      };
+    }
+    
+    // Handle REST API data format (existing logic)
     let nodesArray = [];
     
     if (data.nodes) {
@@ -166,8 +191,8 @@ export function useDashboard(config = {}) {
     if (activeNodes.length === 0) return 0;
     
     const totalUtil = activeNodes.reduce((sum, node) => {
-      const cpu = node.performance?.cpu_usage || 0;
-      const memory = node.performance?.memory_usage || 0;
+      const cpu = node.performance?.cpu || node.performance?.cpu_usage || 0;
+      const memory = node.performance?.memory || node.performance?.memory_usage || 0;
       return sum + ((cpu + memory) / 2);
     }, 0);
     
@@ -196,6 +221,7 @@ export function useDashboard(config = {}) {
       }));
       
       setStats(processed.stats);
+      hasInitialDataRef.current = true;
       
       // Cache the data
       if (enableCache && wallet.address) {
@@ -215,8 +241,8 @@ export function useDashboard(config = {}) {
     
     console.warn('[useDashboard] WebSocket error:', error);
     
-    // Fallback to REST if enabled
-    if (enableRESTFallback && !state.dashboardData) {
+    // Only fallback to REST if we don't have any data yet
+    if (enableRESTFallback && !hasInitialDataRef.current) {
       fetchRESTData();
     }
     
@@ -234,7 +260,7 @@ export function useDashboard(config = {}) {
     
     // Rate limiting - prevent too frequent requests
     const now = Date.now();
-    if (!forceRefresh && (now - lastFetchRef.current) < 5000) {
+    if (!forceRefresh && (now - lastFetchRef.current) < 30000) { // 30 seconds minimum
       return;
     }
     
@@ -310,6 +336,7 @@ export function useDashboard(config = {}) {
     
     if (processed) {
       setStats(processed.stats);
+      hasInitialDataRef.current = true;
     }
     
     // Cache the data
@@ -344,6 +371,7 @@ export function useDashboard(config = {}) {
    * Refresh dashboard data
    */
   const refresh = useCallback(async (force = true) => {
+    // If WebSocket is active and monitoring, don't fetch REST
     if (preferWebSocket && wsMonitoring && !force) {
       return;
     }
@@ -369,16 +397,17 @@ export function useDashboard(config = {}) {
       return;
     }
     
-    // Load initial data if we have signature
-    if (signature && message) {
+    // If WebSocket is not preferred or not connected, load REST data
+    if (signature && message && (!preferWebSocket || !wsConnected)) {
       fetchRESTData();
     }
-  }, [wallet.connected, signature, message, signatureLoading, signatureError]);
+  }, [wallet.connected, signature, message, signatureLoading, signatureError, preferWebSocket, wsConnected]);
   
   /**
-   * Setup REST refresh interval
+   * Setup REST refresh interval (only when WebSocket not active)
    */
   useEffect(() => {
+    // Only use REST polling if WebSocket is not monitoring
     if (!preferWebSocket || !wsMonitoring) {
       refreshTimerRef.current = setInterval(() => {
         if (!wsMonitoring) {
@@ -402,6 +431,7 @@ export function useDashboard(config = {}) {
     
     return () => {
       mountedRef.current = false;
+      hasInitialDataRef.current = false;
       
       if (refreshTimerRef.current) {
         clearInterval(refreshTimerRef.current);
@@ -415,6 +445,7 @@ export function useDashboard(config = {}) {
    * Connection health indicator
    */
   const connectionHealth = useMemo(() => {
+    // Prefer WebSocket health if monitoring
     if (wsMonitoring) {
       return wsConnectionHealth;
     }
@@ -450,6 +481,7 @@ export function useDashboard(config = {}) {
     // Connection info
     dataSource: state.dataSource,
     connectionHealth,
+    isWebSocketActive: wsMonitoring,
     
     // Timestamps
     lastUpdate: state.lastUpdate,
