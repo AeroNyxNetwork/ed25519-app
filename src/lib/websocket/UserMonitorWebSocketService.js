@@ -3,9 +3,10 @@
  * 
  * File Path: src/lib/websocket/UserMonitorWebSocketService.js
  * 
- * Fixed to follow correct authentication flow
+ * Fixed version preventing event propagation issues
  * 
- * @version 4.0.0
+ * @version 4.1.0
+ * @author AeroNyx Development Team
  */
 
 import WebSocketService from './WebSocketService';
@@ -15,7 +16,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.aeronyx.network';
     super(`${wsUrl}/ws/aeronyx/user-monitor/`, {
       ...options,
-      heartbeatInterval: 30000 // 30 seconds default for user monitoring
+      heartbeatInterval: 30000
     });
     
     this.walletAddress = walletCredentials.walletAddress;
@@ -26,60 +27,91 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     this.nodeReferences = [];
     this.sessionToken = null;
     
+    // Fix: Track if we're handling events to prevent loops
+    this._handlingEvent = false;
+    
     this._setupEventHandlers();
   }
 
   /**
-   * Setup internal event handlers
+   * Setup internal event handlers with loop prevention
    * @private
    */
   _setupEventHandlers() {
     // Handle initial connection
     this.on('connected', (data) => {
+      if (this._handlingEvent) return;
+      this._handlingEvent = true;
+      
       this.log('info', 'Received connected message from server');
-      // Request signature message
       this._requestSignatureMessage();
+      
+      this._handlingEvent = false;
     });
     
     // Handle signature message response
     this.on('signature_message', (data) => {
-      this.log('info', 'Received signature message');
-      // Emit for external handling (wallet signing)
+      if (this._handlingEvent) return;
+      this._handlingEvent = true;
+      
+      this.log('info', 'Received signature message', data);
+      
+      this._handlingEvent = false;
+      
+      // Emit for external handling - do this after resetting flag
       this.emit('signature_message', data);
     });
     
     // Handle successful authentication
     this.on('auth_success', (data) => {
+      if (this._handlingEvent) return;
+      this._handlingEvent = true;
+      
       this.log('info', 'Authentication successful');
       
-      // Store session token
       if (data.session_token) {
         this.sessionToken = data.session_token;
       }
       
-      // Extract nodes from auth response
       if (data.nodes) {
         this.nodeReferences = data.nodes.map(node => node.code);
         this._initializeNodesData(data.nodes);
       }
       
       this.authenticated = true;
+      
+      this._handlingEvent = false;
     });
     
     // Handle authentication failure
     this.on('auth_failed', (data) => {
+      if (this._handlingEvent) return;
+      this._handlingEvent = true;
+      
       this.log('error', 'Authentication failed:', data);
       this.authenticated = false;
+      
+      this._handlingEvent = false;
     });
     
     // Handle status updates
     this.on('status_update', (data) => {
+      if (this._handlingEvent) return;
+      this._handlingEvent = true;
+      
       this._handleStatusUpdate(data);
+      
+      this._handlingEvent = false;
     });
     
     // Handle errors
     this.on('error', (data) => {
+      if (this._handlingEvent) return;
+      this._handlingEvent = true;
+      
       this._handleError(data);
+      
+      this._handlingEvent = false;
     });
   }
 
@@ -125,19 +157,26 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * @private
    */
   _initializeNodesData(nodes) {
+    if (!Array.isArray(nodes)) {
+      this.log('warn', 'Invalid nodes data received');
+      return;
+    }
+    
     nodes.forEach(node => {
+      if (!node || !node.code) return;
+      
       this.nodesData.set(node.code, {
         id: node.id,
         code: node.code,
-        name: node.name,
-        status: 'unknown',
+        name: node.name || 'Unknown Node',
+        status: node.status || 'unknown',
         performance: {
-          cpu: 0,
-          memory: 0,
-          disk: 0,
-          network: 0
+          cpu: node.performance?.cpu || 0,
+          memory: node.performance?.memory || 0,
+          disk: node.performance?.disk || 0,
+          network: node.performance?.network || 0
         },
-        last_seen: null,
+        last_seen: node.last_seen || null,
         lastUpdate: null
       });
     });
@@ -154,21 +193,23 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * @private
    */
   _handleStatusUpdate(update) {
-    if (!update.nodes || !Array.isArray(update.nodes)) {
+    if (!update || !update.nodes || !Array.isArray(update.nodes)) {
       this.log('warn', 'Invalid status update format');
       return;
     }
     
     // Update each node's data
     update.nodes.forEach(nodeUpdate => {
+      if (!nodeUpdate || !nodeUpdate.code) return;
+      
       const node = this.nodesData.get(nodeUpdate.code);
       if (node) {
         // Update node data
         Object.assign(node, {
-          name: nodeUpdate.name,
-          status: nodeUpdate.status,
+          name: nodeUpdate.name || node.name,
+          status: nodeUpdate.status || node.status,
           performance: nodeUpdate.performance || node.performance,
-          last_seen: nodeUpdate.last_seen,
+          last_seen: nodeUpdate.last_seen || node.last_seen,
           lastUpdate: new Date()
         });
         
@@ -179,7 +220,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     // Emit comprehensive update
     this.emit('nodes_updated', {
       nodes: Array.from(this.nodesData.values()),
-      timestamp: update.timestamp,
+      timestamp: update.timestamp || new Date().toISOString(),
       sequence: ++this.lastUpdateSequence
     });
   }
@@ -316,5 +357,14 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     this.monitoringActive = false;
     this.lastUpdateSequence = 0;
     this.authenticated = false;
+  }
+  
+  /**
+   * Override log method to prevent issues with null data
+   */
+  log(level, message, data = null) {
+    // Sanitize data to prevent issues
+    const safeData = data === null || data === undefined ? undefined : data;
+    super.log(level, message, safeData);
   }
 }
