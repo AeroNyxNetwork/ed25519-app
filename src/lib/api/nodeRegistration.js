@@ -3,10 +3,9 @@
  * 
  * File Path: src/lib/api/nodeRegistration.js
  * 
- * Production-ready API service with only used endpoints
- * Follows Google's API design standards
+ * Production-ready API service with WebSocket support
  * 
- * @version 2.0.0
+ * @version 3.0.0
  * @author AeroNyx Development Team
  */
 
@@ -34,7 +33,7 @@ async function request(endpoint, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
-    'User-Agent': 'AeroNyx-Web-Client/2.0.0',
+    'User-Agent': 'AeroNyx-Web-Client/3.0.0',
     ...options.headers,
   };
 
@@ -229,6 +228,8 @@ const nodeRegistrationService = {
 
   /**
    * Get comprehensive overview of user's nodes
+   * NOTE: This endpoint is primarily used for initial data load.
+   * Real-time updates should use WebSocket connection instead.
    * 
    * @param {string} walletAddress - User's wallet address
    * @param {string} signature - Wallet signature
@@ -260,6 +261,8 @@ const nodeRegistrationService = {
 
   /**
    * Get detailed status for a specific node
+   * NOTE: This endpoint is for initial load and fallback.
+   * Real-time status should use WebSocket connection.
    * 
    * @param {string} walletAddress - User's wallet address
    * @param {string} signature - Wallet signature
@@ -293,6 +296,8 @@ const nodeRegistrationService = {
 
   /**
    * Get performance history for a node
+   * NOTE: This endpoint is for historical data.
+   * Real-time performance should use WebSocket connection.
    * 
    * @param {string} walletAddress - User's wallet address
    * @param {string} signature - Wallet signature
@@ -325,6 +330,52 @@ const nodeRegistrationService = {
     return request('/api/aeronyx/user/node-performance-history/', {
       method: 'POST',
       body: JSON.stringify(payload),
+    });
+  },
+
+  /**
+   * Get node types from API
+   * NOTE: This is a static endpoint that can be cached indefinitely
+   * 
+   * @returns {Promise<APIResponse>} Node types response
+   */
+  getNodeTypes: async () => {
+    return request('/api/aeronyx/node-types/');
+  },
+
+  /**
+   * Get node resources from API
+   * NOTE: This is a static endpoint that can be cached indefinitely
+   * 
+   * @returns {Promise<APIResponse>} Node resources response
+   */
+  getNodeResources: async () => {
+    return request('/api/aeronyx/node-resources/');
+  },
+
+  /**
+   * Check node registration status by reference code
+   * Used during node registration process
+   * 
+   * @param {string} referenceCode - Node reference code
+   * @param {string} walletAddress - User's wallet address
+   * @returns {Promise<APIResponse>} Node status response
+   */
+  checkNodeStatus: async (referenceCode, walletAddress) => {
+    if (!referenceCode || !walletAddress) {
+      return {
+        success: false,
+        data: null,
+        message: 'Reference code and wallet address are required'
+      };
+    }
+    
+    return request('/api/aeronyx/nodes/check-status/', {
+      method: 'POST',
+      body: JSON.stringify({
+        reference_code: referenceCode,
+        wallet_address: walletAddress.toLowerCase()
+      }),
     });
   }
 };
