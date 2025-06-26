@@ -106,12 +106,17 @@ export function WebSocketProvider({ children }) {
           }
           // Initialize nodes from auth response
           if (data.nodes) {
-            setNodes(data.nodes);
+            // Initial nodes only have id, code, name
+            const initialNodes = data.nodes.map(n => ({
+              ...n,
+              status: 'unknown',
+              type: 'unknown',
+              performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
+              last_seen: null
+            }));
+            setNodes(initialNodes);
           }
-          // Auto-start monitoring after successful auth
-          service.startMonitoring().catch(err => {
-            console.warn('Failed to start monitoring:', err);
-          });
+          // startMonitoring is called by UserMonitorWebSocketService
         });
 
         service.on('auth_failed', (data) => {
