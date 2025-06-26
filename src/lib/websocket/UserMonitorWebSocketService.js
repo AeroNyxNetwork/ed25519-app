@@ -3,9 +3,9 @@
  * 
  * File Path: src/lib/websocket/UserMonitorWebSocketService.js
  * 
- * Fixed version following exact API documentation format
+ * Updated to match new WebSocket API specification
  * 
- * @version 2.0.0
+ * @version 3.0.0
  */
 
 import WebSocketService from './WebSocketService';
@@ -24,6 +24,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     this.subscribedNodes = new Set();
     this.lastUpdateSequence = 0;
     this.nodeReferences = [];
+    this.sessionToken = null;
     
     this._setupEventHandlers();
   }
@@ -33,23 +34,34 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * @private
    */
   _setupEventHandlers() {
-    this.on('connection_established', (data) => {
+    this.on('connected', (data) => {
       this.log('info', 'User monitor connection established');
-      this._authenticate();
+      // Don't auto-authenticate here, wait for user action
+    });
+    
+    // Handle signature message response
+    this.on('signature_message', (data) => {
+      this.log('info', 'Received signature message');
+      this.emit('signature_message_received', data);
     });
     
     // Handle successful authentication
     this.on('auth_success', (data) => {
       this.log('info', 'Authentication successful');
       
-      // Extract node references from auth response
-      if (data.nodes_summary && data.nodes_summary.node_references) {
-        this.nodeReferences = data.nodes_summary.node_references;
-        this._initializeNodesData(data.nodes_summary);
-        
-        // Subscribe to all nodes after authentication
-        this._subscribeToAllNodes();
+      // Store session token
+      if (data.session_token) {
+        this.sessionToken = data.session_token;
       }
+      
+      // Extract nodes from auth response
+      if (data.nodes) {
+        this.nodeReferences = data.nodes.map(node => node.code);
+        this._initializeNodesData(data.nodes);
+      }
+      
+      this.authenticated = true;
+      this.emit('authentication_success', data);
     });
     
     // Handle authentication failure
@@ -59,24 +71,9 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       this.emit('authentication_error', data);
     });
     
-    // Handle node status updates
-    this.on('node_status_update', (data) => {
-      this._handleNodeStatusUpdate(data);
-    });
-    
-    // Handle real-time updates
-    this.on('real_time_update', (data) => {
-      this._handleRealtimeUpdate(data);
-    });
-    
-    // Handle earnings updates
-    this.on('earnings_update', (data) => {
-      this._handleEarningsUpdate(data);
-    });
-    
-    // Handle node alerts
-    this.on('node_alert', (data) => {
-      this._handleNodeAlert(data);
+    // Handle status updates
+    this.on('status_update', (data) => {
+      this._handleStatusUpdate(data);
     });
     
     // Handle errors
@@ -86,52 +83,58 @@ export default class UserMonitorWebSocketService extends WebSocketService {
   }
 
   /**
-   * Authenticate with wallet credentials
-   * @private
+   * Request signature message for authentication
+   * 
+   * @param {string} walletAddress - Wallet address
    */
-  async _authenticate() {
+  async requestSignatureMessage(walletAddress) {
     try {
-      // Use correct message format according to API docs
       await this.send({
-        type: 'auth',
-        wallet_address: this.walletCredentials.walletAddress,
-        signature: this.walletCredentials.signature,
-        message: this.walletCredentials.message,
-        wallet_type: this.walletCredentials.walletType || 'okx'
+        type: 'get_message',
+        wallet_address: walletAddress
       });
     } catch (error) {
-      this.log('error', 'Authentication failed', error);
-      this.emit('auth_error', error);
+      this.log('error', 'Failed to request signature message', error);
+      throw error;
     }
   }
 
   /**
-   * Subscribe to all user nodes
-   * @private
+   * Authenticate with wallet credentials
+   * 
+   * @param {Object} credentials - Authentication credentials
    */
-  async _subscribeToAllNodes() {
-    if (!this.nodeReferences || this.nodeReferences.length === 0) {
-      this.log('warn', 'No nodes to subscribe to');
-      return;
-    }
-    
+  async authenticate(credentials) {
     try {
       await this.send({
-        type: 'subscribe_nodes',
-        data: {
-          node_references: this.nodeReferences
-        }
+        type: 'auth',
+        wallet_address: credentials.walletAddress,
+        signature: credentials.signature,
+        message: credentials.message,
+        wallet_type: credentials.walletType || 'okx'
       });
-      
-      this.monitoringActive = true;
-      this.emit('monitoring_started', {
-        node_count: this.nodeReferences.length,
-        nodes: this.nodeReferences
-      });
-      
-      this.log('info', `Subscribed to ${this.nodeReferences.length} nodes`);
     } catch (error) {
-      this.log('error', 'Failed to subscribe to nodes', error);
+      this.log('error', 'Authentication failed', error);
+      this.emit('auth_error', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Authenticate with session token
+   * 
+   * @param {string} token - Session token
+   */
+  async authenticateWithToken(token) {
+    try {
+      this.sessionToken = token;
+      await this.send({
+        session_token: token,
+        type: 'start_monitor'
+      });
+    } catch (error) {
+      this.log('error', 'Token authentication failed', error);
+      throw error;
     }
   }
 
@@ -139,135 +142,64 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * Initialize nodes data from auth response
    * @private
    */
-  _initializeNodesData(nodesSummary) {
-    // Initialize with basic data from auth response
-    if (nodesSummary.node_references) {
-      nodesSummary.node_references.forEach(ref => {
-        this.nodesData.set(ref, {
-          reference_code: ref,
-          status: 'unknown',
-          is_connected: false,
-          lastUpdate: null
+  _initializeNodesData(nodes) {
+    nodes.forEach(node => {
+      this.nodesData.set(node.code, {
+        id: node.id,
+        code: node.code,
+        name: node.name,
+        status: 'unknown',
+        performance: {
+          cpu: 0,
+          memory: 0,
+          disk: 0,
+          network: 0
+        },
+        last_seen: null,
+        lastUpdate: null
+      });
+    });
+    
+    // Emit initial nodes data
+    this.emit('nodes_initialized', {
+      nodes: Array.from(this.nodesData.values()),
+      count: this.nodesData.size
+    });
+  }
+
+  /**
+   * Handle status update from server
+   * @private
+   */
+  _handleStatusUpdate(update) {
+    if (!update.nodes || !Array.isArray(update.nodes)) {
+      this.log('warn', 'Invalid status update format');
+      return;
+    }
+    
+    // Update each node's data
+    update.nodes.forEach(nodeUpdate => {
+      const node = this.nodesData.get(nodeUpdate.code);
+      if (node) {
+        // Update node data
+        Object.assign(node, {
+          name: nodeUpdate.name,
+          status: nodeUpdate.status,
+          performance: nodeUpdate.performance || node.performance,
+          last_seen: nodeUpdate.last_seen,
+          lastUpdate: new Date()
         });
-      });
-    }
-    
-    // Emit initial summary
-    this.emit('nodes_summary', {
-      total_nodes: nodesSummary.total_nodes || 0,
-      active_nodes: nodesSummary.active_nodes || 0,
-      offline_nodes: nodesSummary.offline_nodes || 0,
-      pending_nodes: nodesSummary.pending_nodes || 0,
-      node_references: nodesSummary.node_references || []
+        
+        this.nodesData.set(nodeUpdate.code, node);
+      }
     });
-  }
-
-  /**
-   * Handle node status update
-   * @private
-   */
-  _handleNodeStatusUpdate(update) {
-    const { reference_code, ...nodeData } = update;
-    
-    if (!reference_code) return;
-    
-    // Update node data
-    const existingData = this.nodesData.get(reference_code) || {};
-    this.nodesData.set(reference_code, {
-      ...existingData,
-      ...nodeData,
-      reference_code,
-      lastUpdate: new Date()
-    });
-    
-    // Emit update for this specific node
-    this.emit('node_updated', {
-      reference_code,
-      data: this.nodesData.get(reference_code)
-    });
-    
-    // Emit all nodes update
-    this._emitNodesUpdate();
-  }
-
-  /**
-   * Handle real-time update (comprehensive update)
-   * @private
-   */
-  _handleRealtimeUpdate(update) {
-    this.lastUpdateSequence = update.sequence || Date.now();
-    
-    // Update all nodes data if provided
-    if (update.data && update.data.nodes && Array.isArray(update.data.nodes)) {
-      update.data.nodes.forEach(node => {
-        if (node.reference_code) {
-          const existingData = this.nodesData.get(node.reference_code) || {};
-          this.nodesData.set(node.reference_code, {
-            ...existingData,
-            ...node,
-            lastUpdate: new Date(update.timestamp || Date.now())
-          });
-        }
-      });
-    }
     
     // Emit comprehensive update
     this.emit('nodes_updated', {
-      summary: update.data?.summary || this._calculateSummary(),
       nodes: Array.from(this.nodesData.values()),
-      performance: update.data?.performance_overview || {},
       timestamp: update.timestamp,
-      sequence: this.lastUpdateSequence
+      sequence: ++this.lastUpdateSequence
     });
-  }
-
-  /**
-   * Handle earnings update
-   * @private
-   */
-  _handleEarningsUpdate(update) {
-    const { reference_code, earnings_delta, total_earnings } = update;
-    
-    if (!reference_code) return;
-    
-    // Update node earnings
-    const node = this.nodesData.get(reference_code);
-    if (node) {
-      node.earnings = total_earnings;
-      node.earnings_delta = earnings_delta;
-      node.lastEarningsUpdate = new Date(update.timestamp || Date.now());
-      
-      this.nodesData.set(reference_code, node);
-    }
-    
-    // Emit earnings update
-    this.emit('earnings_updated', update);
-    
-    // Update nodes
-    this._emitNodesUpdate();
-  }
-
-  /**
-   * Handle node alert
-   * @private
-   */
-  _handleNodeAlert(alert) {
-    this.emit('alert_received', alert);
-    
-    // Update node alert status
-    const node = this.nodesData.get(alert.reference_code);
-    if (node) {
-      if (!node.alerts) node.alerts = [];
-      node.alerts.push(alert);
-      
-      // Keep only recent alerts (last 10)
-      if (node.alerts.length > 10) {
-        node.alerts = node.alerts.slice(-10);
-      }
-      
-      this.nodesData.set(alert.reference_code, node);
-      this._emitNodesUpdate();
-    }
   }
 
   /**
@@ -278,18 +210,19 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     this.log('error', 'WebSocket error received:', error);
     
     // Handle specific error codes
-    switch (error.code) {
-      case 'AUTHENTICATION_FAILED':
+    switch (error.error_code) {
+      case 'authentication_required':
+        this.authenticated = false;
+        this.emit('auth_required', error);
+        break;
+      
+      case 'auth_failed':
         this.authenticated = false;
         this.emit('auth_failed', error);
         break;
       
-      case 'RATE_LIMIT_EXCEEDED':
+      case 'rate_limit':
         this.emit('rate_limit_exceeded', error);
-        break;
-      
-      case 'NODE_NOT_FOUND':
-        this.emit('node_not_found', error);
         break;
       
       default:
@@ -298,52 +231,33 @@ export default class UserMonitorWebSocketService extends WebSocketService {
   }
 
   /**
-   * Calculate summary from current nodes data
-   * @private
-   */
-  _calculateSummary() {
-    const nodes = Array.from(this.nodesData.values());
-    
-    return {
-      total_nodes: nodes.length,
-      online_nodes: nodes.filter(n => n.status === 'active' && n.is_connected).length,
-      active_nodes: nodes.filter(n => n.status === 'active').length,
-      offline_nodes: nodes.filter(n => n.status === 'offline').length,
-      pending_nodes: nodes.filter(n => n.status === 'pending').length,
-      total_earnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0).toFixed(6)
-    };
-  }
-
-  /**
-   * Emit nodes update event
-   * @private
-   */
-  _emitNodesUpdate() {
-    const summary = this._calculateSummary();
-    const nodes = Array.from(this.nodesData.values());
-    
-    this.emit('nodes_updated', {
-      summary,
-      nodes,
-      timestamp: new Date().toISOString()
-    });
-  }
-
-  /**
-   * Start real-time monitoring (if not auto-started)
+   * Start real-time monitoring
    */
   async startMonitoring() {
+    if (!this.authenticated) {
+      throw new Error('Not authenticated');
+    }
+    
     if (this.monitoringActive) {
       this.log('warn', 'Monitoring already active');
       return;
     }
     
-    if (!this.authenticated) {
-      throw new Error('Not authenticated');
+    try {
+      await this.send({
+        type: 'start_monitor'
+      });
+      
+      this.monitoringActive = true;
+      this.emit('monitoring_started', {
+        node_count: this.nodesData.size
+      });
+      
+      this.log('info', 'Started monitoring');
+    } catch (error) {
+      this.log('error', 'Failed to start monitoring', error);
+      throw error;
     }
-    
-    // Re-subscribe to all nodes
-    await this._subscribeToAllNodes();
   }
 
   /**
@@ -355,42 +269,38 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       return;
     }
     
-    // Note: API docs don't show an unsubscribe message
-    // Just mark as inactive locally
-    this.monitoringActive = false;
-    this.emit('monitoring_stopped');
+    try {
+      await this.send({
+        type: 'stop_monitor'
+      });
+      
+      this.monitoringActive = false;
+      this.emit('monitoring_stopped');
+      
+      this.log('info', 'Stopped monitoring');
+    } catch (error) {
+      this.log('error', 'Failed to stop monitoring', error);
+      throw error;
+    }
   }
 
   /**
-   * Subscribe to specific node updates
-   * @param {string} referenceCode - Node reference code
+   * Override authenticate method from base class
+   * @private
    */
-  async subscribeToNode(referenceCode) {
-    if (this.subscribedNodes.has(referenceCode)) {
-      this.log('warn', `Already subscribed to node ${referenceCode}`);
-      return;
+  async _authenticate() {
+    // Use the new authentication flow
+    if (this.walletCredentials) {
+      await this.authenticate(this.walletCredentials);
     }
-    
-    // Add to current subscriptions
-    const allRefs = [...this.nodeReferences, referenceCode];
-    
-    await this.send({
-      type: 'subscribe_nodes',
-      data: {
-        node_references: allRefs
-      }
-    });
-    
-    this.subscribedNodes.add(referenceCode);
-    this.nodeReferences = allRefs;
   }
 
   /**
    * Get node by reference code
-   * @param {string} referenceCode - Node reference code
+   * @param {string} code - Node reference code
    */
-  getNode(referenceCode) {
-    return this.nodesData.get(referenceCode);
+  getNode(code) {
+    return this.nodesData.get(code);
   }
 
   /**
@@ -416,9 +326,20 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       active: this.monitoringActive,
       authenticated: this.authenticated,
       nodesCount: this.nodesData.size,
-      subscribedNodes: this.nodeReferences,
       lastUpdateSequence: this.lastUpdateSequence,
-      summary: this._calculateSummary()
+      sessionToken: this.sessionToken
     };
+  }
+
+  /**
+   * Clear all data (useful for logout)
+   */
+  clearData() {
+    this.nodesData.clear();
+    this.nodeReferences = [];
+    this.sessionToken = null;
+    this.monitoringActive = false;
+    this.lastUpdateSequence = 0;
+    this.authenticated = false;
   }
 }
