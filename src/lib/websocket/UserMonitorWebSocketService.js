@@ -3,9 +3,9 @@
  * 
  * File Path: src/lib/websocket/UserMonitorWebSocketService.js
  * 
- * Updated to match new WebSocket API specification
+ * Fixed to follow correct authentication flow
  * 
- * @version 3.0.0
+ * @version 4.0.0
  */
 
 import WebSocketService from './WebSocketService';
@@ -18,7 +18,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       heartbeatInterval: 30000 // 30 seconds default for user monitoring
     });
     
-    this.walletCredentials = walletCredentials;
+    this.walletAddress = walletCredentials.walletAddress;
     this.nodesData = new Map();
     this.monitoringActive = false;
     this.subscribedNodes = new Set();
@@ -34,15 +34,18 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * @private
    */
   _setupEventHandlers() {
+    // Handle initial connection
     this.on('connected', (data) => {
-      this.log('info', 'User monitor connection established');
-      // Don't auto-authenticate here, wait for user action
+      this.log('info', 'Received connected message from server');
+      // Request signature message
+      this._requestSignatureMessage();
     });
     
     // Handle signature message response
     this.on('signature_message', (data) => {
       this.log('info', 'Received signature message');
-      this.emit('signature_message_received', data);
+      // Emit for external handling (wallet signing)
+      this.emit('signature_message', data);
     });
     
     // Handle successful authentication
@@ -61,14 +64,12 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       }
       
       this.authenticated = true;
-      this.emit('authentication_success', data);
     });
     
     // Handle authentication failure
     this.on('auth_failed', (data) => {
       this.log('error', 'Authentication failed:', data);
       this.authenticated = false;
-      this.emit('authentication_error', data);
     });
     
     // Handle status updates
@@ -84,14 +85,13 @@ export default class UserMonitorWebSocketService extends WebSocketService {
 
   /**
    * Request signature message for authentication
-   * 
-   * @param {string} walletAddress - Wallet address
+   * @private
    */
-  async requestSignatureMessage(walletAddress) {
+  async _requestSignatureMessage() {
     try {
       await this.send({
         type: 'get_message',
-        wallet_address: walletAddress
+        wallet_address: this.walletAddress
       });
     } catch (error) {
       this.log('error', 'Failed to request signature message', error);
@@ -100,40 +100,22 @@ export default class UserMonitorWebSocketService extends WebSocketService {
   }
 
   /**
-   * Authenticate with wallet credentials
+   * Authenticate with signature
    * 
-   * @param {Object} credentials - Authentication credentials
+   * @param {Object} authData - Authentication data
    */
-  async authenticate(credentials) {
+  async authenticateWithSignature(authData) {
     try {
       await this.send({
         type: 'auth',
-        wallet_address: credentials.walletAddress,
-        signature: credentials.signature,
-        message: credentials.message,
-        wallet_type: credentials.walletType || 'okx'
+        wallet_address: authData.wallet_address,
+        signature: authData.signature,
+        message: authData.message,
+        wallet_type: authData.wallet_type || 'okx'
       });
     } catch (error) {
       this.log('error', 'Authentication failed', error);
       this.emit('auth_error', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Authenticate with session token
-   * 
-   * @param {string} token - Session token
-   */
-  async authenticateWithToken(token) {
-    try {
-      this.sessionToken = token;
-      await this.send({
-        session_token: token,
-        type: 'start_monitor'
-      });
-    } catch (error) {
-      this.log('error', 'Token authentication failed', error);
       throw error;
     }
   }
@@ -206,27 +188,31 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * Handle WebSocket errors
    * @private
    */
-  _handleError(error) {
-    this.log('error', 'WebSocket error received:', error);
+  _handleError(data) {
+    this.log('error', 'WebSocket error received:', data);
     
     // Handle specific error codes
-    switch (error.error_code) {
+    switch (data.error_code) {
       case 'authentication_required':
         this.authenticated = false;
-        this.emit('auth_required', error);
+        this.emit('auth_required', data);
         break;
       
       case 'auth_failed':
         this.authenticated = false;
-        this.emit('auth_failed', error);
+        this.emit('auth_failed', data);
         break;
       
       case 'rate_limit':
-        this.emit('rate_limit_exceeded', error);
+        this.emit('rate_limit_exceeded', data);
+        break;
+      
+      case 'invalid_message_type':
+        this.log('error', 'Invalid message type sent to server');
         break;
       
       default:
-        this.emit('error_received', error);
+        this.emit('error_received', data);
     }
   }
 
@@ -281,17 +267,6 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     } catch (error) {
       this.log('error', 'Failed to stop monitoring', error);
       throw error;
-    }
-  }
-
-  /**
-   * Override authenticate method from base class
-   * @private
-   */
-  async _authenticate() {
-    // Use the new authentication flow
-    if (this.walletCredentials) {
-      await this.authenticate(this.walletCredentials);
     }
   }
 
