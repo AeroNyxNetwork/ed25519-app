@@ -195,6 +195,14 @@ export default class WebSocketService extends EventEmitter {
       const data = JSON.parse(event.data);
       this.metrics.messagesReceived++;
       
+      // Enhanced logging for debugging
+      console.log('[WebSocket] Raw message received:', {
+        type: data.type,
+        hasData: !!data.data,
+        keys: Object.keys(data),
+        timestamp: new Date().toISOString()
+      });
+      
       this.log('debug', 'Message received', data);
       
       // Only emit raw message for debugging purposes
@@ -209,7 +217,10 @@ export default class WebSocketService extends EventEmitter {
             break;
           
           case 'auth_success':
-            this._handleAuthSuccess(data.data || data);
+            console.log('[WebSocket] Auth success data:', data);
+            this._handleAuthSuccess(data);
+            // Auth success has flat structure, emit the whole data
+            this.emit('auth_success', data);
             break;
           
           case 'auth_failed':
@@ -230,6 +241,7 @@ export default class WebSocketService extends EventEmitter {
             
           // For other message types, emit the event
           default:
+            console.log(`[WebSocket] Emitting event: ${data.type}`);
             this.emit(data.type, data.data || data);
             break;
         }
