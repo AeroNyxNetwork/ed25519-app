@@ -3,9 +3,10 @@
  * 
  * File Path: src/lib/websocket/WebSocketService.js
  * 
- * Fixed version with correct message handling according to API docs
+ * Fixed version preventing infinite recursion in event handling
  * 
- * @version 2.0.0
+ * @version 2.1.0
+ * @author AeroNyx Development Team
  */
 
 import EventEmitter from 'events';
@@ -60,6 +61,9 @@ export default class WebSocketService extends EventEmitter {
     this.heartbeatTimeoutTimer = null;
     this.connectionId = null;
     this.authenticated = false;
+    
+    // Fix: Add flag to prevent logging recursion
+    this._isLogging = false;
     
     this.metrics = {
       messagesSent: 0,
@@ -119,7 +123,6 @@ export default class WebSocketService extends EventEmitter {
       throw new Error('Invalid message data');
     }
 
-    // Don't add extra fields that might break API format
     const message = { ...data };
 
     if (this.state === WebSocketState.OPEN && this.ws) {
@@ -158,8 +161,6 @@ export default class WebSocketService extends EventEmitter {
           
           this.log('info', 'WebSocket connected');
           this.emit('connected');
-          
-          // Emit connection established for authentication
           this.emit('connection_established');
           
           this._processMessageQueue();
@@ -229,21 +230,6 @@ export default class WebSocketService extends EventEmitter {
           case 'pong':
             this._handlePong(data);
             break;
-            
-          // User monitor specific events
-          case 'node_status_update':
-          case 'real_time_update':
-          case 'earnings_update':
-          case 'node_alert':
-            // These are handled by UserMonitorWebSocketService
-            break;
-            
-          // Node specific events  
-          case 'config_update':
-          case 'task_assignment':
-          case 'system_announcement':
-            // These are handled by NodeWebSocketService
-            break;
         }
       }
       
@@ -270,7 +256,6 @@ export default class WebSocketService extends EventEmitter {
     this.authenticated = true;
     this.log('info', 'Authentication successful');
     
-    // Start heartbeat if interval provided
     if (data.heartbeat_interval) {
       this._startHeartbeat(data.heartbeat_interval * 1000);
     }
@@ -283,8 +268,6 @@ export default class WebSocketService extends EventEmitter {
   _handleAuthFailed(data) {
     this.authenticated = false;
     this.log('error', 'Authentication failed:', data.message || data);
-    
-    // Don't reconnect on auth failures
     this.options.reconnect = false;
   }
 
@@ -307,7 +290,6 @@ export default class WebSocketService extends EventEmitter {
     
     this.log('error', `Server error: ${errorCode} - ${errorMessage}`);
     
-    // Determine if we should reconnect based on error code
     switch (errorCode) {
       case 'AUTHENTICATION_FAILED':
       case 'PERMISSION_DENIED':
@@ -367,7 +349,6 @@ export default class WebSocketService extends EventEmitter {
    * @private
    */
   _shouldReconnect(code) {
-    // Don't reconnect for these codes (from API docs)
     const noReconnectCodes = [
       WebSocketCloseCode.NORMAL_CLOSURE,
       WebSocketCloseCode.SECURITY_VIOLATIONS,
@@ -408,7 +389,7 @@ export default class WebSocketService extends EventEmitter {
    */
   _queueMessage(message) {
     if (this.messageQueue.length >= this.options.messageQueueSize) {
-      this.messageQueue.shift(); // Remove oldest message
+      this.messageQueue.shift();
     }
     
     this.messageQueue.push(message);
@@ -455,7 +436,6 @@ export default class WebSocketService extends EventEmitter {
    * @private
    */
   _sendHeartbeat() {
-    // Override in subclass
     this.emit('heartbeat_required');
   }
 
@@ -552,11 +532,14 @@ export default class WebSocketService extends EventEmitter {
   }
 
   /**
-   * Log message
+   * Log message with recursion protection
    * @private
    */
   log(level, message, data = null) {
     if (!this.options.debug && level === 'debug') return;
+    
+    // Prevent recursive logging
+    if (this._isLogging) return;
     
     const logMessage = `[WebSocketService] ${message}`;
     
@@ -575,6 +558,12 @@ export default class WebSocketService extends EventEmitter {
         break;
     }
     
-    this.emit('log', { level, message, data, timestamp: new Date() });
+    // Set flag before emitting to prevent recursion
+    this._isLogging = true;
+    try {
+      this.emit('log', { level, message, data, timestamp: new Date() });
+    } finally {
+      this._isLogging = false;
+    }
   }
 }
