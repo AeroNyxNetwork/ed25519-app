@@ -3,16 +3,15 @@
  * 
  * File Path: src/components/providers/WebSocketProvider.js
  * 
- * Final fixed version with proper variable scoping and error handling
+ * Updated to use new authentication flow
  * 
- * @version 4.0.0
+ * @version 5.0.0
  * @author AeroNyx Development Team
- * @since 2025-01-19
  */
 
 'use client';
 
-import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
 import { wsManager } from '../../lib/websocket/WebSocketManager';
 import { useSignature } from '../../hooks/useSignature';
@@ -25,6 +24,7 @@ export function WebSocketProvider({ children }) {
   const [isInitialized, setIsInitialized] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [nodes, setNodes] = useState([]);
+  const [sessionToken, setSessionToken] = useState(null);
   
   // Use the shared signature hook
   const { signature, message, error: signatureError } = useSignature('websocket');
@@ -32,6 +32,29 @@ export function WebSocketProvider({ children }) {
   // Refs to prevent multiple initialization attempts
   const initializingRef = useRef(false);
   const serviceKeyRef = useRef(null);
+
+  // Handle signature message request
+  const requestSignatureMessage = useCallback(async (walletAddress) => {
+    if (!userMonitorService) return null;
+    
+    try {
+      await userMonitorService.requestSignatureMessage(walletAddress);
+      
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Signature message timeout'));
+        }, 10000);
+        
+        userMonitorService.once('signature_message_received', (data) => {
+          clearTimeout(timeout);
+          resolve(data);
+        });
+      });
+    } catch (error) {
+      console.error('Failed to request signature message:', error);
+      throw error;
+    }
+  }, [userMonitorService]);
 
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
@@ -44,6 +67,7 @@ export function WebSocketProvider({ children }) {
       setIsInitialized(false);
       setConnectionStatus('disconnected');
       setNodes([]);
+      setSessionToken(null);
       return;
     }
 
@@ -90,9 +114,14 @@ export function WebSocketProvider({ children }) {
           setNodes(data.nodes || []);
         });
 
-        service.on('auth_success', () => {
+        service.on('authentication_success', (data) => {
           setConnectionStatus('authenticated');
-          // Start monitoring after successful auth
+          if (data.session_token) {
+            setSessionToken(data.session_token);
+            // Store session token in localStorage for reconnection
+            localStorage.setItem('aeronyx_session_token', data.session_token);
+          }
+          // Auto-start monitoring after successful auth
           service.startMonitoring().catch(err => {
             console.warn('Failed to start monitoring:', err);
           });
@@ -101,6 +130,8 @@ export function WebSocketProvider({ children }) {
         service.on('auth_failed', (data) => {
           console.error('WebSocket auth failed:', data);
           setConnectionStatus('auth_failed');
+          // Clear stored session token
+          localStorage.removeItem('aeronyx_session_token');
         });
 
         service.on('monitoring_started', () => {
@@ -109,22 +140,35 @@ export function WebSocketProvider({ children }) {
 
         service.on('error', (error) => {
           console.error('WebSocket error:', error);
-          // Don't fail initialization on WebSocket errors
         });
 
         // Connect with error handling
         try {
           await service.connect();
+          
+          // Try to use stored session token first
+          const storedToken = localStorage.getItem('aeronyx_session_token');
+          if (storedToken) {
+            try {
+              await service.authenticateWithToken(storedToken);
+            } catch (error) {
+              console.warn('Session token invalid, using signature auth');
+              localStorage.removeItem('aeronyx_session_token');
+              // Fall back to signature auth
+              await service.authenticate(walletCredentials);
+            }
+          } else {
+            // Use signature authentication
+            await service.authenticate(walletCredentials);
+          }
         } catch (error) {
           console.warn('WebSocket connection failed, will use REST API fallback:', error);
-          // Don't throw - allow app to continue with REST API
         }
         
         setIsInitialized(true);
       } catch (error) {
         console.error('Failed to initialize user monitor:', error);
         setConnectionStatus('error');
-        // Still mark as initialized to prevent retry loop
         setIsInitialized(true);
       } finally {
         initializingRef.current = false;
@@ -148,6 +192,8 @@ export function WebSocketProvider({ children }) {
     isInitialized,
     connectionStatus,
     nodes,
+    sessionToken,
+    requestSignatureMessage,
     getNodeService: (referenceCode, options) => wsManager.getNodeService(referenceCode, options)
   };
 
