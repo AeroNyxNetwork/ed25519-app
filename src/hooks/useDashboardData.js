@@ -111,6 +111,8 @@ export function useDashboard(config = {}) {
   const processDashboardData = useCallback((data, source) => {
     if (!data) return null;
     
+    console.log('[useDashboard] Processing data from:', source, data);
+    
     // Handle WebSocket data format
     if (source === DataSource.WEBSOCKET && data.nodes && Array.isArray(data.nodes)) {
       const nodes = data.nodes;
@@ -119,7 +121,7 @@ export function useDashboard(config = {}) {
         totalNodes: nodes.length,
         activeNodes: nodes.filter(n => n.status === 'active').length,
         offlineNodes: nodes.filter(n => n.status === 'offline').length,
-        pendingNodes: nodes.filter(n => n.status === 'pending').length,
+        pendingNodes: nodes.filter(n => n.status === 'pending' || n.status === 'registered').length,
         totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
         networkContribution: `${(Math.max(0, nodes.filter(n => n.status === 'active').length) * 0.0015).toFixed(4)}%`,
         resourceUtilization: calculateResourceUtilization(nodes)
@@ -128,7 +130,7 @@ export function useDashboard(config = {}) {
       return {
         dashboardData: {
           stats: processedStats,
-          nodes: nodes.slice(0, 4), // Show first 4 nodes in dashboard
+          nodes: nodes,
           timestamp: new Date().toISOString(),
           source
         },
@@ -170,7 +172,7 @@ export function useDashboard(config = {}) {
     return {
       dashboardData: {
         stats: processedStats,
-        nodes: nodesArray.slice(0, 4),
+        nodes: nodesArray,
         timestamp: new Date().toISOString(),
         source
       },
