@@ -197,15 +197,12 @@ export default class WebSocketService extends EventEmitter {
       
       this.log('debug', 'Message received', data);
       
-      // First emit raw message
+      // Only emit raw message for debugging purposes
       this.emit('message', data);
       
       // Handle messages based on type field
       if (data.type) {
-        // Emit specific event for this message type
-        this.emit(data.type, data.data || data);
-        
-        // Handle common message types
+        // Handle common message types internally first
         switch (data.type) {
           case 'connection_established':
             this._handleConnectionEstablished(data);
@@ -229,6 +226,11 @@ export default class WebSocketService extends EventEmitter {
           
           case 'pong':
             this._handlePong(data);
+            break;
+            
+          // For other message types, emit the event
+          default:
+            this.emit(data.type, data.data || data);
             break;
         }
       }
