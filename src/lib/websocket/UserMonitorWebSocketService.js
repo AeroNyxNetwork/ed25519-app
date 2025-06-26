@@ -54,6 +54,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     this.on('auth_success', (data) => {
       this.log('info', 'Authentication successful');
       
+      // Auth success has flat structure
       if (data.session_token) {
         this.sessionToken = data.session_token;
       }
@@ -64,6 +65,11 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       }
       
       this.authenticated = true;
+      
+      // Start monitoring after successful auth
+      this.startMonitoring().catch(err => {
+        this.log('error', 'Failed to start monitoring:', err);
+      });
     });
     
     // Handle authentication failure
@@ -72,9 +78,23 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       this.authenticated = false;
     });
     
-    // Handle status updates
+    // Handle status updates - this is the main event for node data
     this.on('status_update', (data) => {
       this._handleStatusUpdate(data);
+    });
+    
+    // Handle monitoring started
+    this.on('monitor_started', (data) => {
+      this.log('info', 'Monitoring started with interval:', data.interval);
+      this.monitoringActive = true;
+      this.emit('monitoring_started', data);
+    });
+    
+    // Handle monitoring stopped
+    this.on('monitor_stopped', () => {
+      this.log('info', 'Monitoring stopped');
+      this.monitoringActive = false;
+      this.emit('monitoring_stopped');
     });
     
     // Handle errors
@@ -123,6 +143,10 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       return;
     }
     
+    // Clear existing data
+    this.nodesData.clear();
+    
+    // Initialize with basic data from auth response
     nodes.forEach(node => {
       if (!node || !node.code) return;
       
@@ -130,14 +154,15 @@ export default class UserMonitorWebSocketService extends WebSocketService {
         id: node.id,
         code: node.code,
         name: node.name || 'Unknown Node',
-        status: node.status || 'unknown',
+        status: 'unknown', // Status will be updated by status_update
+        type: 'unknown',
         performance: {
-          cpu: node.performance?.cpu || 0,
-          memory: node.performance?.memory || 0,
-          disk: node.performance?.disk || 0,
-          network: node.performance?.network || 0
+          cpu: 0,
+          memory: 0,
+          disk: 0,
+          network: 0
         },
-        last_seen: node.last_seen || null,
+        last_seen: null,
         lastUpdate: null
       });
     });
@@ -159,29 +184,34 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       return;
     }
     
+    // Clear and rebuild nodes data with complete information
+    this.nodesData.clear();
+    
     // Update each node's data
     update.nodes.forEach(nodeUpdate => {
       if (!nodeUpdate || !nodeUpdate.code) return;
       
-      const node = this.nodesData.get(nodeUpdate.code);
-      if (node) {
-        // Update node data
-        Object.assign(node, {
-          name: nodeUpdate.name || node.name,
-          status: nodeUpdate.status || node.status,
-          performance: nodeUpdate.performance || node.performance,
-          last_seen: nodeUpdate.last_seen || node.last_seen,
-          lastUpdate: new Date()
-        });
-        
-        this.nodesData.set(nodeUpdate.code, node);
-      }
+      // Store complete node data
+      this.nodesData.set(nodeUpdate.code, {
+        code: nodeUpdate.code,
+        name: nodeUpdate.name,
+        status: nodeUpdate.status,
+        type: nodeUpdate.type,
+        performance: nodeUpdate.performance || {
+          cpu: 0,
+          memory: 0,
+          disk: 0,
+          network: 0
+        },
+        last_seen: nodeUpdate.last_seen,
+        lastUpdate: new Date()
+      });
     });
     
     // Emit comprehensive update
     this.emit('nodes_updated', {
       nodes: Array.from(this.nodesData.values()),
-      timestamp: update.timestamp || new Date().toISOString(),
+      timestamp: update.timestamp || Date.now(),
       sequence: ++this.lastUpdateSequence
     });
   }
@@ -236,12 +266,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
         type: 'start_monitor'
       });
       
-      this.monitoringActive = true;
-      this.emit('monitoring_started', {
-        node_count: this.nodesData.size
-      });
-      
-      this.log('info', 'Started monitoring');
+      this.log('info', 'Sent start_monitor request');
     } catch (error) {
       this.log('error', 'Failed to start monitoring', error);
       throw error;
