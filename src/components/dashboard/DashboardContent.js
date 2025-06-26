@@ -3,17 +3,15 @@
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * Production-ready dashboard UI for Web3 tool platform
- * Focused on node management and operational metrics
+ * Production-ready dashboard UI with WebSocket integration
  * 
- * @version 2.0.0
+ * @version 2.1.0
  * @author AeroNyx Development Team
- * @since 2025-01-19
  */
 
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 
 // Component imports
@@ -33,6 +31,7 @@ export default function DashboardContent() {
 
   // WebSocket context
   const wsContext = useWebSocketContext();
+  const { nodes: wsNodes, connectionStatus } = wsContext;
 
   // Dashboard data hook
   const {
@@ -51,6 +50,53 @@ export default function DashboardContent() {
     hybridMode: true
   });
 
+  // Use WebSocket nodes if available, otherwise use dashboard data
+  const nodes = wsNodes && wsNodes.length > 0 ? wsNodes : (dashboardData?.nodes || []);
+
+  // Calculate stats from WebSocket nodes if available
+  const calculatedStats = useCallback(() => {
+    if (wsNodes && wsNodes.length > 0) {
+      const activeNodes = wsNodes.filter(n => n.status === 'active');
+      const offlineNodes = wsNodes.filter(n => n.status === 'offline');
+      const pendingNodes = wsNodes.filter(n => n.status === 'pending' || n.status === 'registered');
+      
+      // Calculate average resource utilization from active nodes
+      let avgCpu = 0, avgMemory = 0;
+      if (activeNodes.length > 0) {
+        activeNodes.forEach(node => {
+          avgCpu += node.performance?.cpu || 0;
+          avgMemory += node.performance?.memory || 0;
+        });
+        avgCpu = Math.round(avgCpu / activeNodes.length);
+        avgMemory = Math.round(avgMemory / activeNodes.length);
+      }
+      
+      return {
+        totalNodes: wsNodes.length,
+        activeNodes: activeNodes.length,
+        offlineNodes: offlineNodes.length,
+        pendingNodes: pendingNodes.length,
+        totalEarnings: 0, // This would come from API
+        networkContribution: `${(activeNodes.length * 0.0015).toFixed(4)}%`,
+        resourceUtilization: Math.round((avgCpu + avgMemory) / 2)
+      };
+    }
+    return stats;
+  }, [wsNodes, stats]);
+
+  const displayStats = calculatedStats();
+
+  // Log for debugging
+  useEffect(() => {
+    console.log('[DashboardContent] Current state:', {
+      wsNodes: wsNodes?.length || 0,
+      nodes: nodes.length,
+      connectionStatus,
+      displayStats,
+      dataSource
+    });
+  }, [wsNodes, nodes, connectionStatus, displayStats, dataSource]);
+
   // Event handlers
   const handleBlockchainIntegration = useCallback((node) => {
     setSelectedNodeForBlockchain(node);
@@ -66,7 +112,7 @@ export default function DashboardContent() {
   }, [refresh]);
 
   // Show loading state
-  if (isInitialLoading) {
+  if (isInitialLoading && nodes.length === 0) {
     return (
       <div className="py-8">
         <div className="flex flex-col items-center justify-center min-h-[60vh]">
@@ -81,7 +127,7 @@ export default function DashboardContent() {
   }
 
   // Show error state
-  if (error && !dashboardData) {
+  if (error && nodes.length === 0) {
     return (
       <div className="py-8">
         <div className="card glass-effect p-8 text-center">
@@ -97,9 +143,6 @@ export default function DashboardContent() {
       </div>
     );
   }
-
-  // Extract nodes array from dashboard data
-  const nodesArray = dashboardData?.nodes || [];
 
   return (
     <div className="py-8">
@@ -144,7 +187,7 @@ export default function DashboardContent() {
 
       {/* Real-time Monitor */}
       <RealTimeNodeMonitor
-        nodes={nodesArray}
+        nodes={nodes}
         performanceAlerts={[]}
         lastUpdate={lastUpdate}
         updateSource={dataSource}
@@ -156,8 +199,8 @@ export default function DashboardContent() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <DashboardStatsCard
           title="Total Nodes"
-          value={stats.totalNodes}
-          subtitle={`${stats.activeNodes} active`}
+          value={displayStats.totalNodes}
+          subtitle={`${displayStats.activeNodes} active`}
           icon="servers"
           color="primary"
           trend="up"
@@ -166,25 +209,25 @@ export default function DashboardContent() {
         
         <DashboardStatsCard
           title="Network Status"
-          value={stats.activeNodes > 0 ? 'Operational' : 'Offline'}
-          subtitle={`${((stats.activeNodes / Math.max(1, stats.totalNodes)) * 100).toFixed(0)}% uptime`}
+          value={displayStats.activeNodes > 0 ? 'Operational' : 'Offline'}
+          subtitle={`${displayStats.totalNodes > 0 ? ((displayStats.activeNodes / displayStats.totalNodes) * 100).toFixed(0) : 0}% uptime`}
           icon="status"
-          color={stats.activeNodes > 0 ? 'success' : 'error'}
+          color={displayStats.activeNodes > 0 ? 'success' : 'error'}
         />
         
         <DashboardStatsCard
           title="Resource Usage"
-          value={`${stats.resourceUtilization}%`}
+          value={`${displayStats.resourceUtilization}%`}
           subtitle="Average utilization"
           icon="performance"
           color="accent"
-          trend={stats.resourceUtilization > 70 ? 'up' : 'stable'}
-          trendValue={stats.resourceUtilization > 70 ? 5.2 : 0}
+          trend={displayStats.resourceUtilization > 70 ? 'up' : 'stable'}
+          trendValue={displayStats.resourceUtilization > 70 ? 5.2 : 0}
         />
         
         <DashboardStatsCard
           title="Network Share"
-          value={stats.networkContribution}
+          value={displayStats.networkContribution}
           subtitle="Your contribution"
           icon="network"
           color="secondary"
@@ -208,9 +251,9 @@ export default function DashboardContent() {
                 </Link>
               </div>
               
-              {nodesArray.length > 0 ? (
+              {nodes.length > 0 ? (
                 <NodeList
-                  nodes={nodesArray.slice(0, 4)}
+                  nodes={nodes.slice(0, 4)}
                   onBlockchainIntegrate={handleBlockchainIntegration}
                   onNodeDetails={handleNodeDetails}
                 />
@@ -267,12 +310,12 @@ export default function DashboardContent() {
               <div>
                 <div className="flex justify-between text-sm mb-1">
                   <span className="text-gray-400">Resource Utilization</span>
-                  <span>{stats.resourceUtilization}%</span>
+                  <span>{displayStats.resourceUtilization}%</span>
                 </div>
                 <div className="w-full bg-background-200 rounded-full h-2">
                   <div 
                     className="bg-primary rounded-full h-2 transition-all duration-300" 
-                    style={{ width: `${stats.resourceUtilization}%` }}
+                    style={{ width: `${displayStats.resourceUtilization}%` }}
                   ></div>
                 </div>
               </div>
@@ -280,12 +323,12 @@ export default function DashboardContent() {
               <div>
                 <div className="flex justify-between text-sm mb-1">
                   <span className="text-gray-400">Active Nodes</span>
-                  <span>{stats.activeNodes} / {stats.totalNodes}</span>
+                  <span>{displayStats.activeNodes} / {displayStats.totalNodes}</span>
                 </div>
                 <div className="w-full bg-background-200 rounded-full h-2">
                   <div 
                     className="bg-green-500 rounded-full h-2 transition-all duration-300" 
-                    style={{ width: `${(stats.activeNodes / Math.max(1, stats.totalNodes)) * 100}%` }}
+                    style={{ width: `${displayStats.totalNodes > 0 ? (displayStats.activeNodes / displayStats.totalNodes) * 100 : 0}%` }}
                   ></div>
                 </div>
               </div>
@@ -308,12 +351,22 @@ export default function DashboardContent() {
                 </div>
               )}
               
-              {stats.activeNodes > 0 && (
+              {displayStats.activeNodes > 0 && (
                 <div className="flex items-start gap-2">
                   <div className="w-2 h-2 rounded-full bg-green-500 mt-1.5"></div>
                   <div>
-                    <p className="text-gray-300">{stats.activeNodes} nodes online</p>
+                    <p className="text-gray-300">{displayStats.activeNodes} nodes online</p>
                     <p className="text-xs text-gray-500">Network operational</p>
+                  </div>
+                </div>
+              )}
+              
+              {connectionStatus === 'monitoring' && (
+                <div className="flex items-start gap-2">
+                  <div className="w-2 h-2 rounded-full bg-purple-500 mt-1.5 animate-pulse"></div>
+                  <div>
+                    <p className="text-gray-300">Live monitoring active</p>
+                    <p className="text-xs text-gray-500">Real-time updates enabled</p>
                   </div>
                 </div>
               )}
