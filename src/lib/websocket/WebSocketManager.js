@@ -3,10 +3,9 @@
  * 
  * File Path: src/lib/websocket/WebSocketManager.js
  * 
- * Centralized manager for WebSocket connections with
- * optimized lifecycle management
+ * Centralized manager for WebSocket connections
  * 
- * @version 3.0.0
+ * @version 3.1.0
  * @author AeroNyx Development Team
  */
 
@@ -88,16 +87,16 @@ class WebSocketManager {
   /**
    * Get or create user monitor WebSocket service
    * 
-   * @param {Object} walletCredentials - Wallet authentication credentials
+   * @param {Object} walletInfo - Wallet information (just address for initial connection)
    * @param {Object} options - Service options
    * @returns {UserMonitorWebSocketService} WebSocket service instance
    */
-  getUserMonitorService(walletCredentials, options = {}) {
-    const key = `${ServiceType.USER_MONITOR}:${walletCredentials.walletAddress}`;
+  getUserMonitorService(walletInfo, options = {}) {
+    const key = `${ServiceType.USER_MONITOR}:${walletInfo.walletAddress}`;
     
     let service = this.services.get(key);
     if (!service) {
-      service = new UserMonitorWebSocketService(walletCredentials, {
+      service = new UserMonitorWebSocketService(walletInfo, {
         ...this.defaultOptions,
         ...options
       });
