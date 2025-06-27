@@ -3,15 +3,16 @@
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * Production-ready dashboard UI with WebSocket integration
+ * Production-ready dashboard UI following Google coding standards.
+ * Implements clean separation of concerns and efficient rendering.
  * 
- * @version 2.1.0
+ * @version 3.0.0
  * @author AeroNyx Development Team
  */
 
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import Link from 'next/link';
 
 // Component imports
@@ -23,22 +24,21 @@ import BlockchainIntegrationModule from './BlockchainIntegrationModule';
 
 // Hook imports
 import useDashboard from '../../hooks/useDashboardData';
-import { useWebSocketContext } from '../providers/WebSocketProvider';
 
+/**
+ * Dashboard Content Component
+ * 
+ * @returns {React.ReactElement} Dashboard content
+ */
 export default function DashboardContent() {
   const [showBlockchainModal, setShowBlockchainModal] = useState(false);
   const [selectedNodeForBlockchain, setSelectedNodeForBlockchain] = useState(null);
-
-  // WebSocket context
-  const wsContext = useWebSocketContext();
-  const { nodes: wsNodes, connectionStatus } = wsContext;
 
   // Dashboard data hook
   const {
     dashboardData,
     stats,
-    isInitialLoading,
-    isRefreshing,
+    isLoading,
     error,
     dataSource,
     connectionHealth,
@@ -46,56 +46,11 @@ export default function DashboardContent() {
     refresh
   } = useDashboard({
     preferWebSocket: true,
-    enableRESTFallback: true,
-    hybridMode: true
+    enableRESTFallback: true
   });
 
-  // Use WebSocket nodes if available, otherwise use dashboard data
-  const nodes = wsNodes && wsNodes.length > 0 ? wsNodes : (dashboardData?.nodes || []);
-
-  // Calculate stats from WebSocket nodes if available
-  const calculatedStats = useCallback(() => {
-    if (wsNodes && wsNodes.length > 0) {
-      const activeNodes = wsNodes.filter(n => n.status === 'active');
-      const offlineNodes = wsNodes.filter(n => n.status === 'offline');
-      const pendingNodes = wsNodes.filter(n => n.status === 'pending' || n.status === 'registered');
-      
-      // Calculate average resource utilization from active nodes
-      let avgCpu = 0, avgMemory = 0;
-      if (activeNodes.length > 0) {
-        activeNodes.forEach(node => {
-          avgCpu += node.performance?.cpu || 0;
-          avgMemory += node.performance?.memory || 0;
-        });
-        avgCpu = Math.round(avgCpu / activeNodes.length);
-        avgMemory = Math.round(avgMemory / activeNodes.length);
-      }
-      
-      return {
-        totalNodes: wsNodes.length,
-        activeNodes: activeNodes.length,
-        offlineNodes: offlineNodes.length,
-        pendingNodes: pendingNodes.length,
-        totalEarnings: 0, // This would come from API
-        networkContribution: `${(activeNodes.length * 0.0015).toFixed(4)}%`,
-        resourceUtilization: Math.round((avgCpu + avgMemory) / 2)
-      };
-    }
-    return stats;
-  }, [wsNodes, stats]);
-
-  const displayStats = calculatedStats();
-
-  // Log for debugging
-  useEffect(() => {
-    console.log('[DashboardContent] Current state:', {
-      wsNodes: wsNodes?.length || 0,
-      nodes: nodes.length,
-      connectionStatus,
-      displayStats,
-      dataSource
-    });
-  }, [wsNodes, nodes, connectionStatus, displayStats, dataSource]);
+  // Extract nodes from dashboard data
+  const nodes = dashboardData?.nodes || [];
 
   // Event handlers
   const handleBlockchainIntegration = useCallback((node) => {
@@ -108,11 +63,11 @@ export default function DashboardContent() {
   }, []);
 
   const handleRefresh = useCallback(() => {
-    refresh(true);
+    refresh();
   }, [refresh]);
 
-  // Show loading state
-  if (isInitialLoading && nodes.length === 0) {
+  // Loading state
+  if (isLoading) {
     return (
       <div className="py-8">
         <div className="flex flex-col items-center justify-center min-h-[60vh]">
@@ -126,13 +81,13 @@ export default function DashboardContent() {
     );
   }
 
-  // Show error state
+  // Error state
   if (error && nodes.length === 0) {
     return (
       <div className="py-8">
         <div className="card glass-effect p-8 text-center">
           <h2 className="text-2xl font-bold mb-4">Unable to Load Dashboard</h2>
-          <p className="text-gray-400 mb-6">{error.message || 'An error occurred while loading your dashboard.'}</p>
+          <p className="text-gray-400 mb-6">{error}</p>
           <button
             onClick={handleRefresh}
             className="button-primary"
@@ -168,13 +123,12 @@ export default function DashboardContent() {
             {/* Refresh Button */}
             <button
               onClick={handleRefresh}
-              disabled={isRefreshing}
-              className="p-2 rounded-md bg-background-100 hover:bg-background-200 transition-colors disabled:opacity-50"
+              className="p-2 rounded-md bg-background-100 hover:bg-background-200 transition-colors"
               title="Refresh data"
             >
               <svg 
                 xmlns="http://www.w3.org/2000/svg" 
-                className={`h-5 w-5 ${isRefreshing ? 'animate-spin' : ''}`} 
+                className="h-5 w-5" 
                 viewBox="0 0 20 20" 
                 fill="currentColor"
               >
@@ -199,35 +153,32 @@ export default function DashboardContent() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <DashboardStatsCard
           title="Total Nodes"
-          value={displayStats.totalNodes}
-          subtitle={`${displayStats.activeNodes} active`}
+          value={stats.totalNodes}
+          subtitle={`${stats.activeNodes} active`}
           icon="servers"
           color="primary"
-          trend="up"
-          trendValue={2.5}
+          trend={stats.totalNodes > 0 ? "stable" : undefined}
         />
         
         <DashboardStatsCard
           title="Network Status"
-          value={displayStats.activeNodes > 0 ? 'Operational' : 'Offline'}
-          subtitle={`${displayStats.totalNodes > 0 ? ((displayStats.activeNodes / displayStats.totalNodes) * 100).toFixed(0) : 0}% uptime`}
+          value={stats.activeNodes > 0 ? 'Operational' : 'Offline'}
+          subtitle={`${stats.totalNodes > 0 ? ((stats.activeNodes / stats.totalNodes) * 100).toFixed(0) : 0}% uptime`}
           icon="status"
-          color={displayStats.activeNodes > 0 ? 'success' : 'error'}
+          color={stats.activeNodes > 0 ? 'success' : 'error'}
         />
         
         <DashboardStatsCard
           title="Resource Usage"
-          value={`${displayStats.resourceUtilization}%`}
+          value={`${stats.resourceUtilization}%`}
           subtitle="Average utilization"
           icon="performance"
           color="accent"
-          trend={displayStats.resourceUtilization > 70 ? 'up' : 'stable'}
-          trendValue={displayStats.resourceUtilization > 70 ? 5.2 : 0}
         />
         
         <DashboardStatsCard
           title="Network Share"
-          value={displayStats.networkContribution}
+          value={stats.networkContribution}
           subtitle="Your contribution"
           icon="network"
           color="secondary"
@@ -236,19 +187,20 @@ export default function DashboardContent() {
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - Main Content */}
+        {/* Left Column - Node List */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Node List */}
           <div className="card glass-effect">
             <div className="p-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-bold">Your Nodes</h2>
-                <Link 
-                  href="/dashboard/nodes"
-                  className="text-sm text-primary hover:text-primary-600 transition-colors"
-                >
-                  View All →
-                </Link>
+                {nodes.length > 4 && (
+                  <Link 
+                    href="/dashboard/nodes"
+                    className="text-sm text-primary hover:text-primary-600 transition-colors"
+                  >
+                    View All →
+                  </Link>
+                )}
               </div>
               
               {nodes.length > 0 ? (
@@ -310,12 +262,12 @@ export default function DashboardContent() {
               <div>
                 <div className="flex justify-between text-sm mb-1">
                   <span className="text-gray-400">Resource Utilization</span>
-                  <span>{displayStats.resourceUtilization}%</span>
+                  <span>{stats.resourceUtilization}%</span>
                 </div>
                 <div className="w-full bg-background-200 rounded-full h-2">
                   <div 
                     className="bg-primary rounded-full h-2 transition-all duration-300" 
-                    style={{ width: `${displayStats.resourceUtilization}%` }}
+                    style={{ width: `${stats.resourceUtilization}%` }}
                   ></div>
                 </div>
               </div>
@@ -323,12 +275,12 @@ export default function DashboardContent() {
               <div>
                 <div className="flex justify-between text-sm mb-1">
                   <span className="text-gray-400">Active Nodes</span>
-                  <span>{displayStats.activeNodes} / {displayStats.totalNodes}</span>
+                  <span>{stats.activeNodes} / {stats.totalNodes}</span>
                 </div>
                 <div className="w-full bg-background-200 rounded-full h-2">
                   <div 
                     className="bg-green-500 rounded-full h-2 transition-all duration-300" 
-                    style={{ width: `${displayStats.totalNodes > 0 ? (displayStats.activeNodes / displayStats.totalNodes) * 100 : 0}%` }}
+                    style={{ width: `${stats.totalNodes > 0 ? (stats.activeNodes / stats.totalNodes) * 100 : 0}%` }}
                   ></div>
                 </div>
               </div>
@@ -351,17 +303,17 @@ export default function DashboardContent() {
                 </div>
               )}
               
-              {displayStats.activeNodes > 0 && (
+              {stats.activeNodes > 0 && (
                 <div className="flex items-start gap-2">
                   <div className="w-2 h-2 rounded-full bg-green-500 mt-1.5"></div>
                   <div>
-                    <p className="text-gray-300">{displayStats.activeNodes} nodes online</p>
+                    <p className="text-gray-300">{stats.activeNodes} nodes online</p>
                     <p className="text-xs text-gray-500">Network operational</p>
                   </div>
                 </div>
               )}
               
-              {connectionStatus === 'monitoring' && (
+              {dataSource === 'websocket' && (
                 <div className="flex items-start gap-2">
                   <div className="w-2 h-2 rounded-full bg-purple-500 mt-1.5 animate-pulse"></div>
                   <div>
@@ -376,16 +328,14 @@ export default function DashboardContent() {
       </div>
 
       {/* Blockchain Integration Modal */}
-      {showBlockchainModal && (
-        <BlockchainIntegrationModule
-          isOpen={showBlockchainModal}
-          onClose={() => {
-            setShowBlockchainModal(false);
-            setSelectedNodeForBlockchain(null);
-          }}
-          selectedNode={selectedNodeForBlockchain}
-        />
-      )}
+      <BlockchainIntegrationModule
+        isOpen={showBlockchainModal}
+        onClose={() => {
+          setShowBlockchainModal(false);
+          setSelectedNodeForBlockchain(null);
+        }}
+        selectedNode={selectedNodeForBlockchain}
+      />
     </div>
   );
 }
