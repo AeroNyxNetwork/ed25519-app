@@ -3,16 +3,16 @@
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * Production-ready dashboard UI following Google coding standards.
- * Implements clean separation of concerns and efficient rendering.
+ * Production-ready dashboard UI with WebSocket-only data display
+ * Fixed to properly show WebSocket node data
  * 
- * @version 3.0.0
+ * @version 4.0.0
  * @author AeroNyx Development Team
  */
 
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 
 // Component imports
@@ -23,7 +23,9 @@ import RealTimeNodeMonitor from './RealTimeDashboard';
 import BlockchainIntegrationModule from './BlockchainIntegrationModule';
 
 // Hook imports
-import useDashboard from '../../hooks/useDashboardData';
+import { useWallet } from '../wallet/WalletProvider';
+import { useDashboardWebSocket } from '../../hooks/useWebSocket';
+import { useSignature } from '../../hooks/useSignature';
 
 /**
  * Dashboard Content Component
@@ -33,40 +35,206 @@ import useDashboard from '../../hooks/useDashboardData';
 export default function DashboardContent() {
   const [showBlockchainModal, setShowBlockchainModal] = useState(false);
   const [selectedNodeForBlockchain, setSelectedNodeForBlockchain] = useState(null);
-
-  // Dashboard data hook
-  const {
-    dashboardData,
-    stats,
-    isLoading,
-    error,
-    dataSource,
-    connectionHealth,
-    lastUpdate,
-    refresh
-  } = useDashboard({
-    preferWebSocket: true,
-    enableRESTFallback: true
+  
+  // Wallet and signature
+  const { wallet } = useWallet();
+  const { signature, message, isLoading: signatureLoading, error: signatureError } = useSignature('dashboard');
+  
+  // Local state for dashboard data
+  const [dashboardData, setDashboardData] = useState({
+    nodes: [],
+    stats: {
+      totalNodes: 0,
+      activeNodes: 0,
+      offlineNodes: 0,
+      pendingNodes: 0,
+      totalEarnings: 0,
+      networkContribution: '0%',
+      resourceUtilization: 0
+    },
+    lastUpdate: null
   });
-
-  // Extract nodes from dashboard data
-  const nodes = dashboardData?.nodes || [];
-
+  
+  const [performanceAlerts, setPerformanceAlerts] = useState([]);
+  
+  // WebSocket credentials
+  const wsCredentials = useMemo(() => {
+    if (!wallet.connected || !signature || !message) return null;
+    
+    return {
+      walletAddress: wallet.address,
+      signature,
+      message,
+      walletType: 'okx'
+    };
+  }, [wallet.connected, wallet.address, signature, message]);
+  
+  // WebSocket connection for real-time data
+  const {
+    connected: wsConnected,
+    authenticated: wsAuthenticated,
+    monitoring: wsMonitoring,
+    data: wsData,
+    error: wsError,
+    connectionHealth,
+    connect: wsConnect,
+    disconnect: wsDisconnect
+  } = useDashboardWebSocket(wsCredentials, {
+    autoConnect: true,
+    autoMonitor: true,
+    onData: handleWebSocketData,
+    onError: handleWebSocketError
+  });
+  
+  // Process WebSocket data
+  function handleWebSocketData(data) {
+    console.log('[DashboardContent] WebSocket data received:', data);
+    
+    if (!data) return;
+    
+    // Handle nodes_updated event data structure
+    if (data.nodes && Array.isArray(data.nodes)) {
+      const nodes = data.nodes;
+      
+      // Calculate statistics from nodes
+      const stats = {
+        totalNodes: nodes.length,
+        activeNodes: nodes.filter(n => n.status === 'active').length,
+        offlineNodes: nodes.filter(n => n.status === 'offline').length,
+        pendingNodes: nodes.filter(n => n.status === 'pending' || n.status === 'registered').length,
+        totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
+        networkContribution: `${(Math.max(0, nodes.filter(n => n.status === 'active').length) * 0.0015).toFixed(4)}%`,
+        resourceUtilization: calculateResourceUtilization(nodes)
+      };
+      
+      setDashboardData({
+        nodes: nodes,
+        stats: stats,
+        lastUpdate: new Date()
+      });
+      
+      // Check for performance alerts
+      checkPerformanceAlerts(nodes);
+    }
+  }
+  
+  // Handle WebSocket errors
+  function handleWebSocketError(error) {
+    console.error('[DashboardContent] WebSocket error:', error);
+    
+    // Add error alert
+    setPerformanceAlerts(prev => [{
+      nodeId: 'system',
+      message: `WebSocket connection error: ${error.message || 'Unknown error'}`,
+      severity: 'critical',
+      timestamp: new Date()
+    }, ...prev].slice(0, 5));
+  }
+  
+  // Calculate resource utilization
+  const calculateResourceUtilization = useCallback((nodes) => {
+    if (!Array.isArray(nodes) || nodes.length === 0) return 0;
+    
+    const activeNodes = nodes.filter(n => n.status === 'active' || n.status === 'online');
+    if (activeNodes.length === 0) return 0;
+    
+    const totalUtil = activeNodes.reduce((sum, node) => {
+      const cpu = node.performance?.cpu || node.performance?.cpu_usage || 0;
+      const memory = node.performance?.memory || node.performance?.memory_usage || 0;
+      return sum + ((cpu + memory) / 2);
+    }, 0);
+    
+    return Math.round(totalUtil / activeNodes.length);
+  }, []);
+  
+  // Check for performance alerts
+  const checkPerformanceAlerts = useCallback((nodes) => {
+    const alerts = [];
+    
+    nodes.forEach(node => {
+      if (node.status === 'active') {
+        const cpu = node.performance?.cpu || 0;
+        const memory = node.performance?.memory || 0;
+        
+        if (cpu > 90) {
+          alerts.push({
+            nodeId: node.code,
+            message: `Node ${node.name}: CPU usage critical (${cpu}%)`,
+            severity: 'critical',
+            timestamp: new Date()
+          });
+        } else if (cpu > 80) {
+          alerts.push({
+            nodeId: node.code,
+            message: `Node ${node.name}: High CPU usage (${cpu}%)`,
+            severity: 'warning',
+            timestamp: new Date()
+          });
+        }
+        
+        if (memory > 90) {
+          alerts.push({
+            nodeId: node.code,
+            message: `Node ${node.name}: Memory usage critical (${memory}%)`,
+            severity: 'critical',
+            timestamp: new Date()
+          });
+        }
+      }
+      
+      // Check for offline nodes that were previously active
+      if (node.status === 'offline' && node.last_seen) {
+        const lastSeen = new Date(node.last_seen);
+        const minutesOffline = Math.floor((Date.now() - lastSeen) / (1000 * 60));
+        
+        if (minutesOffline < 60) {
+          alerts.push({
+            nodeId: node.code,
+            message: `Node ${node.name}: Went offline ${minutesOffline}m ago`,
+            severity: 'warning',
+            timestamp: new Date()
+          });
+        }
+      }
+    });
+    
+    setPerformanceAlerts(alerts.slice(0, 10)); // Keep only last 10 alerts
+  }, []);
+  
   // Event handlers
   const handleBlockchainIntegration = useCallback((node) => {
     setSelectedNodeForBlockchain(node);
     setShowBlockchainModal(true);
   }, []);
-
+  
   const handleNodeDetails = useCallback(async (referenceCode) => {
     console.log('Fetching details for node:', referenceCode);
+    // Details will be handled by node detail page
   }, []);
-
+  
+  const handleClearAlerts = useCallback(() => {
+    setPerformanceAlerts([]);
+  }, []);
+  
   const handleRefresh = useCallback(() => {
-    refresh();
-  }, [refresh]);
-
+    // For WebSocket, we just reconnect
+    if (wsConnected) {
+      wsDisconnect();
+      setTimeout(() => wsConnect(), 1000);
+    } else {
+      wsConnect();
+    }
+  }, [wsConnected, wsConnect, wsDisconnect]);
+  
   // Loading state
+  const isLoading = signatureLoading || (!wsConnected && !wsError);
+  
+  // Error state
+  const error = signatureError || (wsError && dashboardData.nodes.length === 0);
+  
+  // Extract data
+  const { nodes, stats, lastUpdate } = dashboardData;
+  
   if (isLoading) {
     return (
       <div className="py-8">
@@ -75,19 +243,22 @@ export default function DashboardContent() {
             <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary"></div>
           </div>
           <h2 className="text-xl font-bold mb-2">Loading Dashboard</h2>
-          <p className="text-gray-400">Fetching your node data...</p>
+          <p className="text-gray-400">
+            {signatureLoading ? 'Authenticating wallet...' : 'Connecting to real-time data...'}
+          </p>
         </div>
       </div>
     );
   }
-
-  // Error state
-  if (error && nodes.length === 0) {
+  
+  if (error) {
     return (
       <div className="py-8">
         <div className="card glass-effect p-8 text-center">
           <h2 className="text-2xl font-bold mb-4">Unable to Load Dashboard</h2>
-          <p className="text-gray-400 mb-6">{error}</p>
+          <p className="text-gray-400 mb-6">
+            {typeof error === 'string' ? error : 'Failed to connect to real-time data'}
+          </p>
           <button
             onClick={handleRefresh}
             className="button-primary"
@@ -98,7 +269,7 @@ export default function DashboardContent() {
       </div>
     );
   }
-
+  
   return (
     <div className="py-8">
       {/* Page Header */}
@@ -106,7 +277,7 @@ export default function DashboardContent() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold">Node Dashboard</h1>
-            <p className="text-gray-400 mt-1">Monitor and manage your AeroNyx nodes</p>
+            <p className="text-gray-400 mt-1">Monitor and manage your AeroNyx nodes in real-time</p>
           </div>
           
           <div className="flex items-center gap-4">
@@ -124,7 +295,7 @@ export default function DashboardContent() {
             <button
               onClick={handleRefresh}
               className="p-2 rounded-md bg-background-100 hover:bg-background-200 transition-colors"
-              title="Refresh data"
+              title="Reconnect"
             >
               <svg 
                 xmlns="http://www.w3.org/2000/svg" 
@@ -138,17 +309,17 @@ export default function DashboardContent() {
           </div>
         </div>
       </div>
-
+      
       {/* Real-time Monitor */}
       <RealTimeNodeMonitor
         nodes={nodes}
-        performanceAlerts={[]}
+        performanceAlerts={performanceAlerts}
         lastUpdate={lastUpdate}
-        updateSource={dataSource}
+        updateSource="websocket"
         connectionStatus={connectionHealth}
-        onClearAlerts={() => {}}
+        onClearAlerts={handleClearAlerts}
       />
-
+      
       {/* Stats Overview */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <DashboardStatsCard
@@ -184,7 +355,7 @@ export default function DashboardContent() {
           color="secondary"
         />
       </div>
-
+      
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column - Node List */}
@@ -211,18 +382,30 @@ export default function DashboardContent() {
                 />
               ) : (
                 <div className="text-center py-12">
-                  <p className="text-gray-400 mb-4">No nodes registered yet</p>
-                  <Link href="/dashboard/register">
-                    <button className="button-primary">
-                      Register Your First Node
+                  <p className="text-gray-400 mb-4">
+                    {wsMonitoring ? 'No nodes found in your account' : 'Waiting for real-time data...'}
+                  </p>
+                  {!wsMonitoring && (
+                    <button 
+                      onClick={handleRefresh}
+                      className="button-primary"
+                    >
+                      Connect to Nodes
                     </button>
-                  </Link>
+                  )}
+                  {wsMonitoring && (
+                    <Link href="/dashboard/register">
+                      <button className="button-primary">
+                        Register Your First Node
+                      </button>
+                    </Link>
+                  )}
                 </div>
               )}
             </div>
           </div>
         </div>
-
+        
         {/* Right Column - Quick Actions & Info */}
         <div className="space-y-6">
           {/* Quick Actions */}
@@ -254,7 +437,7 @@ export default function DashboardContent() {
               />
             </div>
           </div>
-
+          
           {/* Network Health */}
           <div className="card glass-effect p-6">
             <h3 className="font-bold mb-4">Network Health</h3>
@@ -286,7 +469,7 @@ export default function DashboardContent() {
               </div>
             </div>
           </div>
-
+          
           {/* Recent Activity */}
           <div className="card glass-effect p-6">
             <h3 className="font-bold mb-4">Recent Activity</h3>
@@ -313,7 +496,7 @@ export default function DashboardContent() {
                 </div>
               )}
               
-              {dataSource === 'websocket' && (
+              {wsMonitoring && (
                 <div className="flex items-start gap-2">
                   <div className="w-2 h-2 rounded-full bg-purple-500 mt-1.5 animate-pulse"></div>
                   <div>
@@ -322,11 +505,21 @@ export default function DashboardContent() {
                   </div>
                 </div>
               )}
+              
+              {performanceAlerts.length > 0 && (
+                <div className="flex items-start gap-2">
+                  <div className="w-2 h-2 rounded-full bg-yellow-500 mt-1.5"></div>
+                  <div>
+                    <p className="text-gray-300">{performanceAlerts.length} performance alerts</p>
+                    <p className="text-xs text-gray-500">Check node status</p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
-
+      
       {/* Blockchain Integration Modal */}
       <BlockchainIntegrationModule
         isOpen={showBlockchainModal}
