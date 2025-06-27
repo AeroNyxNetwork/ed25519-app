@@ -1,12 +1,10 @@
 /**
  * Dashboard Content Component for AeroNyx Platform
+ * Debug version with enhanced logging
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * Production-ready dashboard with correct WebSocket authentication flow
- * Following the exact API documentation sequence
- * 
- * @version 6.0.1
+ * @version 6.0.2-debug
  * @author AeroNyx Development Team
  */
 
@@ -163,6 +161,7 @@ export default function DashboardContent() {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       const message = JSON.stringify(data);
       console.log('[DashboardContent] Sending:', data.type, data);
+      console.log('[DashboardContent] Full message:', message);
       wsRef.current.send(message);
     } else {
       console.warn('[DashboardContent] WebSocket not ready, state:', wsRef.current?.readyState);
@@ -181,6 +180,13 @@ export default function DashboardContent() {
           console.log('[DashboardContent] Connected, requesting signature message...');
           setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message' }));
           
+          // Debug wallet info
+          console.log('[DashboardContent] Wallet info:', {
+            address: wallet.address,
+            addressLowercase: wallet.address.toLowerCase(),
+            provider: wallet.provider ? 'Available' : 'Not available'
+          });
+          
           // IMPORTANT: Must request signature message with lowercase address
           sendMessage({
             type: 'get_message',
@@ -190,7 +196,26 @@ export default function DashboardContent() {
           
         case 'signature_message':
           // Step 2: Received signature message, now sign it
-          console.log('[DashboardContent] Received signature message:', data.message);
+          console.log('=== [DashboardContent] SIGNATURE MESSAGE DEBUG ===');
+          console.log('[DashboardContent] Full response:', JSON.stringify(data, null, 2));
+          console.log('[DashboardContent] Message:', data.message);
+          console.log('[DashboardContent] Nonce:', data.nonce);
+          console.log('[DashboardContent] Expires in:', data.expires_in);
+          
+          // Parse message details
+          const messageLines = data.message.split('\n');
+          console.log('[DashboardContent] Message lines:', messageLines);
+          
+          // Extract wallet and nonce from message
+          const walletLine = messageLines.find(line => line.startsWith('Wallet:'));
+          const nonceLine = messageLines.find(line => line.startsWith('Nonce:'));
+          const timestampLine = messageLines.find(line => line.startsWith('Timestamp:'));
+          
+          console.log('[DashboardContent] Parsed from message:');
+          console.log('- Wallet line:', walletLine);
+          console.log('- Nonce line:', nonceLine);
+          console.log('- Timestamp line:', timestampLine);
+          
           setWsState(prev => ({ ...prev, authState: 'signing' }));
           
           try {
@@ -201,20 +226,33 @@ export default function DashboardContent() {
               wallet.address
             );
             
-            console.log('[DashboardContent] Message signed, sending auth...');
-            setWsState(prev => ({ ...prev, authState: 'authenticating' }));
+            console.log('=== [DashboardContent] SENDING AUTH DEBUG ===');
+            console.log('[DashboardContent] Message signed, preparing auth...');
             
-            // Send authentication with exact message and lowercase address
-            sendMessage({
+            const authData = {
               type: 'auth',
               wallet_address: wallet.address.toLowerCase(),  // FIX: Ensure lowercase
               signature: signature,
               message: data.message, // Must be exact same message
               wallet_type: 'okx'
-            });
+            };
+            
+            console.log('[DashboardContent] Auth data to send:', JSON.stringify(authData, null, 2));
+            console.log('[DashboardContent] Wallet address matches:', 
+              wallet.address.toLowerCase() === walletLine?.split(' ')[1]?.toLowerCase()
+            );
+            
+            setWsState(prev => ({ ...prev, authState: 'authenticating' }));
+            
+            // Send authentication
+            sendMessage(authData);
             
           } catch (error) {
             console.error('[DashboardContent] Signing error:', error);
+            console.error('[DashboardContent] Error details:', {
+              message: error.message,
+              stack: error.stack
+            });
             setWsState(prev => ({ 
               ...prev, 
               authState: 'error', 
@@ -277,6 +315,12 @@ export default function DashboardContent() {
           
         case 'error':
           console.error('[DashboardContent] Server error:', data);
+          console.error('[DashboardContent] Error details:', {
+            message: data.message,
+            error_code: data.error_code,
+            full_data: data
+          });
+          
           setWsState(prev => ({ 
             ...prev, 
             error: data.message || 'Server error',
