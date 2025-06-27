@@ -336,6 +336,11 @@ export function useDashboard(config = {}) {
       );
       
       if (response.success && response.data) {
+        console.log('[fetchRESTData] API response structure:', {
+          hasData: !!response.data,
+          dataKeys: Object.keys(response.data),
+          hasNodes: !!response.data.nodes
+        });
         handleRESTData(response.data, false);
       } else if (response.message?.includes('No nodes found')) {
         // Handle empty state
