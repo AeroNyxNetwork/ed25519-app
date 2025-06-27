@@ -1,16 +1,13 @@
 /**
- * Dashboard Content Component
+ * Dashboard Content Component - Production Grade
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * Design Principles:
- * - Dark theme with high contrast
- * - Glassmorphism effects
- * - Gradients and glow effects
- * - Clean data presentation
- * - Dynamic effects and micro-interactions
+ * Production-ready dashboard 
+ * Following Occam's Razor principle - simple but effective
  * 
- * @version 8.0.0
+ * @version 9.0.0
+ * @author AeroNyx Development Team
  */
 
 'use client';
@@ -18,37 +15,55 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
-
-// Icons (using Lucide React or similar icon library)
 import { 
   Server, 
   Activity, 
   Zap, 
-  Globe,
+  DollarSign,
   RefreshCw,
   Plus,
   ChevronRight,
   AlertCircle,
   CheckCircle,
-  XCircle
+  XCircle,
+  Loader2
 } from 'lucide-react';
+import clsx from 'clsx';
 
 // Component imports
 import { useWallet } from '../wallet/WalletProvider';
 import { signMessage } from '../../lib/utils/walletSignature';
 
+// Animation variants
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.1
+    }
+  }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      type: "spring",
+      stiffness: 100
+    }
+  }
+};
+
 /**
- * Main Dashboard Content Component
- * Features modern Web3 VC design with real-time node monitoring
+ * Dashboard Content Component
  */
 export default function DashboardContent() {
-  const [showBlockchainModal, setShowBlockchainModal] = useState(false);
-  const [selectedNodeForBlockchain, setSelectedNodeForBlockchain] = useState(null);
-  
-  // Wallet connection
   const { wallet } = useWallet();
   
-  // WebSocket connection state
+  // State
   const [wsState, setWsState] = useState({
     connected: false,
     authenticated: false,
@@ -57,7 +72,6 @@ export default function DashboardContent() {
     error: null
   });
   
-  // Dashboard data state
   const [dashboardData, setDashboardData] = useState({
     nodes: [],
     stats: {
@@ -70,28 +84,260 @@ export default function DashboardContent() {
     lastUpdate: null
   });
   
+  // Refs
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
+  const mountedRef = useRef(true);
   
-  /**
-   * Handles dashboard refresh action
-   */
-  const handleRefresh = useCallback(() => {
-    // TODO: Implement refresh logic
-    console.log('Refreshing dashboard...');
+  // Calculate resource utilization
+  const calculateResourceUtilization = useCallback((nodes) => {
+    if (!Array.isArray(nodes) || nodes.length === 0) return 0;
+    
+    const activeNodes = nodes.filter(n => n.status === 'active' || n.status === 'online');
+    if (activeNodes.length === 0) return 0;
+    
+    const totalUtil = activeNodes.reduce((sum, node) => {
+      const cpu = node.performance?.cpu || 0;
+      const memory = node.performance?.memory || 0;
+      return sum + ((cpu + memory) / 2);
+    }, 0);
+    
+    return Math.round(totalUtil / activeNodes.length);
   }, []);
   
-  // Note: WebSocket logic would be implemented here in production
-  // (Preserved necessary WebSocket logic, but removed debug code)
+  // Process nodes data from WebSocket
+  const processNodesData = useCallback((data) => {
+    if (!data || !data.nodes || !Array.isArray(data.nodes)) {
+      return;
+    }
+    
+    const nodes = data.nodes;
+    
+    const stats = {
+      totalNodes: nodes.length,
+      activeNodes: nodes.filter(n => n.status === 'active').length,
+      offlineNodes: nodes.filter(n => n.status === 'offline').length,
+      totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
+      resourceUtilization: calculateResourceUtilization(nodes)
+    };
+    
+    setDashboardData({
+      nodes: nodes,
+      stats: stats,
+      lastUpdate: new Date()
+    });
+  }, [calculateResourceUtilization]);
+  
+  // Send WebSocket message
+  const sendMessage = useCallback((data) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(data));
+    }
+  }, []);
+  
+  // Handle WebSocket messages
+  const handleMessage = useCallback(async (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      
+      switch (data.type) {
+        case 'connected':
+          setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message' }));
+          sendMessage({
+            type: 'get_message',
+            wallet_address: wallet.address.toLowerCase()
+          });
+          break;
+          
+        case 'signature_message':
+          setWsState(prev => ({ ...prev, authState: 'signing' }));
+          
+          try {
+            const signature = await signMessage(
+              wallet.provider,
+              data.message,
+              wallet.address
+            );
+            
+            setWsState(prev => ({ ...prev, authState: 'authenticating' }));
+            
+            sendMessage({
+              type: 'auth',
+              wallet_address: wallet.address.toLowerCase(),
+              signature: signature,
+              message: data.message,
+              wallet_type: 'metamask' // Using metamask to avoid backend issues
+            });
+            
+          } catch (error) {
+            setWsState(prev => ({ 
+              ...prev, 
+              authState: 'error', 
+              error: 'Failed to sign message' 
+            }));
+          }
+          break;
+          
+        case 'auth_success':
+          setWsState(prev => ({ 
+            ...prev, 
+            authenticated: true, 
+            authState: 'authenticated',
+            error: null
+          }));
+          
+          if (data.nodes) {
+            const initialNodes = data.nodes.map(node => ({
+              code: node.code,
+              name: node.name,
+              id: node.id,
+              status: 'unknown',
+              type: 'unknown',
+              performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
+              earnings: 0,
+              last_seen: null
+            }));
+            
+            setDashboardData(prev => ({
+              ...prev,
+              nodes: initialNodes,
+              stats: {
+                ...prev.stats,
+                totalNodes: initialNodes.length
+              }
+            }));
+          }
+          
+          sendMessage({ type: 'start_monitor' });
+          break;
+          
+        case 'monitor_started':
+          setWsState(prev => ({ ...prev, monitoring: true }));
+          break;
+          
+        case 'status_update':
+          setWsState(prev => ({ ...prev, monitoring: true }));
+          processNodesData(data);
+          break;
+          
+        case 'error':
+          setWsState(prev => ({ 
+            ...prev, 
+            error: data.message || 'Server error'
+          }));
+          
+          if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
+            sendMessage({
+              type: 'get_message',
+              wallet_address: wallet.address.toLowerCase()
+            });
+          }
+          break;
+      }
+    } catch (error) {
+      console.error('[Dashboard] Message handling error:', error);
+    }
+  }, [wallet.address, wallet.provider, sendMessage, processNodesData]);
+  
+  // Setup WebSocket connection
+  const connectWebSocket = useCallback(() => {
+    if (!wallet.connected) return;
+    
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    
+    setWsState(prev => ({ ...prev, authState: 'connecting', error: null }));
+    
+    try {
+      const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
+      wsRef.current = ws;
+      
+      ws.onopen = () => {
+        // Wait for 'connected' message from server
+      };
+      
+      ws.onmessage = handleMessage;
+      
+      ws.onerror = () => {
+        setWsState(prev => ({ 
+          ...prev, 
+          error: 'Connection error' 
+        }));
+      };
+      
+      ws.onclose = (event) => {
+        setWsState(prev => ({ 
+          ...prev, 
+          connected: false,
+          authenticated: false,
+          monitoring: false,
+          authState: 'idle'
+        }));
+        
+        // Auto-reconnect for non-normal closures
+        if (event.code !== 1000 && mountedRef.current) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (mountedRef.current) {
+              connectWebSocket();
+            }
+          }, 3000);
+        }
+      };
+      
+    } catch (error) {
+      setWsState(prev => ({ 
+        ...prev, 
+        authState: 'error', 
+        error: 'Failed to connect' 
+      }));
+    }
+  }, [wallet.connected, handleMessage]);
+  
+  // Initialize WebSocket when wallet is connected
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    if (wallet.connected) {
+      connectWebSocket();
+    }
+    
+    return () => {
+      mountedRef.current = false;
+      
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      
+      if (wsRef.current) {
+        wsRef.current.close(1000, 'Component unmounting');
+      }
+    };
+  }, [wallet.connected, connectWebSocket]);
+  
+  // Event handlers
+  const handleRefresh = useCallback(() => {
+    connectWebSocket();
+  }, [connectWebSocket]);
+
+  // Loading state
+  if (!wallet.connected) {
+    return <WalletConnectionPrompt />;
+  }
+
+  const isLoading = wsState.authState === 'connecting' || wsState.authState === 'signing' || wsState.authState === 'authenticating';
 
   return (
     <div className="min-h-screen bg-black">
-      {/* Background Effects */}
-      <div className="fixed inset-0 bg-gradient-to-br from-purple-900/20 via-black to-blue-900/20" />
-      <div className="fixed inset-0 bg-[url('/grid.svg')] opacity-5" />
+      {/* Background effects */}
+      <div className="fixed inset-0">
+        <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-black to-blue-900/20" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-900/10 via-transparent to-transparent" />
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f2e_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f2e_1px,transparent_1px)] bg-[size:64px_64px]" />
+      </div>
       
       <div className="relative z-10 px-6 py-8 max-w-7xl mx-auto">
-        {/* Dashboard Header */}
+        {/* Header */}
         <motion.div 
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -102,159 +348,164 @@ export default function DashboardContent() {
               <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
                 Node Dashboard
               </h1>
-              <p className="text-gray-500 mt-1">
+              <p className="text-gray-400 mt-1">
                 {getStatusMessage(wsState)}
               </p>
             </div>
             
             <div className="flex items-center gap-4">
-              {/* Connection Status Indicator */}
               <ConnectionBadge status={wsState} />
               
-              {/* Refresh Button */}
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleRefresh}
-                className="p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all"
+                disabled={isLoading}
+                className={clsx(
+                  "p-3 rounded-xl border transition-all",
+                  "bg-white/5 border-white/10",
+                  "hover:bg-white/10 hover:border-white/20",
+                  "disabled:opacity-50 disabled:cursor-not-allowed"
+                )}
               >
-                <RefreshCw className="w-5 h-5 text-gray-400" />
+                <RefreshCw className={clsx("w-5 h-5 text-gray-400", isLoading && "animate-spin")} />
               </motion.button>
             </div>
           </div>
         </motion.div>
         
-        {/* Statistics Grid - Simplified Version */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <StatsCard
-            icon={<Server className="w-6 h-6" />}
-            title="Total Nodes"
-            value={dashboardData.stats.totalNodes}
-            subtitle={`${dashboardData.stats.activeNodes} active`}
-            trend="neutral"
-            delay={0}
-          />
-          
-          <StatsCard
-            icon={<Activity className="w-6 h-6" />}
-            title="Network Status"
-            value={dashboardData.stats.activeNodes > 0 ? 'Online' : 'Offline'}
-            subtitle={`${calculateUptime(dashboardData.stats)}% uptime`}
-            trend={dashboardData.stats.activeNodes > 0 ? 'up' : 'down'}
-            delay={0.1}
-          />
-          
-          <StatsCard
-            icon={<Zap className="w-6 h-6" />}
-            title="Resource Usage"
-            value={`${dashboardData.stats.resourceUtilization}%`}
-            subtitle="Average utilization"
-            trend="neutral"
-            delay={0.2}
-          />
-          
-          <StatsCard
-            icon={<Globe className="w-6 h-6" />}
-            title="Total Earnings"
-            value={`$${dashboardData.stats.totalEarnings.toFixed(2)}`}
-            subtitle="Lifetime earnings"
-            trend="up"
-            delay={0.3}
-          />
-        </div>
-        
-        {/* Main Content Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Nodes Section */}
-          <div className="lg:col-span-2">
+        {/* Loading State */}
+        <AnimatePresence mode="wait">
+          {isLoading ? (
+            <LoadingState key="loading" />
+          ) : wsState.error && dashboardData.nodes.length === 0 ? (
+            <ErrorState key="error" error={wsState.error} onRetry={handleRefresh} />
+          ) : (
             <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
-              className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6"
+              key="content"
+              variants={containerVariants}
+              initial="hidden"
+              animate="visible"
             >
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold text-white">Active Nodes</h2>
-                {dashboardData.nodes.length > 4 && (
-                  <Link href="/dashboard/nodes">
-                    <motion.a
-                      whileHover={{ x: 5 }}
-                      className="text-sm text-purple-400 hover:text-purple-300 flex items-center gap-1"
-                    >
-                      View all
-                      <ChevronRight className="w-4 h-4" />
-                    </motion.a>
-                  </Link>
-                )}
+              {/* Stats Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <StatsCard
+                  icon={Server}
+                  title="Total Nodes"
+                  value={dashboardData.stats.totalNodes}
+                  subtitle={`${dashboardData.stats.activeNodes} active`}
+                  trend="neutral"
+                />
+                
+                <StatsCard
+                  icon={Activity}
+                  title="Network Status"
+                  value={dashboardData.stats.activeNodes > 0 ? 'Online' : 'Offline'}
+                  subtitle={`${calculateUptime(dashboardData.stats)}% uptime`}
+                  trend={dashboardData.stats.activeNodes > 0 ? 'up' : 'down'}
+                />
+                
+                <StatsCard
+                  icon={Zap}
+                  title="Resource Usage"
+                  value={`${dashboardData.stats.resourceUtilization}%`}
+                  subtitle="Average utilization"
+                  trend="neutral"
+                />
+                
+                <StatsCard
+                  icon={DollarSign}
+                  title="Total Earnings"
+                  value={`$${dashboardData.stats.totalEarnings.toFixed(2)}`}
+                  subtitle="Lifetime earnings"
+                  trend="up"
+                />
               </div>
               
-              {dashboardData.nodes.length > 0 ? (
-                <div className="space-y-4">
-                  {dashboardData.nodes.slice(0, 4).map((node, index) => (
-                    <NodeCard key={node.code} node={node} delay={index * 0.1} />
-                  ))}
+              {/* Main Content */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Nodes Section */}
+                <motion.div variants={itemVariants} className="lg:col-span-2">
+                  <GlassCard>
+                    <div className="flex items-center justify-between mb-6">
+                      <h2 className="text-xl font-semibold text-white">Active Nodes</h2>
+                      {dashboardData.nodes.length > 4 && (
+                        <Link 
+                          href="/dashboard/nodes"
+                          className="text-sm text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-all hover:translate-x-1"
+                        >
+                          View all
+                          <ChevronRight className="w-4 h-4" />
+                        </Link>
+                      )}
+                    </div>
+                    
+                    {dashboardData.nodes.length > 0 ? (
+                      <div className="space-y-4">
+                        <AnimatePresence>
+                          {dashboardData.nodes.slice(0, 4).map((node) => (
+                            <NodeCard key={node.code} node={node} />
+                          ))}
+                        </AnimatePresence>
+                      </div>
+                    ) : (
+                      <EmptyNodes isMonitoring={wsState.monitoring} />
+                    )}
+                  </GlassCard>
+                </motion.div>
+                
+                {/* Sidebar */}
+                <div className="space-y-6">
+                  {/* Quick Actions */}
+                  <motion.div variants={itemVariants}>
+                    <GlassCard>
+                      <h3 className="text-lg font-semibold text-white mb-4">Quick Actions</h3>
+                      <div className="space-y-3">
+                        <QuickAction
+                          icon={Plus}
+                          title="Register Node"
+                          href="/dashboard/register"
+                          primary
+                        />
+                        <QuickAction
+                          icon={Server}
+                          title="Manage Nodes"
+                          href="/dashboard/nodes"
+                        />
+                        <QuickAction
+                          icon={Activity}
+                          title="Network Stats"
+                          href="/dashboard/network"
+                        />
+                      </div>
+                    </GlassCard>
+                  </motion.div>
+                  
+                  {/* Network Health */}
+                  <motion.div variants={itemVariants}>
+                    <GlassCard>
+                      <h3 className="text-lg font-semibold text-white mb-4">Network Health</h3>
+                      <div className="space-y-4">
+                        <HealthMetric
+                          label="Active Nodes"
+                          value={dashboardData.stats.activeNodes}
+                          max={dashboardData.stats.totalNodes || 1}
+                          color="green"
+                        />
+                        <HealthMetric
+                          label="Resource Usage"
+                          value={dashboardData.stats.resourceUtilization}
+                          max={100}
+                          color="purple"
+                        />
+                      </div>
+                    </GlassCard>
+                  </motion.div>
                 </div>
-              ) : (
-                <EmptyNodes isMonitoring={wsState.monitoring} />
-              )}
-            </motion.div>
-          </div>
-          
-          {/* Dashboard Sidebar */}
-          <div className="space-y-6">
-            {/* Quick Actions Panel */}
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.5 }}
-              className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6"
-            >
-              <h3 className="text-lg font-semibold text-white mb-4">Quick Actions</h3>
-              <div className="space-y-3">
-                <QuickAction
-                  icon={<Plus className="w-5 h-5" />}
-                  title="Register Node"
-                  href="/dashboard/register"
-                  primary
-                />
-                <QuickAction
-                  icon={<Server className="w-5 h-5" />}
-                  title="Manage Nodes"
-                  href="/dashboard/nodes"
-                />
-                <QuickAction
-                  icon={<Activity className="w-5 h-5" />}
-                  title="Network Stats"
-                  href="/dashboard/network"
-                />
               </div>
             </motion.div>
-            
-            {/* Network Health Panel */}
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.6 }}
-              className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6"
-            >
-              <h3 className="text-lg font-semibold text-white mb-4">Network Health</h3>
-              <div className="space-y-4">
-                <HealthMetric
-                  label="Active Nodes"
-                  value={dashboardData.stats.activeNodes}
-                  max={dashboardData.stats.totalNodes || 1}
-                  color="green"
-                />
-                <HealthMetric
-                  label="Resource Usage"
-                  value={dashboardData.stats.resourceUtilization}
-                  max={100}
-                  color="purple"
-                />
-              </div>
-            </motion.div>
-          </div>
-        </div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
@@ -262,91 +513,117 @@ export default function DashboardContent() {
 
 // Sub Components
 
-/**
- * Connection status badge component
- * @param {Object} props - Component props
- * @param {Object} props.status - WebSocket connection status
- */
-function ConnectionBadge({ status }) {
-  const getStatusConfig = () => {
-    if (status.monitoring) return { color: 'green', label: 'Live', pulse: true };
-    if (status.authenticated) return { color: 'blue', label: 'Connected' };
-    if (status.connected) return { color: 'yellow', label: 'Connecting' };
-    return { color: 'gray', label: 'Offline' };
-  };
-  
-  const config = getStatusConfig();
-  
+function GlassCard({ children, className }) {
   return (
-    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full bg-${config.color}-500/10 border border-${config.color}-500/20`}>
-      <div className={`w-2 h-2 rounded-full bg-${config.color}-500 ${config.pulse ? 'animate-pulse' : ''}`} />
-      <span className={`text-xs font-medium text-${config.color}-400`}>{config.label}</span>
+    <div className={clsx(
+      "bg-white/5 backdrop-blur-md rounded-2xl border border-white/10",
+      "shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]",
+      "hover:bg-white/[0.07] hover:border-white/20",
+      "transition-all duration-300",
+      className
+    )}>
+      <div className="p-6">
+        {children}
+      </div>
     </div>
   );
 }
 
-/**
- * Statistics card component with glassmorphism design
- * @param {Object} props - Component props
- * @param {React.ReactNode} props.icon - Icon element
- * @param {string} props.title - Card title
- * @param {string|number} props.value - Main value to display
- * @param {string} props.subtitle - Subtitle text
- * @param {string} props.trend - Trend indicator ('up', 'down', 'neutral')
- * @param {number} props.delay - Animation delay
- */
-function StatsCard({ icon, title, value, subtitle, trend, delay }) {
-  const trendColors = {
-    up: 'text-green-400',
-    down: 'text-red-400',
-    neutral: 'text-gray-400'
+function ConnectionBadge({ status }) {
+  const config = {
+    monitoring: { color: 'green', label: 'Live', Icon: Activity, pulse: true },
+    authenticated: { color: 'blue', label: 'Connected', Icon: CheckCircle },
+    connected: { color: 'yellow', label: 'Connecting', Icon: Loader2, spin: true },
+    idle: { color: 'gray', label: 'Offline', Icon: XCircle }
   };
+  
+  const state = status.monitoring ? 'monitoring' : 
+                status.authenticated ? 'authenticated' :
+                status.connected ? 'connected' : 'idle';
+  
+  const { color, label, Icon, pulse, spin } = config[state];
   
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay }}
-      whileHover={{ y: -5 }}
-      className="bg-gradient-to-br from-white/5 to-white/0 backdrop-blur-md rounded-2xl border border-white/10 p-6 hover:border-white/20 transition-all"
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className={clsx(
+        "flex items-center gap-2 px-4 py-2 rounded-full",
+        `bg-${color}-500/10 border border-${color}-500/20`
+      )}
     >
-      <div className="flex items-start justify-between mb-4">
-        <div className={`p-3 rounded-xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 ${trendColors[trend]}`}>
-          {icon}
-        </div>
-      </div>
-      <h3 className="text-sm font-medium text-gray-400 mb-1">{title}</h3>
-      <p className="text-2xl font-bold text-white mb-1">{value}</p>
-      <p className="text-xs text-gray-500">{subtitle}</p>
+      <Icon className={clsx(
+        `w-4 h-4 text-${color}-400`,
+        pulse && "animate-pulse",
+        spin && "animate-spin"
+      )} />
+      <span className={`text-xs font-medium text-${color}-400`}>{label}</span>
     </motion.div>
   );
 }
 
-/**
- * Individual node card component
- * @param {Object} props - Component props
- * @param {Object} props.node - Node data object
- * @param {number} props.delay - Animation delay
- */
-function NodeCard({ node, delay }) {
-  const statusConfig = {
-    active: { color: 'green', icon: CheckCircle, label: 'Active' },
-    offline: { color: 'red', icon: XCircle, label: 'Offline' },
-    pending: { color: 'yellow', icon: AlertCircle, label: 'Pending' }
+function StatsCard({ icon: Icon, title, value, subtitle, trend }) {
+  const trendConfig = {
+    up: { color: 'green', gradient: 'from-green-500/20 to-green-600/20' },
+    down: { color: 'red', gradient: 'from-red-500/20 to-red-600/20' },
+    neutral: { color: 'purple', gradient: 'from-purple-500/20 to-blue-600/20' }
   };
   
-  const config = statusConfig[node.status] || statusConfig.offline;
-  const Icon = config.icon;
+  const { gradient } = trendConfig[trend];
   
   return (
     <motion.div
+      variants={itemVariants}
+      whileHover={{ y: -5, transition: { type: "spring", stiffness: 300 } }}
+      className="relative group"
+    >
+      <div className="absolute inset-0 bg-gradient-to-r from-purple-600/20 to-blue-600/20 rounded-2xl blur-xl group-hover:blur-2xl transition-all opacity-0 group-hover:opacity-100" />
+      <GlassCard className="relative">
+        <div className="flex items-start justify-between mb-4">
+          <div className={clsx(
+            "p-3 rounded-xl bg-gradient-to-br",
+            gradient
+          )}>
+            <Icon className="w-6 h-6 text-white" />
+          </div>
+        </div>
+        <h3 className="text-sm font-medium text-gray-400 mb-1">{title}</h3>
+        <p className="text-2xl font-bold text-white mb-1">{value}</p>
+        <p className="text-xs text-gray-500">{subtitle}</p>
+      </GlassCard>
+    </motion.div>
+  );
+}
+
+function NodeCard({ node }) {
+  const statusConfig = {
+    active: { color: 'green', Icon: CheckCircle, label: 'Active' },
+    offline: { color: 'red', Icon: XCircle, label: 'Offline' },
+    pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending' }
+  };
+  
+  const config = statusConfig[node.status] || statusConfig.offline;
+  const { Icon } = config;
+  
+  return (
+    <motion.div
+      layout
       initial={{ opacity: 0, x: -20 }}
       animate={{ opacity: 1, x: 0 }}
-      transition={{ delay }}
-      className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 transition-all cursor-pointer"
+      exit={{ opacity: 0, x: 20 }}
+      whileHover={{ x: 5 }}
+      className={clsx(
+        "flex items-center justify-between p-4 rounded-xl",
+        "bg-white/5 hover:bg-white/10",
+        "border border-transparent hover:border-white/10",
+        "transition-all cursor-pointer"
+      )}
     >
       <div className="flex items-center gap-4">
-        <div className={`p-2 rounded-lg bg-${config.color}-500/10`}>
+        <div className={clsx(
+          "p-2 rounded-lg",
+          `bg-${config.color}-500/10`
+        )}>
           <Server className={`w-5 h-5 text-${config.color}-400`} />
         </div>
         <div>
@@ -365,29 +642,20 @@ function NodeCard({ node, delay }) {
   );
 }
 
-/**
- * Quick action button component
- * @param {Object} props - Component props
- * @param {React.ReactNode} props.icon - Icon element
- * @param {string} props.title - Button title
- * @param {string} props.href - Navigation link
- * @param {boolean} props.primary - Whether this is a primary action
- */
-function QuickAction({ icon, title, href, primary }) {
+function QuickAction({ icon: Icon, title, href, primary }) {
   return (
     <Link href={href}>
       <motion.a
         whileHover={{ scale: 1.02 }}
         whileTap={{ scale: 0.98 }}
-        className={`flex items-center gap-3 p-3 rounded-xl transition-all ${
+        className={clsx(
+          "flex items-center gap-3 p-3 rounded-xl transition-all",
           primary 
-            ? 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white' 
-            : 'bg-white/5 hover:bg-white/10 text-gray-300'
-        }`}
+            ? "bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white" 
+            : "bg-white/5 hover:bg-white/10 text-gray-300"
+        )}
       >
-        <div className={primary ? 'text-white' : 'text-gray-400'}>
-          {icon}
-        </div>
+        <Icon className="w-5 h-5" />
         <span className="font-medium">{title}</span>
         <ChevronRight className="w-4 h-4 ml-auto opacity-50" />
       </motion.a>
@@ -395,14 +663,6 @@ function QuickAction({ icon, title, href, primary }) {
   );
 }
 
-/**
- * Health metric component with animated progress bar
- * @param {Object} props - Component props
- * @param {string} props.label - Metric label
- * @param {number} props.value - Current value
- * @param {number} props.max - Maximum value
- * @param {string} props.color - Color theme
- */
 function HealthMetric({ label, value, max, color }) {
   const percentage = (value / max) * 100;
   
@@ -417,24 +677,28 @@ function HealthMetric({ label, value, max, color }) {
           initial={{ width: 0 }}
           animate={{ width: `${percentage}%` }}
           transition={{ duration: 1, ease: "easeOut" }}
-          className={`h-full bg-gradient-to-r from-${color}-500 to-${color}-400`}
+          className={clsx(
+            "h-full bg-gradient-to-r",
+            color === 'green' && "from-green-500 to-green-400",
+            color === 'purple' && "from-purple-500 to-purple-400"
+          )}
         />
       </div>
     </div>
   );
 }
 
-/**
- * Empty state component when no nodes are available
- * @param {Object} props - Component props
- * @param {boolean} props.isMonitoring - Whether monitoring is active
- */
 function EmptyNodes({ isMonitoring }) {
   return (
     <div className="text-center py-12">
-      <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-4">
+      <motion.div
+        initial={{ scale: 0 }}
+        animate={{ scale: 1 }}
+        transition={{ type: "spring", stiffness: 200 }}
+        className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-4"
+      >
         <Server className="w-8 h-8 text-gray-600" />
-      </div>
+      </motion.div>
       <h3 className="text-lg font-medium text-white mb-2">No nodes yet</h3>
       <p className="text-gray-400 mb-6">
         {isMonitoring ? 'Register your first node to get started' : 'Connecting to network...'}
@@ -455,25 +719,81 @@ function EmptyNodes({ isMonitoring }) {
   );
 }
 
-// Helper Functions
+function LoadingState() {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="flex flex-col items-center justify-center min-h-[400px]"
+    >
+      <motion.div
+        animate={{ rotate: 360 }}
+        transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+        className="w-16 h-16 border-4 border-purple-500/20 border-t-purple-500 rounded-full"
+      />
+      <p className="mt-4 text-gray-400">Connecting to network...</p>
+    </motion.div>
+  );
+}
 
-/**
- * Gets appropriate status message based on WebSocket state
- * @param {Object} wsState - WebSocket state object
- * @returns {string} Status message
- */
+function ErrorState({ error, onRetry }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.9 }}
+      className="text-center py-12"
+    >
+      <GlassCard className="max-w-md mx-auto">
+        <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+        <h3 className="text-xl font-semibold text-white mb-2">Connection Error</h3>
+        <p className="text-gray-400 mb-6">{error}</p>
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={onRetry}
+          className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+        >
+          Retry Connection
+        </motion.button>
+      </GlassCard>
+    </motion.div>
+  );
+}
+
+function WalletConnectionPrompt() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="text-center"
+      >
+        <GlassCard className="max-w-md mx-auto">
+          <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Server className="w-10 h-10 text-white" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-4">Connect Your Wallet</h2>
+          <p className="text-gray-400 mb-8">Connect your wallet to access the node dashboard and start monitoring your network.</p>
+          <div className="text-sm text-gray-500">Use the wallet button in the navigation bar to connect.</div>
+        </GlassCard>
+      </motion.div>
+    </div>
+  );
+}
+
+// Helper functions
 function getStatusMessage(wsState) {
   if (wsState.monitoring) return 'Real-time monitoring active';
   if (wsState.authenticated) return 'Authenticated, starting monitor...';
+  if (wsState.authState === 'authenticating') return 'Authenticating with network...';
+  if (wsState.authState === 'signing') return 'Signing authentication message...';
+  if (wsState.authState === 'requesting_message') return 'Requesting authentication...';
   if (wsState.connected) return 'Connecting to network...';
   return 'Connect your wallet to view nodes';
 }
 
-/**
- * Calculates network uptime percentage
- * @param {Object} stats - Statistics object
- * @returns {number} Uptime percentage
- */
 function calculateUptime(stats) {
   if (stats.totalNodes === 0) return 0;
   return Math.round((stats.activeNodes / stats.totalNodes) * 100);
