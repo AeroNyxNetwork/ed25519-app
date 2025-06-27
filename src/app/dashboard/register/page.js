@@ -1,12 +1,77 @@
+/**
+ * Register Node Page - Modern UI Version
+ * 
+ * File Path: src/app/dashboard/register/page.js
+ * 
+ * Modernized with glassmorphic design matching DashboardContent
+ * 
+ * @version 3.0.0
+ */
+
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import Header from '../../../components/layout/Header';
-import { useWallet } from '../../../components/wallet/WalletProvider';
 import Link from 'next/link';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  Server, 
+  Cpu, 
+  HardDrive, 
+  Activity, 
+  Shield,
+  Lock,
+  CheckCircle,
+  AlertCircle,
+  Loader2,
+  ChevronRight,
+  Plus
+} from 'lucide-react';
+import clsx from 'clsx';
+
+import { useWallet } from '../../../components/wallet/WalletProvider';
 import nodeRegistrationService from '../../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
+
+// Animation variants
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.1
+    }
+  }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      type: "spring",
+      stiffness: 100
+    }
+  }
+};
+
+// Node type configuration
+const NODE_TYPES = [
+  { id: 'general', name: 'General Purpose', icon: Server, color: 'purple' },
+  { id: 'compute', name: 'Compute Optimized', icon: Cpu, color: 'blue' },
+  { id: 'storage', name: 'Storage Optimized', icon: HardDrive, color: 'green' },
+  { id: 'ai', name: 'AI Training', icon: Cpu, color: 'orange' },
+  { id: 'onion', name: 'Onion Routing', icon: Shield, color: 'yellow' },
+  { id: 'privacy', name: 'Privacy Network', icon: Lock, color: 'indigo' }
+];
+
+const RESOURCES = [
+  { id: 'cpu', name: 'CPU', available: true },
+  { id: 'gpu', name: 'GPU', available: false },
+  { id: 'storage', name: 'Storage', available: true },
+  { id: 'bandwidth', name: 'Bandwidth', available: true }
+];
 
 export default function RegisterNode() {
   const { wallet } = useWallet();
@@ -18,19 +83,10 @@ export default function RegisterNode() {
   const [registrationCode, setRegistrationCode] = useState('');
   const [referenceCode, setReferenceCode] = useState('');
   const [nodeId, setNodeId] = useState(null);
-  const [showNodeTypeInfo, setShowNodeTypeInfo] = useState(false);
-  const [selectedNodeTypeInfo, setSelectedNodeTypeInfo] = useState('');
-  const [gpuFeatureAvailable, setGpuFeatureAvailable] = useState(false);
-  const [availableNodeTypes, setAvailableNodeTypes] = useState([]);
-  const [availableResources, setAvailableResources] = useState([]);
-  const [signatureMessage, setSignatureMessage] = useState('');
-  const [signature, setSignature] = useState('');
-  const [debugMode, setDebugMode] = useState(false);
-  const [apiResponse, setApiResponse] = useState(null);
   
   const [nodeInfo, setNodeInfo] = useState({
     name: '',
-    type: 'general', // Default to 'general' as defined in your AeroNyxNodeType model
+    type: 'general',
     resources: {
       cpu: true,
       gpu: false,
@@ -39,86 +95,23 @@ export default function RegisterNode() {
     }
   });
 
-  // Node type descriptions (fallback if not provided by API)
-  const nodeTypeDescriptions = {
-    general: "General purpose nodes provide a balanced mix of CPU, memory, storage, and bandwidth resources to the network. Suitable for most use cases.",
-    compute: "Compute optimized nodes focus on providing high CPU and memory resources for computational tasks like data processing and simulations.",
-    storage: "Storage optimized nodes provide large amounts of secure storage capacity to the network. Ideal for data redundancy and distributed storage.",
-    ai: "AI Training nodes are equipped with specialized hardware for machine learning workloads. Requires high computational capacity.",
-    onion: "Onion routing nodes help facilitate anonymous communication in the network. These nodes don't require a public IP address and focus on routing encrypted traffic.",
-    privacy: "Privacy network nodes help encrypt and protect sensitive data across the network. They focus on implementing privacy-preserving protocols and techniques."
-  };
-
-  // Fetch available node types and resources on load
-  useEffect(() => {
-    async function fetchNodeTypesAndResources() {
-      try {
-        // Fetch node types
-        const nodeTypesResponse = await nodeRegistrationService.getNodeTypes();
-        console.log("Node types response:", nodeTypesResponse);
-        
-        if (nodeTypesResponse.success && nodeTypesResponse.data) {
-          setAvailableNodeTypes(nodeTypesResponse.data);
-          
-          // Default to the first node type if available
-          if (nodeTypesResponse.data.length > 0) {
-            setNodeInfo(prev => ({
-              ...prev,
-              type: nodeTypesResponse.data[0].id
-            }));
-          }
-        }
-        
-        // Fetch node resources
-        const nodeResourcesResponse = await nodeRegistrationService.getNodeResources();
-        if (nodeResourcesResponse.success && nodeResourcesResponse.data) {
-          setAvailableResources(nodeResourcesResponse.data);
-          
-          // Check if GPU resources are available
-          const gpuResource = nodeResourcesResponse.data.find(r => r.id === 'gpu');
-          setGpuFeatureAvailable(gpuResource && gpuResource.is_available);
-        }
-      } catch (err) {
-        console.error('Failed to fetch node types or resources:', err);
-        // Don't show error to user, just use the default types
-      }
-    }
-    
-    fetchNodeTypesAndResources();
-  }, []);
-
-  // Check wallet connection on page load
   useEffect(() => {
     if (!wallet.connected) {
       router.push('/');
     }
   }, [wallet.connected, router]);
 
-  const handleInputChange = (e) => {
+  const handleInputChange = useCallback((e) => {
     const { name, value } = e.target;
     setNodeInfo(prev => ({
       ...prev,
       [name]: value
     }));
+  }, []);
 
-    // Show node type info when type changes
-    if (name === 'type') {
-      // Find the node type by ID from availableNodeTypes
-      const nodeType = availableNodeTypes.find(type => type.id === value);
-      if (nodeType && nodeType.description) {
-        setSelectedNodeTypeInfo(nodeType.description);
-      } else {
-        // Fallback to our predefined descriptions if node type description not available
-        setSelectedNodeTypeInfo(nodeTypeDescriptions[value] || '');
-      }
-      setShowNodeTypeInfo(true);
-    }
-  };
-
-  const handleResourceToggle = (resource) => {
-    if (resource === 'gpu' && !gpuFeatureAvailable) {
-      // Show an info message that GPU support is coming soon
-      setError("GPU support is coming soon and not currently available.");
+  const handleResourceToggle = useCallback((resource) => {
+    if (resource === 'gpu') {
+      setError("GPU support is coming soon");
       return;
     }
 
@@ -129,481 +122,464 @@ export default function RegisterNode() {
         [resource]: !prev.resources[resource]
       }
     }));
-  };
+    setError(null);
+  }, []);
 
-  const generateSignatureMessage = async () => {
+  const handleSubmit = useCallback(async () => {
     setLoading(true);
     setError(null);
     
     try {
-      // Get signature message from the API
+      // Get signature message
       const response = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       
       if (response.success && response.data) {
-        // Format the message for better readability - keep the original message
         const formattedMessage = formatMessageForSigning(response.data.message);
-        setSignatureMessage(response.data.message);
-        
-        // Get signature from wallet
         const sig = await signMessage(wallet.provider, formattedMessage, wallet.address);
-        setSignature(sig);
         
-        // Proceed to create the node
-        await createNode(response.data.message, sig);
-      } else {
-        throw new Error(response.message || 'Failed to generate signature message');
-      }
-    } catch (err) {
-      setError(err.message || 'Failed to sign message');
-      setLoading(false);
-    }
-  };
-  
-  const createNode = async (message, signature) => {
-    try {
-      // Transform resources object to match API format
-      const resourcesPayload = {};
-      Object.keys(nodeInfo.resources).forEach(key => {
-        resourcesPayload[key] = nodeInfo.resources[key];
-      });
-      
-      // Create the node
-      const createResponse = await nodeRegistrationService.createNode(
-        {
-          name: nodeInfo.name,
-          type: nodeInfo.type,
-          resources: resourcesPayload
-        },
-        wallet.address,
-        signature,
-        message
-      );
-      
-      // Store API response for debugging
-      setApiResponse(createResponse);
-      
-      if (createResponse.success && createResponse.data) {
-        // Store node ID and reference code
-        setNodeId(createResponse.data.id);
-        setReferenceCode(createResponse.data.reference_code);
+        // Transform resources
+        const resourcesPayload = {};
+        Object.keys(nodeInfo.resources).forEach(key => {
+          resourcesPayload[key] = nodeInfo.resources[key];
+        });
         
-        // Generate registration code
-        await generateRegistrationCode(createResponse.data.id, message, signature);
-      } else {
-        let errorMessage = createResponse.message || 'Failed to create node';
+        // Create node
+        const createResponse = await nodeRegistrationService.createNode(
+          {
+            name: nodeInfo.name,
+            type: nodeInfo.type,
+            resources: resourcesPayload
+          },
+          wallet.address,
+          sig,
+          response.data.message
+        );
         
-        // Check for specific error messages related to node_type_id
-        if (createResponse.errors && createResponse.errors.node_type_id) {
-          errorMessage = `Node type error: ${createResponse.errors.node_type_id.join(', ')}`;
+        if (createResponse.success && createResponse.data) {
+          setNodeId(createResponse.data.id);
+          setReferenceCode(createResponse.data.reference_code);
+          
+          // Generate registration code
+          const codeResponse = await nodeRegistrationService.generateRegistrationCode(
+            createResponse.data.id,
+            wallet.address,
+            sig,
+            response.data.message,
+            1
+          );
+          
+          if (codeResponse.success && codeResponse.data) {
+            setRegistrationCode(codeResponse.data.registration_code);
+            setStep(2);
+          }
         }
-        
-        throw new Error(errorMessage);
       }
     } catch (err) {
-      setError(err.message || 'Failed to create node');
+      setError(err.message || 'Failed to register node');
+    } finally {
       setLoading(false);
     }
-  };
+  }, [wallet, nodeInfo]);
 
-  const generateRegistrationCode = async (nodeId, message, signature) => {
-    try {
-      // Generate registration code
-      const codeResponse = await nodeRegistrationService.generateRegistrationCode(
-        nodeId,
-        wallet.address,
-        signature,
-        message,
-        1 // Default blockchain network ID
-      );
-      
-      if (codeResponse.success && codeResponse.data) {
-        setRegistrationCode(codeResponse.data.registration_code);
-        setLoading(false);
-        setStep(2);
-      } else {
-        throw new Error(codeResponse.message || 'Failed to generate registration code');
-      }
-    } catch (err) {
-      setError(err.message || 'Failed to generate registration code');
-      setLoading(false);
-    }
-  };
-
-  const completeRegistration = async () => {
+  const completeRegistration = useCallback(async () => {
     setLoading(true);
     setError(null);
     
     try {
-      // Check node status
       const statusResponse = await nodeRegistrationService.checkNodeStatus(
         referenceCode,
         wallet.address
       );
       
       if (statusResponse.success) {
-        setLoading(false);
         setStep(3);
       } else {
         throw new Error(statusResponse.message || 'Failed to verify node status');
       }
     } catch (err) {
       setError(err.message || 'Failed to complete registration');
+    } finally {
       setLoading(false);
     }
-  };
+  }, [referenceCode, wallet.address]);
 
   if (!wallet.connected) {
-    return null; // Will redirect to home
+    return null;
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <Header />
+    <div className="min-h-screen bg-black">
+      {/* Background effects */}
+      <div className="fixed inset-0">
+        <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-black to-blue-900/20" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-900/10 via-transparent to-transparent" />
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f2e_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f2e_1px,transparent_1px)] bg-[size:64px_64px]" />
+      </div>
       
-      <main className="flex-grow container-custom py-8">
-        <div className="mb-8">
-          <div className="flex items-center gap-2 mb-4">
-            <Link href="/dashboard" className="text-gray-400 hover:text-white">
+      <div className="relative z-10 px-6 py-8 max-w-4xl mx-auto">
+        {/* Header */}
+        <motion.div 
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8"
+        >
+          <div className="flex items-center gap-2 mb-4 text-sm">
+            <Link href="/dashboard" className="text-gray-400 hover:text-white transition-colors">
               Dashboard
             </Link>
-            <span className="text-gray-600">/</span>
-            <span>Register New Node</span>
+            <ChevronRight className="w-4 h-4 text-gray-600" />
+            <span className="text-gray-300">Register New Node</span>
           </div>
           
-          <h1 className="text-3xl font-bold mb-2">Register New Node</h1>
-          <p className="text-gray-400">
+          <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
+            Register New Node
+          </h1>
+          <p className="text-gray-400 mt-2">
             Add a new device to the AeroNyx network and start earning rewards
           </p>
-        </div>
+        </motion.div>
 
-        {/* Registration Steps Indicator */}
-        <div className="flex items-center mb-8">
-          <div className={`flex items-center justify-center w-8 h-8 rounded-full ${step >= 1 ? 'bg-primary' : 'bg-background-100'} text-white text-sm font-bold`}>
-            1
-          </div>
-          <div className={`flex-grow h-1 mx-2 ${step >= 2 ? 'bg-primary' : 'bg-background-100'}`}></div>
-          <div className={`flex items-center justify-center w-8 h-8 rounded-full ${step >= 2 ? 'bg-primary' : 'bg-background-100'} text-white text-sm font-bold`}>
-            2
-          </div>
-          <div className={`flex-grow h-1 mx-2 ${step >= 3 ? 'bg-primary' : 'bg-background-100'}`}></div>
-          <div className={`flex items-center justify-center w-8 h-8 rounded-full ${step >= 3 ? 'bg-primary' : 'bg-background-100'} text-white text-sm font-bold`}>
-            3
-          </div>
-        </div>
-
-        {/* Step 1: Node Information */}
-        {step === 1 && (
-          <div className="card glass-effect max-w-2xl mx-auto">
-            <h2 className="text-xl font-bold mb-6">Node Information</h2>
-            
-            <div className="space-y-4 mb-6">
-              <div>
-                <label htmlFor="name" className="block text-sm font-medium text-gray-300 mb-1">
-                  Node Name
-                </label>
-                <input
-                  type="text"
-                  id="name"
-                  name="name"
-                  value={nodeInfo.name}
-                  onChange={handleInputChange}
-                  className="input-field w-full"
-                  placeholder="e.g. My Home Server"
-                  required
-                />
+        {/* Progress Steps */}
+        <motion.div 
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.2 }}
+          className="flex items-center mb-8"
+        >
+          {[1, 2, 3].map((num) => (
+            <React.Fragment key={num}>
+              <div className={clsx(
+                "flex items-center justify-center w-10 h-10 rounded-full font-bold transition-all",
+                step >= num 
+                  ? "bg-gradient-to-r from-purple-600 to-blue-600 text-white" 
+                  : "bg-white/5 text-gray-500 border border-white/10"
+              )}>
+                {step > num ? <CheckCircle className="w-5 h-5" /> : num}
               </div>
-              
-              <div>
-                <label htmlFor="type" className="block text-sm font-medium text-gray-300 mb-1">
-                  Node Type
-                </label>
-                <select
-                  id="type"
-                  name="type"
-                  value={nodeInfo.type}
-                  onChange={handleInputChange}
-                  className="input-field w-full"
-                  required
+              {num < 3 && (
+                <div className={clsx(
+                  "flex-1 h-1 mx-4 rounded-full transition-all",
+                  step > num ? "bg-gradient-to-r from-purple-600 to-blue-600" : "bg-white/10"
+                )} />
+              )}
+            </React.Fragment>
+          ))}
+        </motion.div>
+
+        <AnimatePresence mode="wait">
+          {/* Step 1: Node Information */}
+          {step === 1 && (
+            <motion.div
+              key="step1"
+              variants={containerVariants}
+              initial="hidden"
+              animate="visible"
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-6"
+            >
+              <GlassCard>
+                <h2 className="text-2xl font-bold mb-6">Node Information</h2>
+                
+                {/* Node Name */}
+                <motion.div variants={itemVariants} className="mb-6">
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Node Name
+                  </label>
+                  <input
+                    type="text"
+                    name="name"
+                    value={nodeInfo.name}
+                    onChange={handleInputChange}
+                    placeholder="e.g. My Home Server"
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500/50 transition-all"
+                    required
+                  />
+                </motion.div>
+
+                {/* Node Type */}
+                <motion.div variants={itemVariants} className="mb-6">
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Node Type
+                  </label>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {NODE_TYPES.map((type) => {
+                      const Icon = type.icon;
+                      const isSelected = nodeInfo.type === type.id;
+                      
+                      return (
+                        <motion.button
+                          key={type.id}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={() => setNodeInfo(prev => ({ ...prev, type: type.id }))}
+                          className={clsx(
+                            "p-4 rounded-xl border transition-all",
+                            isSelected
+                              ? `bg-${type.color}-500/10 border-${type.color}-500/50`
+                              : "bg-white/5 border-white/10 hover:border-white/20"
+                          )}
+                        >
+                          <Icon className={clsx(
+                            "w-6 h-6 mx-auto mb-2",
+                            isSelected ? `text-${type.color}-400` : "text-gray-400"
+                          )} />
+                          <div className="text-sm font-medium">{type.name}</div>
+                        </motion.button>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+
+                {/* Resources */}
+                <motion.div variants={itemVariants} className="mb-6">
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Available Resources
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {RESOURCES.map((resource) => {
+                      const isSelected = nodeInfo.resources[resource.id];
+                      const isAvailable = resource.available;
+                      
+                      return (
+                        <motion.button
+                          key={resource.id}
+                          whileHover={isAvailable ? { scale: 1.02 } : {}}
+                          whileTap={isAvailable ? { scale: 0.98 } : {}}
+                          onClick={() => isAvailable && handleResourceToggle(resource.id)}
+                          disabled={!isAvailable}
+                          className={clsx(
+                            "p-3 rounded-xl border transition-all flex items-center gap-3",
+                            !isAvailable && "opacity-50 cursor-not-allowed",
+                            isSelected && isAvailable
+                              ? "bg-purple-500/10 border-purple-500/50"
+                              : "bg-white/5 border-white/10 hover:border-white/20"
+                          )}
+                        >
+                          <div className={clsx(
+                            "w-5 h-5 rounded border-2 flex items-center justify-center",
+                            isSelected && isAvailable
+                              ? "bg-purple-500 border-purple-500"
+                              : "border-gray-600"
+                          )}>
+                            {isSelected && <CheckCircle className="w-3 h-3 text-white" />}
+                          </div>
+                          <span className="font-medium">{resource.name}</span>
+                          {!isAvailable && (
+                            <span className="text-xs text-yellow-500 ml-auto">(Soon)</span>
+                          )}
+                        </motion.button>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+
+                {/* Error Message */}
+                <AnimatePresence>
+                  {error && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3"
+                    >
+                      <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                      <p className="text-sm text-red-300">{error}</p>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Submit Button */}
+                <motion.button
+                  variants={itemVariants}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSubmit}
+                  disabled={!nodeInfo.name || loading}
+                  className={clsx(
+                    "w-full py-3 rounded-xl font-medium transition-all flex items-center justify-center gap-2",
+                    "bg-gradient-to-r from-purple-600 to-blue-600 text-white",
+                    "hover:from-purple-700 hover:to-blue-700",
+                    "disabled:opacity-50 disabled:cursor-not-allowed"
+                  )}
                 >
-                  {availableNodeTypes.length > 0 ? (
-                    availableNodeTypes.map(type => (
-                      <option key={type.id} value={type.id}>{type.name}</option>
-                    ))
-                  ) : (
-                    // Fallback options if API fails
+                  {loading ? (
                     <>
-                      <option value="general">General Purpose</option>
-                      <option value="compute">Compute Optimized</option>
-                      <option value="storage">Storage Optimized</option>
-                      <option value="ai">AI Training</option>
-                      <option value="onion">Onion Routing</option>
-                      <option value="privacy">Privacy Network</option>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Signing & Generating...
+                    </>
+                  ) : (
+                    <>
+                      Generate Registration Code
+                      <ChevronRight className="w-5 h-5" />
                     </>
                   )}
-                </select>
-                
-                {showNodeTypeInfo && (
-                  <div className="mt-2 p-3 bg-background-100 border border-background-200 rounded-md text-sm text-gray-300">
-                    <div className="flex items-start">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-primary mr-2 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                      </svg>
-                      <span>{selectedNodeTypeInfo}</span>
+                </motion.button>
+              </GlassCard>
+            </motion.div>
+          )}
+
+          {/* Step 2: Registration Code */}
+          {step === 2 && (
+            <motion.div
+              key="step2"
+              variants={containerVariants}
+              initial="hidden"
+              animate="visible"
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <GlassCard>
+                <motion.div variants={itemVariants} className="text-center mb-8">
+                  <div className="w-16 h-16 bg-gradient-to-br from-green-500 to-green-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle className="w-8 h-8 text-white" />
+                  </div>
+                  <h2 className="text-2xl font-bold">Registration Code Generated</h2>
+                  <p className="text-gray-400 mt-2">Use this code to configure your server node</p>
+                </motion.div>
+
+                <motion.div variants={itemVariants}>
+                  <div className="bg-black/50 border border-white/10 rounded-xl p-6 mb-6">
+                    <p className="text-sm text-gray-400 mb-3">Run this command on your server:</p>
+                    <code className="block bg-black/50 p-4 rounded-lg font-mono text-sm text-purple-400 break-all">
+                      aeronyx-node setup --registration-code {registrationCode}
+                    </code>
+                  </div>
+
+                  <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 mb-6">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="font-medium text-blue-300 mb-1">Important</h4>
+                        <p className="text-sm text-blue-200/80">
+                          This code is valid for 24 hours and can only be used once. Keep it secure.
+                        </p>
+                      </div>
                     </div>
                   </div>
-                )}
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Available Resources
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <div 
-                    className={`p-3 rounded-md cursor-pointer border ${nodeInfo.resources.cpu ? 'border-primary bg-primary/20' : 'border-background-200 bg-background-100'}`}
-                    onClick={() => handleResourceToggle('cpu')}
+
+                  <div className="space-y-3 mb-6">
+                    <h3 className="font-semibold">Next Steps:</h3>
+                    <ol className="space-y-2 text-sm text-gray-300">
+                      {[
+                        'Install the AeroNyx Node software on your server',
+                        'Run the setup command with your registration code',
+                        'Your server will collect system information and register',
+                        'Complete registration by confirming below'
+                      ].map((step, index) => (
+                        <li key={index} className="flex gap-3">
+                          <span className="text-purple-400 font-bold">{index + 1}.</span>
+                          <span>{step}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={completeRegistration}
+                    disabled={loading}
+                    className={clsx(
+                      "w-full py-3 rounded-xl font-medium transition-all flex items-center justify-center gap-2",
+                      "bg-gradient-to-r from-purple-600 to-blue-600 text-white",
+                      "hover:from-purple-700 hover:to-blue-700",
+                      "disabled:opacity-50 disabled:cursor-not-allowed"
+                    )}
                   >
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={nodeInfo.resources.cpu}
-                        onChange={() => {}}
-                        className="h-4 w-4 text-primary"
-                      />
-                      <span>CPU</span>
-                    </div>
-                  </div>
-                  
-                  <div 
-                    className={`p-3 rounded-md cursor-pointer border ${nodeInfo.resources.gpu ? 'border-primary bg-primary/20' : 'border-background-200 bg-background-100'} ${!gpuFeatureAvailable ? 'opacity-50' : ''}`}
-                    onClick={() => handleResourceToggle('gpu')}
-                  >
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={nodeInfo.resources.gpu}
-                        onChange={() => {}}
-                        className="h-4 w-4 text-primary"
-                      />
-                      <span>GPU</span>
-                      {!gpuFeatureAvailable && (
-                        <span className="text-xs text-yellow-500 ml-1">(Coming Soon)</span>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div 
-                    className={`p-3 rounded-md cursor-pointer border ${nodeInfo.resources.storage ? 'border-primary bg-primary/20' : 'border-background-200 bg-background-100'}`}
-                    onClick={() => handleResourceToggle('storage')}
-                  >
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={nodeInfo.resources.storage}
-                        onChange={() => {}}
-                        className="h-4 w-4 text-primary"
-                      />
-                      <span>Storage</span>
-                    </div>
-                  </div>
-                  
-                  <div 
-                    className={`p-3 rounded-md cursor-pointer border ${nodeInfo.resources.bandwidth ? 'border-primary bg-primary/20' : 'border-background-200 bg-background-100'}`}
-                    onClick={() => handleResourceToggle('bandwidth')}
-                  >
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={nodeInfo.resources.bandwidth}
-                        onChange={() => {}}
-                        className="h-4 w-4 text-primary"
-                      />
-                      <span>Bandwidth</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            {error && (
-              <div className="mb-6 p-3 bg-red-900/50 border border-red-800 rounded-md text-red-200 text-sm">
-                {error}
-              </div>
-            )}
-            
-            <div className="flex justify-end">
-              <button
-                onClick={generateSignatureMessage}
-                disabled={!nodeInfo.name || loading}
-                className={`button-primary ${!nodeInfo.name || loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                {loading ? (
-                  <>
-                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Signing & Generating...
-                  </>
-                ) : 'Generate Registration Code'}
-              </button>
-            </div>
-            
-            {/* Debug section */}
-            {process.env.NODE_ENV !== 'production' && (
-              <div className="mt-4 p-3 bg-gray-900 rounded-md">
-                <div className="flex items-center mb-2">
-                  <input
-                    type="checkbox"
-                    id="debugMode"
-                    checked={debugMode}
-                    onChange={() => setDebugMode(!debugMode)}
-                    className="mr-2"
-                  />
-                  <label htmlFor="debugMode" className="text-sm text-gray-400">Debug Mode</label>
-                </div>
-                
-                {debugMode && (
-                  <div className="text-xs font-mono overflow-x-auto">
-                    <div className="mb-2 text-gray-400">Available Node Types:</div>
-                    <pre className="text-gray-300">{JSON.stringify(availableNodeTypes, null, 2)}</pre>
-                    
-                    <div className="mb-2 mt-3 text-gray-400">Current Node Info:</div>
-                    <pre className="text-gray-300">{JSON.stringify(nodeInfo, null, 2)}</pre>
-                    
-                    {apiResponse && (
+                    {loading ? (
                       <>
-                        <div className="mb-2 mt-3 text-gray-400">Last API Response:</div>
-                        <pre className="text-gray-300">{JSON.stringify(apiResponse, null, 2)}</pre>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Verifying Registration...
+                      </>
+                    ) : (
+                      <>
+                        Confirm Registration
+                        <ChevronRight className="w-5 h-5" />
                       </>
                     )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
+                  </motion.button>
+                </motion.div>
+              </GlassCard>
+            </motion.div>
+          )}
 
-        {/* Step 2: Registration Code */}
-        {step === 2 && (
-          <div className="card glass-effect max-w-2xl mx-auto">
-            <h2 className="text-xl font-bold mb-6">Registration Code Generated</h2>
-            
-            <div className="mb-6">
-              <p className="text-gray-300 mb-4">
-                Use the registration code below to configure your server node. Run the following command on your server:
-              </p>
-              
-              <div className="bg-background-100 p-4 rounded-md font-mono mb-4 overflow-x-auto">
-                <code>aeronyx-node setup --registration-code {registrationCode}</code>
-              </div>
-              
-              <div className="bg-primary-900/30 border border-primary-800 p-4 rounded-md mb-4">
-                <h4 className="text-primary-300 font-bold mb-2 flex items-center">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                  </svg>
-                  Important
-                </h4>
-                <p className="text-sm">
-                  This code is valid for 24 hours and can only be used once. Keep it confidential as it's linked to your wallet.
+          {/* Step 3: Success */}
+          {step === 3 && (
+            <motion.div
+              key="step3"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="text-center"
+            >
+              <GlassCard>
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: "spring", delay: 0.2 }}
+                  className="w-20 h-20 bg-gradient-to-br from-green-500 to-green-600 rounded-2xl flex items-center justify-center mx-auto mb-6"
+                >
+                  <CheckCircle className="w-10 h-10 text-white" />
+                </motion.div>
+
+                <h2 className="text-3xl font-bold mb-4">Registration Successful!</h2>
+                <p className="text-gray-300 mb-8 max-w-md mx-auto">
+                  Your node "{nodeInfo.name}" has been successfully registered on the AeroNyx network.
+                  It will appear in your dashboard once fully activated.
                 </p>
-              </div>
-              
-            </div>
-            
-            <div className="mb-6">
-              <h3 className="font-bold mb-2">Next Steps:</h3>
-              <ol className="list-decimal pl-5 space-y-2 text-gray-300">
-                <li>Install the AeroNyx Node software on your server</li>
-                <li>Run the setup command with your registration code</li>
-                <li>Your server will collect system information and register with the network</li>
-                <li>Complete the registration by confirming below after setup is complete</li>
-              </ol>
-            </div>
-            
-            {error && (
-              <div className="mb-6 p-3 bg-red-900/50 border border-red-800 rounded-md text-red-200 text-sm">
-                {error}
-              </div>
-            )}
-            
-            <div className="flex justify-end">
-              <button
-                onClick={completeRegistration}
-                disabled={loading}
-                className={`button-primary ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                {loading ? (
-                  <>
-                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Verifying Registration...
-                  </>
-                ) : 'Confirm Registration'}
-              </button>
-            </div>
-          </div>
-        )}
 
-        {/* Step 3: Completion */}
-        {step === 3 && (
-          <div className="card glass-effect max-w-2xl mx-auto text-center">
-            <div className="mb-6">
-              <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-4">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-primary" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <h2 className="text-xl font-bold mb-2">Registration Successful!</h2>
-              <p className="text-gray-300 mb-6">
-                Your node "{nodeInfo.name}" has been successfully registered on the AeroNyx network.
-                It will appear in your dashboard once it's fully activated.
-              </p>
-            </div>
-            
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link 
-                href="/dashboard/nodes" 
-                className="button-primary"
-              >
-                View My Nodes
-              </Link>
-              <Link 
-                href="/dashboard/register" 
-                className="button-outline"
-                onClick={() => {
-                  setStep(1);
-                  setRegistrationCode('');
-                  setApiResponse(null);
-                  setNodeInfo({
-                    name: '',
-                    type: availableNodeTypes.length > 0 ? availableNodeTypes[0].id : 'general',
-                    resources: {
-                      cpu: true,
-                      gpu: false,
-                      storage: true,
-                      bandwidth: true
-                    }
-                  });
-                }}
-              >
-                Register Another Node
-              </Link>
-            </div>
-          </div>
-        )}
-      </main>
-      
-      <footer className="bg-background-100 border-t border-background-200 py-4">
-        <div className="container-custom">
-          <div className="text-sm text-gray-400 text-center">
-            © {new Date().getFullYear()} AeroNyx Network. All rights reserved.
-          </div>
-        </div>
-      </footer>
+                <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                  <Link href="/dashboard/nodes">
+                    <motion.a
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+                    >
+                      View My Nodes
+                    </motion.a>
+                  </Link>
+                  
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => {
+                      setStep(1);
+                      setNodeInfo({
+                        name: '',
+                        type: 'general',
+                        resources: { cpu: true, gpu: false, storage: true, bandwidth: true }
+                      });
+                      setRegistrationCode('');
+                      setReferenceCode('');
+                      setNodeId(null);
+                      setError(null);
+                    }}
+                    className="px-6 py-3 bg-white/5 border border-white/10 rounded-xl text-white font-medium hover:bg-white/10 transition-all"
+                  >
+                    Register Another Node
+                  </motion.button>
+                </div>
+              </GlassCard>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     </div>
+  );
+}
+
+// Glass Card Component
+function GlassCard({ children, className }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={clsx(
+        "bg-white/5 backdrop-blur-md rounded-2xl border border-white/10",
+        "shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]",
+        "p-8",
+        className
+      )}
+    >
+      {children}
+    </motion.div>
   );
 }
