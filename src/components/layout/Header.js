@@ -13,7 +13,6 @@
 import React from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { Server } from 'lucide-react';
 import ConnectWallet from '../wallet/ConnectWallet';
 
 export default function Header() {
