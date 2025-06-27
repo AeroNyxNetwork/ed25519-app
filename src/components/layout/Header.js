@@ -1,112 +1,60 @@
+/**
+ * Simplified Header Component for Non-Dashboard Pages
+ * 
+ * File Path: src/components/layout/Header.js
+ * 
+ * Only used on landing page, not in dashboard
+ * 
+ * @version 2.0.0
+ */
+
 'use client';
 
-import { useState } from 'react';
+import React from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
+import { motion } from 'framer-motion';
+import { Server } from 'lucide-react';
 import ConnectWallet from '../wallet/ConnectWallet';
-import { useWallet } from '../wallet/WalletProvider';
 
 export default function Header() {
-  const { wallet } = useWallet();
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
   return (
-    <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-md border-b border-background-100">
-      <div className="container-custom mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center py-4">
+    <header className="relative z-50 bg-black/50 backdrop-blur-md border-b border-white/10">
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="flex items-center justify-between h-16">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2">
-            <div className="w-10 h-10 relative">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" className="w-full h-full">
-                <g transform="translate(0,512) scale(0.1,-0.1)" fill="#8A2BE2" stroke="none">
-                  <path d="M1277 3833 l-1277 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1278 -1277z"/>
-                  <path d="M3838 3833 l-1278 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1277 -1277z"/>
-                </g>
-              </svg>
-            </div>
-            <span className="text-xl font-bold text-white">AeroNyx</span>
+          <Link href="/">
+            <motion.a
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="flex items-center gap-3"
+            >
+              <div className="w-10 h-10 bg-gradient-to-br from-purple-600 to-blue-600 rounded-xl flex items-center justify-center">
+                <Server className="w-6 h-6 text-white" />
+              </div>
+              <span className="text-xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
+                AeroNyx
+              </span>
+            </motion.a>
           </Link>
 
-          {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center space-x-8">
-            {wallet.connected && (
-              <>
-                <Link href="/dashboard" className="text-gray-300 hover:text-white transition-colors">
-                  Dashboard
-                </Link>
-                <Link href="/dashboard/nodes" className="text-gray-300 hover:text-white transition-colors">
-                  My Nodes
-                </Link>
-                <Link href="/dashboard/register" className="text-gray-300 hover:text-white transition-colors">
-                  Register Node
-                </Link>
-                <Link href="/dashboard/network" className="text-gray-300 hover:text-white transition-colors">
-                  Network Stats
-                </Link>
-              </>
-            )}
-          </nav>
-
-          {/* Wallet Connection */}
-          <div className="flex items-center">
+          {/* Right side */}
+          <div className="flex items-center gap-6">
+            <nav className="hidden md:flex items-center gap-6">
+              <Link href="https://docs.aeronyx.network">
+                <motion.a
+                  whileHover={{ scale: 1.05 }}
+                  className="text-sm text-gray-400 hover:text-white transition-colors"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Documentation
+                </motion.a>
+              </Link>
+            </nav>
             <ConnectWallet />
-            
-            {/* Mobile menu button */}
-            <button 
-              className="ml-4 md:hidden"
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
           </div>
         </div>
       </div>
-
-      {/* Mobile Navigation */}
-      {isMobileMenuOpen && (
-        <div className="md:hidden bg-background-50 border-t border-background-100">
-          <div className="px-2 pt-2 pb-3 space-y-1">
-            {wallet.connected ? (
-              <>
-                <Link 
-                  href="/dashboard" 
-                  className="block px-3 py-2 rounded-md text-white hover:bg-background-100 transition-colors"
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Dashboard
-                </Link>
-                <Link 
-                  href="/dashboard/nodes" 
-                  className="block px-3 py-2 rounded-md text-white hover:bg-background-100 transition-colors"
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  My Nodes
-                </Link>
-                <Link 
-                  href="/dashboard/register" 
-                  className="block px-3 py-2 rounded-md text-white hover:bg-background-100 transition-colors"
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Register Node
-                </Link>
-                <Link 
-                  href="/dashboard/network" 
-                  className="block px-3 py-2 rounded-md text-white hover:bg-background-100 transition-colors"
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  Network Stats
-                </Link>
-              </>
-            ) : (
-              <div className="px-3 py-2 text-gray-400">
-                Connect your wallet to access the dashboard
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </header>
   );
 }
