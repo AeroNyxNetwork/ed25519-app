@@ -3,9 +3,9 @@
  * 
  * File Path: src/lib/websocket/UserMonitorWebSocketService.js
  * 
- * Production implementation matching backend consumers.py
+ * Fixed version preventing event propagation issues
  * 
- * @version 7.0.0
+ * @version 4.1.0
  * @author AeroNyx Development Team
  */
 
@@ -16,226 +16,308 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.aeronyx.network';
     super(`${wsUrl}/ws/aeronyx/user-monitor/`, {
       ...options,
-      heartbeatInterval: 30000,
-      debug: true
+      heartbeatInterval: 30000
     });
     
     this.walletAddress = walletCredentials.walletAddress;
-    this.sessionToken = null;
-    this.nodes = [];
+    this.nodesData = new Map();
     this.monitoringActive = false;
+    this.subscribedNodes = new Set();
+    this.lastUpdateSequence = 0;
+    this.nodeReferences = [];
+    this.sessionToken = null;
+    
+    // Fix: Track if we're handling events to prevent loops
+    this._handlingEvent = false;
     
     this._setupEventHandlers();
   }
 
   /**
-   * Setup event handlers matching backend message types
+   * Setup internal event handlers with loop prevention
    * @private
    */
   _setupEventHandlers() {
-    // Connection established
+    // Handle initial connection
     this.on('connected', (data) => {
-      this.log('info', 'Connected to WebSocket:', data.message);
-      // Backend expects us to request signature message
-      this._requestSignatureMessage();
+      this.log('info', 'Connected to WebSocket server');
+      // Connection established, wait for server to send next message
     });
     
-    // Signature message received
-    this.on('signature_message', (data) => {
-      this.log('info', 'Received signature message');
-      // Emit for provider to handle signing
-      this.emit('signature_message', {
-        message: data.message,
-        nonce: data.nonce,
-        expires_in: data.expires_in
+    // Handle signature message response - Remove the duplicate handling
+    this.once('signature_message', (data) => {
+      this.log('info', 'Received signature message for authentication');
+      // The event will be handled by WebSocketProvider
+    });
+    
+    // Handle successful authentication
+    this.on('auth_success', (data) => {
+      this.log('info', 'Authentication successful');
+      
+      // Auth success has flat structure
+      if (data.session_token) {
+        this.sessionToken = data.session_token;
+      }
+      
+      if (data.nodes) {
+        this.nodeReferences = data.nodes.map(node => node.code);
+        this._initializeNodesData(data.nodes);
+      }
+      
+      this.authenticated = true;
+      
+      // Start monitoring after successful auth
+      this.startMonitoring().catch(err => {
+        this.log('error', 'Failed to start monitoring:', err);
       });
     });
     
-    // Authentication success
-    this.on('auth_success', (data) => {
-      this.log('info', 'Authentication successful');
-      this.authenticated = true;
-      this.sessionToken = data.session_token;
-      this.walletAddress = data.wallet_address;
-      
-      // Store nodes from auth response
-      if (data.nodes) {
-        this.nodes = data.nodes;
-      }
-      
-      // Auto-start monitoring
-      setTimeout(() => {
-        this.startMonitoring();
-      }, 100);
+    // Handle authentication failure
+    this.on('auth_failed', (data) => {
+      this.log('error', 'Authentication failed:', data);
+      this.authenticated = false;
     });
     
-    // Monitor started
-    this.on('monitor_started', (data) => {
-      this.log('info', 'Monitoring started with interval:', data.interval);
-      this.monitoringActive = true;
-    });
-    
-    // Status updates
+    // Handle status updates - this is the main event for node data
     this.on('status_update', (data) => {
-      this.log('info', 'Status update received');
       this._handleStatusUpdate(data);
     });
     
-    // Monitor stopped
+    // Handle monitoring started
+    this.on('monitor_started', (data) => {
+      this.log('info', 'Monitoring started with interval:', data.interval);
+      this.monitoringActive = true;
+      this.emit('monitoring_started', data);
+    });
+    
+    // Handle monitoring stopped
     this.on('monitor_stopped', () => {
       this.log('info', 'Monitoring stopped');
       this.monitoringActive = false;
+      this.emit('monitoring_stopped');
     });
     
-    // Errors
+    // Handle errors
     this.on('error', (data) => {
-      this.log('error', 'Server error:', data.message);
-      this.emit('error_received', data);
+      this._handleError(data);
     });
   }
 
   /**
-   * Request signature message
+   * Request signature message for authentication
    * @private
    */
   async _requestSignatureMessage() {
-    try {
-      await this.send({
-        type: 'get_message',
-        wallet_address: this.walletAddress
-      });
-      this.log('info', 'Signature message requested');
-    } catch (error) {
-      this.log('error', 'Failed to request signature message:', error);
-    }
+    // Do nothing - server will send signature_message automatically
+    this.log('info', 'Waiting for signature message from server');
   }
 
   /**
    * Authenticate with signature
+   * 
    * @param {Object} authData - Authentication data
    */
   async authenticateWithSignature(authData) {
     try {
       await this.send({
         type: 'auth',
-        wallet_address: authData.wallet_address.toLowerCase(),
+        wallet_address: authData.wallet_address,
         signature: authData.signature,
         message: authData.message,
         wallet_type: authData.wallet_type || 'okx'
       });
-      
-      this.log('info', 'Authentication request sent');
     } catch (error) {
-      this.log('error', 'Failed to send authentication', error);
+      this.log('error', 'Authentication failed', error);
+      this.emit('auth_error', error);
       throw error;
     }
   }
 
   /**
-   * Start monitoring
-   */
-  async startMonitoring() {
-    if (!this.authenticated) {
-      this.log('warn', 'Cannot start monitoring: not authenticated');
-      return;
-    }
-    
-    if (this.monitoringActive) {
-      this.log('info', 'Monitoring already active');
-      return;
-    }
-    
-    try {
-      await this.send({ type: 'start_monitor' });
-      this.log('info', 'Start monitor request sent');
-    } catch (error) {
-      this.log('error', 'Failed to start monitoring', error);
-    }
-  }
-
-  /**
-   * Stop monitoring
-   */
-  async stopMonitoring() {
-    if (!this.monitoringActive) {
-      return;
-    }
-    
-    try {
-      await this.send({ type: 'stop_monitor' });
-      this.log('info', 'Stop monitor request sent');
-    } catch (error) {
-      this.log('error', 'Failed to stop monitoring', error);
-    }
-  }
-
-  /**
-   * Handle status update from backend
+   * Initialize nodes data from auth response
    * @private
    */
-  _handleStatusUpdate(data) {
-    if (!data.nodes || !Array.isArray(data.nodes)) {
-      this.log('warn', 'Invalid status update data');
+  _initializeNodesData(nodes) {
+    if (!Array.isArray(nodes)) {
+      this.log('warn', 'Invalid nodes data received');
       return;
     }
     
-    // Transform backend format to frontend format
-    const transformedNodes = data.nodes.map(node => ({
-      id: node.id,
-      reference_code: node.code,
-      name: node.name,
-      status: node.status,
-      type: node.type || 'general',
-      node_type: { id: node.type || 'general', name: node.type || 'General' },
-      performance: {
-        cpu_usage: node.performance?.cpu || 0,
-        memory_usage: node.performance?.memory || 0,
-        storage_usage: node.performance?.disk || 0,
-        bandwidth_usage: node.performance?.network || 0
-      },
-      last_seen: node.last_seen,
-      isConnected: node.status === 'active',
-      connectionStatus: node.status === 'active' ? 'online' : 'offline'
-    }));
+    // Clear existing data
+    this.nodesData.clear();
     
-    // Emit nodes update
-    this.emit('nodes_updated', {
-      nodes: transformedNodes,
-      timestamp: data.timestamp || Date.now()
+    // Initialize with basic data from auth response
+    nodes.forEach(node => {
+      if (!node || !node.code) return;
+      
+      this.nodesData.set(node.code, {
+        id: node.id,
+        code: node.code,
+        name: node.name || 'Unknown Node',
+        status: 'unknown', // Status will be updated by status_update
+        type: 'unknown',
+        performance: {
+          cpu: 0,
+          memory: 0,
+          disk: 0,
+          network: 0
+        },
+        last_seen: null,
+        lastUpdate: null
+      });
+    });
+    
+    // Emit initial nodes data
+    this.emit('nodes_initialized', {
+      nodes: Array.from(this.nodesData.values()),
+      count: this.nodesData.size
     });
   }
 
   /**
-   * Reconnect with session token
-   * @param {string} token - Session token
+   * Handle status update from server
+   * @private
    */
-  async reconnectWithSession(token) {
-    if (!token) return false;
+  _handleStatusUpdate(update) {
+    if (!update || !update.nodes || !Array.isArray(update.nodes)) {
+      this.log('warn', 'Invalid status update format');
+      return;
+    }
+    
+    // Clear and rebuild nodes data with complete information
+    this.nodesData.clear();
+    
+    // Update each node's data
+    update.nodes.forEach(nodeUpdate => {
+      if (!nodeUpdate || !nodeUpdate.code) return;
+      
+      // Store complete node data
+      this.nodesData.set(nodeUpdate.code, {
+        code: nodeUpdate.code,
+        name: nodeUpdate.name,
+        status: nodeUpdate.status,
+        type: nodeUpdate.type,
+        performance: nodeUpdate.performance || {
+          cpu: 0,
+          memory: 0,
+          disk: 0,
+          network: 0
+        },
+        last_seen: nodeUpdate.last_seen,
+        lastUpdate: new Date()
+      });
+    });
+    
+    // Emit comprehensive update
+    this.emit('nodes_updated', {
+      nodes: Array.from(this.nodesData.values()),
+      timestamp: update.timestamp || Date.now(),
+      sequence: ++this.lastUpdateSequence
+    });
+  }
+
+  /**
+   * Handle WebSocket errors
+   * @private
+   */
+  _handleError(data) {
+    this.log('error', 'WebSocket error received:', data);
+    
+    // Handle specific error codes
+    switch (data.error_code) {
+      case 'authentication_required':
+        this.authenticated = false;
+        this.emit('auth_required', data);
+        break;
+      
+      case 'auth_failed':
+        this.authenticated = false;
+        this.emit('auth_failed', data);
+        break;
+      
+      case 'rate_limit':
+        this.emit('rate_limit_exceeded', data);
+        break;
+      
+      case 'invalid_message_type':
+        this.log('error', 'Invalid message type sent to server');
+        break;
+      
+      default:
+        this.emit('error_received', data);
+    }
+  }
+
+  /**
+   * Start real-time monitoring
+   */
+  async startMonitoring() {
+    if (!this.authenticated) {
+      throw new Error('Not authenticated');
+    }
+    
+    if (this.monitoringActive) {
+      this.log('warn', 'Monitoring already active');
+      return;
+    }
     
     try {
       await this.send({
-        type: 'ping',
-        session_token: token
+        type: 'start_monitor'
       });
       
-      this.sessionToken = token;
-      this.authenticated = true;
-      
-      // Restart monitoring
-      await this.startMonitoring();
-      
-      return true;
+      this.log('info', 'Sent start_monitor request');
     } catch (error) {
-      this.log('error', 'Failed to reconnect with session', error);
-      return false;
+      this.log('error', 'Failed to start monitoring', error);
+      throw error;
     }
+  }
+
+  /**
+   * Stop real-time monitoring
+   */
+  async stopMonitoring() {
+    if (!this.monitoringActive) {
+      this.log('warn', 'Monitoring not active');
+      return;
+    }
+    
+    try {
+      await this.send({
+        type: 'stop_monitor'
+      });
+      
+      this.monitoringActive = false;
+      this.emit('monitoring_stopped');
+      
+      this.log('info', 'Stopped monitoring');
+    } catch (error) {
+      this.log('error', 'Failed to stop monitoring', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get node by reference code
+   * @param {string} code - Node reference code
+   */
+  getNode(code) {
+    return this.nodesData.get(code);
   }
 
   /**
    * Get all nodes
    */
   getAllNodes() {
-    return this.nodes;
+    return Array.from(this.nodesData.values());
+  }
+
+  /**
+   * Get nodes by status
+   * @param {string} status - Node status
+   */
+  getNodesByStatus(status) {
+    return this.getAllNodes().filter(node => node.status === status);
   }
 
   /**
@@ -245,8 +327,30 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     return {
       active: this.monitoringActive,
       authenticated: this.authenticated,
-      sessionToken: this.sessionToken,
-      nodesCount: this.nodes.length
+      nodesCount: this.nodesData.size,
+      lastUpdateSequence: this.lastUpdateSequence,
+      sessionToken: this.sessionToken
     };
+  }
+
+  /**
+   * Clear all data (useful for logout)
+   */
+  clearData() {
+    this.nodesData.clear();
+    this.nodeReferences = [];
+    this.sessionToken = null;
+    this.monitoringActive = false;
+    this.lastUpdateSequence = 0;
+    this.authenticated = false;
+  }
+  
+  /**
+   * Override log method to prevent issues with null data
+   */
+  log(level, message, data = null) {
+    // Sanitize data to prevent issues
+    const safeData = data === null || data === undefined ? undefined : data;
+    super.log(level, message, safeData);
   }
 }
