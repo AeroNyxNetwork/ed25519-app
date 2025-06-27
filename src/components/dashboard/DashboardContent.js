@@ -6,7 +6,7 @@
  * Production-ready dashboard with correct WebSocket authentication flow
  * Following the exact API documentation sequence
  * 
- * @version 6.0.0
+ * @version 6.0.1
  * @author AeroNyx Development Team
  */
 
@@ -181,10 +181,10 @@ export default function DashboardContent() {
           console.log('[DashboardContent] Connected, requesting signature message...');
           setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message' }));
           
-          // IMPORTANT: Must request signature message
+          // IMPORTANT: Must request signature message with lowercase address
           sendMessage({
             type: 'get_message',
-            wallet_address: wallet.address
+            wallet_address: wallet.address.toLowerCase()  // FIX: Ensure lowercase
           });
           break;
           
@@ -204,10 +204,10 @@ export default function DashboardContent() {
             console.log('[DashboardContent] Message signed, sending auth...');
             setWsState(prev => ({ ...prev, authState: 'authenticating' }));
             
-            // Send authentication with exact message
+            // Send authentication with exact message and lowercase address
             sendMessage({
               type: 'auth',
-              wallet_address: wallet.address,
+              wallet_address: wallet.address.toLowerCase(),  // FIX: Ensure lowercase
               signature: signature,
               message: data.message, // Must be exact same message
               wallet_type: 'okx'
@@ -285,10 +285,10 @@ export default function DashboardContent() {
           
           // Handle specific errors
           if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
-            // Re-authenticate
+            // Re-authenticate with lowercase address
             sendMessage({
               type: 'get_message',
-              wallet_address: wallet.address
+              wallet_address: wallet.address.toLowerCase()  // FIX: Ensure lowercase
             });
           }
           break;
