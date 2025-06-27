@@ -3,16 +3,16 @@
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * Production-ready dashboard UI with WebSocket-only data display
- * Fixed to properly show WebSocket node data
+ * Production-ready dashboard with correct WebSocket authentication flow
+ * Following the exact API documentation sequence
  * 
- * @version 4.0.0
+ * @version 6.0.0
  * @author AeroNyx Development Team
  */
 
 'use client';
 
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
 
 // Component imports
@@ -24,8 +24,7 @@ import BlockchainIntegrationModule from './BlockchainIntegrationModule';
 
 // Hook imports
 import { useWallet } from '../wallet/WalletProvider';
-import { useDashboardWebSocket } from '../../hooks/useWebSocket';
-import { useSignature } from '../../hooks/useSignature';
+import { signMessage } from '../../lib/utils/walletSignature';
 
 /**
  * Dashboard Content Component
@@ -36,11 +35,19 @@ export default function DashboardContent() {
   const [showBlockchainModal, setShowBlockchainModal] = useState(false);
   const [selectedNodeForBlockchain, setSelectedNodeForBlockchain] = useState(null);
   
-  // Wallet and signature
+  // Wallet
   const { wallet } = useWallet();
-  const { signature, message, isLoading: signatureLoading, error: signatureError } = useSignature('dashboard');
   
-  // Local state for dashboard data
+  // WebSocket state
+  const [wsState, setWsState] = useState({
+    connected: false,
+    authenticated: false,
+    monitoring: false,
+    authState: 'idle', // idle, connecting, requesting_message, signing, authenticating, authenticated, error
+    error: null
+  });
+  
+  // Dashboard data state
   const [dashboardData, setDashboardData] = useState({
     nodes: [],
     stats: {
@@ -57,79 +64,12 @@ export default function DashboardContent() {
   
   const [performanceAlerts, setPerformanceAlerts] = useState([]);
   
-  // WebSocket credentials
-  const wsCredentials = useMemo(() => {
-    if (!wallet.connected || !signature || !message) return null;
-    
-    return {
-      walletAddress: wallet.address,
-      signature,
-      message,
-      walletType: 'okx'
-    };
-  }, [wallet.connected, wallet.address, signature, message]);
-  
-  // WebSocket connection for real-time data
-  const {
-    connected: wsConnected,
-    authenticated: wsAuthenticated,
-    monitoring: wsMonitoring,
-    data: wsData,
-    error: wsError,
-    connectionHealth,
-    connect: wsConnect,
-    disconnect: wsDisconnect
-  } = useDashboardWebSocket(wsCredentials, {
-    autoConnect: true,
-    autoMonitor: true,
-    onData: handleWebSocketData,
-    onError: handleWebSocketError
-  });
-  
-  // Process WebSocket data
-  function handleWebSocketData(data) {
-    console.log('[DashboardContent] WebSocket data received:', data);
-    
-    if (!data) return;
-    
-    // Handle nodes_updated event data structure
-    if (data.nodes && Array.isArray(data.nodes)) {
-      const nodes = data.nodes;
-      
-      // Calculate statistics from nodes
-      const stats = {
-        totalNodes: nodes.length,
-        activeNodes: nodes.filter(n => n.status === 'active').length,
-        offlineNodes: nodes.filter(n => n.status === 'offline').length,
-        pendingNodes: nodes.filter(n => n.status === 'pending' || n.status === 'registered').length,
-        totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
-        networkContribution: `${(Math.max(0, nodes.filter(n => n.status === 'active').length) * 0.0015).toFixed(4)}%`,
-        resourceUtilization: calculateResourceUtilization(nodes)
-      };
-      
-      setDashboardData({
-        nodes: nodes,
-        stats: stats,
-        lastUpdate: new Date()
-      });
-      
-      // Check for performance alerts
-      checkPerformanceAlerts(nodes);
-    }
-  }
-  
-  // Handle WebSocket errors
-  function handleWebSocketError(error) {
-    console.error('[DashboardContent] WebSocket error:', error);
-    
-    // Add error alert
-    setPerformanceAlerts(prev => [{
-      nodeId: 'system',
-      message: `WebSocket connection error: ${error.message || 'Unknown error'}`,
-      severity: 'critical',
-      timestamp: new Date()
-    }, ...prev].slice(0, 5));
-  }
+  // Refs
+  const wsRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+  const reconnectAttemptsRef = useRef(0);
+  const mountedRef = useRef(true);
+  const sessionTokenRef = useRef(null);
   
   // Calculate resource utilization
   const calculateResourceUtilization = useCallback((nodes) => {
@@ -139,13 +79,45 @@ export default function DashboardContent() {
     if (activeNodes.length === 0) return 0;
     
     const totalUtil = activeNodes.reduce((sum, node) => {
-      const cpu = node.performance?.cpu || node.performance?.cpu_usage || 0;
-      const memory = node.performance?.memory || node.performance?.memory_usage || 0;
+      const cpu = node.performance?.cpu || 0;
+      const memory = node.performance?.memory || 0;
       return sum + ((cpu + memory) / 2);
     }, 0);
     
     return Math.round(totalUtil / activeNodes.length);
   }, []);
+  
+  // Process nodes data from WebSocket
+  const processNodesData = useCallback((data) => {
+    console.log('[DashboardContent] Processing nodes data:', data);
+    
+    if (!data || !data.nodes || !Array.isArray(data.nodes)) {
+      console.warn('[DashboardContent] Invalid nodes data');
+      return;
+    }
+    
+    const nodes = data.nodes;
+    
+    // Calculate statistics
+    const stats = {
+      totalNodes: nodes.length,
+      activeNodes: nodes.filter(n => n.status === 'active').length,
+      offlineNodes: nodes.filter(n => n.status === 'offline').length,
+      pendingNodes: nodes.filter(n => n.status === 'pending' || n.status === 'registered').length,
+      totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
+      networkContribution: `${(Math.max(0, nodes.filter(n => n.status === 'active').length) * 0.0015).toFixed(4)}%`,
+      resourceUtilization: calculateResourceUtilization(nodes)
+    };
+    
+    setDashboardData({
+      nodes: nodes,
+      stats: stats,
+      lastUpdate: new Date()
+    });
+    
+    // Check for alerts
+    checkPerformanceAlerts(nodes);
+  }, [calculateResourceUtilization]);
   
   // Check for performance alerts
   const checkPerformanceAlerts = useCallback((nodes) => {
@@ -181,25 +153,248 @@ export default function DashboardContent() {
           });
         }
       }
-      
-      // Check for offline nodes that were previously active
-      if (node.status === 'offline' && node.last_seen) {
-        const lastSeen = new Date(node.last_seen);
-        const minutesOffline = Math.floor((Date.now() - lastSeen) / (1000 * 60));
-        
-        if (minutesOffline < 60) {
-          alerts.push({
-            nodeId: node.code,
-            message: `Node ${node.name}: Went offline ${minutesOffline}m ago`,
-            severity: 'warning',
-            timestamp: new Date()
-          });
-        }
-      }
     });
     
-    setPerformanceAlerts(alerts.slice(0, 10)); // Keep only last 10 alerts
+    setPerformanceAlerts(alerts.slice(0, 10));
   }, []);
+  
+  // Send WebSocket message
+  const sendMessage = useCallback((data) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      const message = JSON.stringify(data);
+      console.log('[DashboardContent] Sending:', data.type, data);
+      wsRef.current.send(message);
+    } else {
+      console.warn('[DashboardContent] WebSocket not ready, state:', wsRef.current?.readyState);
+    }
+  }, []);
+  
+  // Handle WebSocket messages
+  const handleMessage = useCallback(async (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      console.log('[DashboardContent] Received:', data.type, data);
+      
+      switch (data.type) {
+        case 'connected':
+          // Step 1: Connection established, request signature message
+          console.log('[DashboardContent] Connected, requesting signature message...');
+          setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message' }));
+          
+          // IMPORTANT: Must request signature message
+          sendMessage({
+            type: 'get_message',
+            wallet_address: wallet.address
+          });
+          break;
+          
+        case 'signature_message':
+          // Step 2: Received signature message, now sign it
+          console.log('[DashboardContent] Received signature message:', data.message);
+          setWsState(prev => ({ ...prev, authState: 'signing' }));
+          
+          try {
+            // Sign the message with wallet
+            const signature = await signMessage(
+              wallet.provider,
+              data.message,
+              wallet.address
+            );
+            
+            console.log('[DashboardContent] Message signed, sending auth...');
+            setWsState(prev => ({ ...prev, authState: 'authenticating' }));
+            
+            // Send authentication with exact message
+            sendMessage({
+              type: 'auth',
+              wallet_address: wallet.address,
+              signature: signature,
+              message: data.message, // Must be exact same message
+              wallet_type: 'okx'
+            });
+            
+          } catch (error) {
+            console.error('[DashboardContent] Signing error:', error);
+            setWsState(prev => ({ 
+              ...prev, 
+              authState: 'error', 
+              error: 'Failed to sign message' 
+            }));
+          }
+          break;
+          
+        case 'auth_success':
+          // Step 3: Authentication successful
+          console.log('[DashboardContent] Authentication successful:', data);
+          sessionTokenRef.current = data.session_token;
+          
+          setWsState(prev => ({ 
+            ...prev, 
+            authenticated: true, 
+            authState: 'authenticated',
+            error: null
+          }));
+          
+          // Initialize nodes from auth response
+          if (data.nodes) {
+            const initialNodes = data.nodes.map(node => ({
+              code: node.code,
+              name: node.name,
+              id: node.id,
+              status: 'unknown',
+              type: 'unknown',
+              performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
+              earnings: 0,
+              last_seen: null
+            }));
+            
+            setDashboardData(prev => ({
+              ...prev,
+              nodes: initialNodes,
+              stats: {
+                ...prev.stats,
+                totalNodes: initialNodes.length
+              }
+            }));
+          }
+          
+          // Step 4: Start monitoring
+          console.log('[DashboardContent] Starting monitoring...');
+          sendMessage({ type: 'start_monitor' });
+          break;
+          
+        case 'monitor_started':
+          console.log('[DashboardContent] Monitoring started, interval:', data.interval);
+          setWsState(prev => ({ ...prev, monitoring: true }));
+          break;
+          
+        case 'status_update':
+          // Regular status updates
+          console.log('[DashboardContent] Status update received');
+          setWsState(prev => ({ ...prev, monitoring: true }));
+          processNodesData(data);
+          break;
+          
+        case 'error':
+          console.error('[DashboardContent] Server error:', data);
+          setWsState(prev => ({ 
+            ...prev, 
+            error: data.message || 'Server error',
+            authState: data.error_code === 'authentication_required' ? 'requesting_message' : prev.authState
+          }));
+          
+          // Handle specific errors
+          if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
+            // Re-authenticate
+            sendMessage({
+              type: 'get_message',
+              wallet_address: wallet.address
+            });
+          }
+          break;
+          
+        case 'pong':
+          console.log('[DashboardContent] Pong received');
+          break;
+          
+        default:
+          console.log('[DashboardContent] Unknown message type:', data.type);
+      }
+    } catch (error) {
+      console.error('[DashboardContent] Message handling error:', error);
+    }
+  }, [wallet.address, wallet.provider, sendMessage, processNodesData]);
+  
+  // Setup WebSocket connection
+  const connectWebSocket = useCallback(() => {
+    if (!wallet.connected) {
+      console.log('[DashboardContent] Wallet not connected, skipping WebSocket');
+      return;
+    }
+    
+    // Clean up existing connection
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    
+    console.log('[DashboardContent] Connecting to WebSocket...');
+    setWsState(prev => ({ ...prev, authState: 'connecting', error: null }));
+    
+    try {
+      const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
+      wsRef.current = ws;
+      
+      ws.onopen = () => {
+        console.log('[DashboardContent] WebSocket opened');
+        reconnectAttemptsRef.current = 0;
+        // Wait for 'connected' message from server
+      };
+      
+      ws.onmessage = handleMessage;
+      
+      ws.onerror = (error) => {
+        console.error('[DashboardContent] WebSocket error:', error);
+        setWsState(prev => ({ 
+          ...prev, 
+          error: 'Connection error' 
+        }));
+      };
+      
+      ws.onclose = (event) => {
+        console.log('[DashboardContent] WebSocket closed:', event.code, event.reason);
+        
+        setWsState(prev => ({ 
+          ...prev, 
+          connected: false,
+          authenticated: false,
+          monitoring: false,
+          authState: 'idle'
+        }));
+        
+        // Handle reconnection
+        if (event.code !== 1000 && reconnectAttemptsRef.current < 5 && mountedRef.current) {
+          reconnectAttemptsRef.current++;
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+          console.log(`[DashboardContent] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
+          
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (mountedRef.current) {
+              connectWebSocket();
+            }
+          }, delay);
+        }
+      };
+      
+    } catch (error) {
+      console.error('[DashboardContent] Connection error:', error);
+      setWsState(prev => ({ 
+        ...prev, 
+        authState: 'error', 
+        error: 'Failed to connect' 
+      }));
+    }
+  }, [wallet.connected, handleMessage]);
+  
+  // Initialize WebSocket when wallet is connected
+  useEffect(() => {
+    mountedRef.current = true;
+    
+    if (wallet.connected) {
+      connectWebSocket();
+    }
+    
+    return () => {
+      mountedRef.current = false;
+      
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      
+      if (wsRef.current) {
+        wsRef.current.close(1000, 'Component unmounting');
+      }
+    };
+  }, [wallet.connected, connectWebSocket]);
   
   // Event handlers
   const handleBlockchainIntegration = useCallback((node) => {
@@ -209,7 +404,6 @@ export default function DashboardContent() {
   
   const handleNodeDetails = useCallback(async (referenceCode) => {
     console.log('Fetching details for node:', referenceCode);
-    // Details will be handled by node detail page
   }, []);
   
   const handleClearAlerts = useCallback(() => {
@@ -217,23 +411,35 @@ export default function DashboardContent() {
   }, []);
   
   const handleRefresh = useCallback(() => {
-    // For WebSocket, we just reconnect
-    if (wsConnected) {
-      wsDisconnect();
-      setTimeout(() => wsConnect(), 1000);
-    } else {
-      wsConnect();
-    }
-  }, [wsConnected, wsConnect, wsDisconnect]);
+    reconnectAttemptsRef.current = 0;
+    connectWebSocket();
+  }, [connectWebSocket]);
   
-  // Loading state
-  const isLoading = signatureLoading || (!wsConnected && !wsError);
+  // Connection health
+  const connectionHealth = {
+    excellent: { status: 'excellent', label: 'Live Monitoring', color: 'green' },
+    authenticated: { status: 'good', label: 'Authenticated', color: 'blue' },
+    connected: { status: 'fair', label: 'Connected', color: 'yellow' },
+    connecting: { status: 'connecting', label: 'Connecting...', color: 'yellow' },
+    error: { status: 'error', label: 'Error', color: 'red' },
+    disconnected: { status: 'disconnected', label: 'Disconnected', color: 'gray' }
+  };
   
-  // Error state
-  const error = signatureError || (wsError && dashboardData.nodes.length === 0);
+  const currentHealth = wsState.monitoring ? connectionHealth.excellent :
+                       wsState.authenticated ? connectionHealth.authenticated :
+                       wsState.connected ? connectionHealth.connected :
+                       wsState.authState === 'connecting' ? connectionHealth.connecting :
+                       wsState.error ? connectionHealth.error :
+                       connectionHealth.disconnected;
   
   // Extract data
   const { nodes, stats, lastUpdate } = dashboardData;
+  
+  // Determine loading state
+  const isLoading = wallet.connected && wsState.authState === 'connecting';
+  
+  // Determine error state
+  const hasError = wsState.authState === 'error' && nodes.length === 0;
   
   if (isLoading) {
     return (
@@ -242,28 +448,26 @@ export default function DashboardContent() {
           <div className="mb-8">
             <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary"></div>
           </div>
-          <h2 className="text-xl font-bold mb-2">Loading Dashboard</h2>
-          <p className="text-gray-400">
-            {signatureLoading ? 'Authenticating wallet...' : 'Connecting to real-time data...'}
-          </p>
+          <h2 className="text-xl font-bold mb-2">Connecting to Dashboard</h2>
+          <p className="text-gray-400">Establishing secure connection...</p>
         </div>
       </div>
     );
   }
   
-  if (error) {
+  if (hasError) {
     return (
       <div className="py-8">
         <div className="card glass-effect p-8 text-center">
-          <h2 className="text-2xl font-bold mb-4">Unable to Load Dashboard</h2>
+          <h2 className="text-2xl font-bold mb-4">Connection Error</h2>
           <p className="text-gray-400 mb-6">
-            {typeof error === 'string' ? error : 'Failed to connect to real-time data'}
+            {wsState.error || 'Failed to establish connection'}
           </p>
           <button
             onClick={handleRefresh}
             className="button-primary"
           >
-            Try Again
+            Retry Connection
           </button>
         </div>
       </div>
@@ -277,17 +481,25 @@ export default function DashboardContent() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold">Node Dashboard</h1>
-            <p className="text-gray-400 mt-1">Monitor and manage your AeroNyx nodes in real-time</p>
+            <p className="text-gray-400 mt-1">
+              {wsState.monitoring ? 'Real-time monitoring active' : 
+               wsState.authenticated ? 'Authenticated, starting monitor...' :
+               wsState.authState === 'requesting_message' ? 'Requesting authentication...' :
+               wsState.authState === 'signing' ? 'Signing message...' :
+               wsState.authState === 'authenticating' ? 'Authenticating...' :
+               wsState.connected ? 'Connected, authenticating...' :
+               'Connect your wallet to view nodes'}
+            </p>
           </div>
           
           <div className="flex items-center gap-4">
             {/* Connection Status */}
-            <div className={`flex items-center gap-2 px-3 py-1 rounded-md bg-${connectionHealth.color}-900/30 border border-${connectionHealth.color}-800`}>
-              <div className={`w-2 h-2 rounded-full bg-${connectionHealth.color}-500 ${
-                connectionHealth.status === 'excellent' ? 'animate-pulse' : ''
+            <div className={`flex items-center gap-2 px-3 py-1 rounded-md bg-${currentHealth.color}-900/30 border border-${currentHealth.color}-800`}>
+              <div className={`w-2 h-2 rounded-full bg-${currentHealth.color}-500 ${
+                currentHealth.status === 'excellent' ? 'animate-pulse' : ''
               }`}></div>
-              <span className={`text-xs text-${connectionHealth.color}-400`}>
-                {connectionHealth.label}
+              <span className={`text-xs text-${currentHealth.color}-400`}>
+                {currentHealth.label}
               </span>
             </div>
             
@@ -311,14 +523,16 @@ export default function DashboardContent() {
       </div>
       
       {/* Real-time Monitor */}
-      <RealTimeNodeMonitor
-        nodes={nodes}
-        performanceAlerts={performanceAlerts}
-        lastUpdate={lastUpdate}
-        updateSource="websocket"
-        connectionStatus={connectionHealth}
-        onClearAlerts={handleClearAlerts}
-      />
+      {wsState.monitoring && (
+        <RealTimeNodeMonitor
+          nodes={nodes}
+          performanceAlerts={performanceAlerts}
+          lastUpdate={lastUpdate}
+          updateSource="websocket"
+          connectionStatus={currentHealth}
+          onClearAlerts={handleClearAlerts}
+        />
+      )}
       
       {/* Stats Overview */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
@@ -374,6 +588,18 @@ export default function DashboardContent() {
                 )}
               </div>
               
+              {/* Debug info - remove in production */}
+              {process.env.NODE_ENV === 'development' && (
+                <div className="mb-4 p-2 bg-gray-800 rounded text-xs font-mono">
+                  <div>State: {wsState.authState}</div>
+                  <div>Connected: {wsState.connected ? '✓' : '✗'}</div>
+                  <div>Authenticated: {wsState.authenticated ? '✓' : '✗'}</div>
+                  <div>Monitoring: {wsState.monitoring ? '✓' : '✗'}</div>
+                  <div>Nodes: {nodes.length}</div>
+                  {wsState.error && <div className="text-red-400">Error: {wsState.error}</div>}
+                </div>
+              )}
+              
               {nodes.length > 0 ? (
                 <NodeList
                   nodes={nodes.slice(0, 4)}
@@ -383,22 +609,25 @@ export default function DashboardContent() {
               ) : (
                 <div className="text-center py-12">
                   <p className="text-gray-400 mb-4">
-                    {wsMonitoring ? 'No nodes found in your account' : 'Waiting for real-time data...'}
+                    {wsState.monitoring ? 'No nodes found in your account' : 
+                     wsState.authenticated ? 'Loading nodes...' :
+                     wsState.connected ? 'Authenticating...' :
+                     'Connecting to node network...'}
                   </p>
-                  {!wsMonitoring && (
+                  {wsState.monitoring && (
+                    <Link href="/dashboard/register">
+                      <button className="button-primary">
+                        Register Your First Node
+                      </button>
+                    </Link>
+                  )}
+                  {!wsState.connected && wallet.connected && (
                     <button 
                       onClick={handleRefresh}
                       className="button-primary"
                     >
                       Connect to Nodes
                     </button>
-                  )}
-                  {wsMonitoring && (
-                    <Link href="/dashboard/register">
-                      <button className="button-primary">
-                        Register Your First Node
-                      </button>
-                    </Link>
                   )}
                 </div>
               )}
@@ -496,7 +725,7 @@ export default function DashboardContent() {
                 </div>
               )}
               
-              {wsMonitoring && (
+              {wsState.monitoring && (
                 <div className="flex items-start gap-2">
                   <div className="w-2 h-2 rounded-full bg-purple-500 mt-1.5 animate-pulse"></div>
                   <div>
