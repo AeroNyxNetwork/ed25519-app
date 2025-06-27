@@ -3,9 +3,9 @@
  * 
  * File Path: src/lib/websocket/UserMonitorWebSocketService.js
  * 
- * Fixed version preventing event propagation issues
+ * Production-ready implementation with proper authentication flow.
  * 
- * @version 4.1.0
+ * @version 5.0.0
  * @author AeroNyx Development Team
  */
 
@@ -22,113 +22,94 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     this.walletAddress = walletCredentials.walletAddress;
     this.nodesData = new Map();
     this.monitoringActive = false;
-    this.subscribedNodes = new Set();
-    this.lastUpdateSequence = 0;
     this.nodeReferences = [];
-    this.sessionToken = null;
-    
-    // Fix: Track if we're handling events to prevent loops
-    this._handlingEvent = false;
     
     this._setupEventHandlers();
   }
 
   /**
-   * Setup internal event handlers with loop prevention
+   * Setup internal event handlers
    * @private
    */
   _setupEventHandlers() {
-    // Handle initial connection
+    // Connection established - server will send signature_message next
     this.on('connected', (data) => {
-      this.log('info', 'Connected to WebSocket server');
-      // Connection established, wait for server to send next message
+      this.log('info', 'Connected to user monitor WebSocket');
+      this.connectionId = data.connection_id;
     });
     
-    // Handle signature message response - Remove the duplicate handling
-    this.once('signature_message', (data) => {
+    // Handle signature message from server
+    this.on('signature_message', (data) => {
       this.log('info', 'Received signature message for authentication');
-      // The event will be handled by WebSocketProvider
+      // Don't handle here - let the provider handle signing
+      this.emit('signature_message', data);
     });
     
     // Handle successful authentication
     this.on('auth_success', (data) => {
       this.log('info', 'Authentication successful');
-      
-      // Auth success has flat structure
-      if (data.session_token) {
-        this.sessionToken = data.session_token;
-      }
-      
-      if (data.nodes) {
-        this.nodeReferences = data.nodes.map(node => node.code);
-        this._initializeNodesData(data.nodes);
-      }
-      
       this.authenticated = true;
       
-      // Start monitoring after successful auth
-      this.startMonitoring().catch(err => {
-        this.log('error', 'Failed to start monitoring:', err);
-      });
+      // Process initial nodes data
+      if (data.nodes_summary && data.nodes_summary.nodes) {
+        this.nodeReferences = data.nodes_summary.nodes.map(node => node.code);
+        this._initializeNodesData(data.nodes_summary.nodes);
+      }
+      
+      // Auto-start monitoring after auth
+      setTimeout(() => {
+        this.startMonitoring().catch(err => {
+          this.log('error', 'Failed to start monitoring:', err);
+        });
+      }, 100);
     });
     
     // Handle authentication failure
     this.on('auth_failed', (data) => {
-      this.log('error', 'Authentication failed:', data);
+      this.log('error', 'Authentication failed:', data.message);
       this.authenticated = false;
-    });
-    
-    // Handle status updates - this is the main event for node data
-    this.on('status_update', (data) => {
-      this._handleStatusUpdate(data);
     });
     
     // Handle monitoring started
     this.on('monitor_started', (data) => {
-      this.log('info', 'Monitoring started with interval:', data.interval);
+      this.log('info', 'Monitoring started');
       this.monitoringActive = true;
       this.emit('monitoring_started', data);
     });
     
-    // Handle monitoring stopped
-    this.on('monitor_stopped', () => {
-      this.log('info', 'Monitoring stopped');
-      this.monitoringActive = false;
-      this.emit('monitoring_stopped');
+    // Handle status updates - main data event
+    this.on('status_update', (data) => {
+      this.log('info', 'Received status update');
+      this._handleStatusUpdate(data);
     });
     
     // Handle errors
     this.on('error', (data) => {
-      this._handleError(data);
+      this.log('error', 'Server error:', data);
+      this.emit('error_received', data);
     });
   }
 
   /**
-   * Request signature message for authentication
-   * @private
-   */
-  async _requestSignatureMessage() {
-    // Do nothing - server will send signature_message automatically
-    this.log('info', 'Waiting for signature message from server');
-  }
-
-  /**
    * Authenticate with signature
-   * 
-   * @param {Object} authData - Authentication data
    */
   async authenticateWithSignature(authData) {
+    if (!authData.wallet_address || !authData.signature || !authData.message) {
+      throw new Error('Missing authentication parameters');
+    }
+    
     try {
       await this.send({
         type: 'auth',
-        wallet_address: authData.wallet_address,
+        wallet_address: authData.wallet_address.toLowerCase(),
         signature: authData.signature,
         message: authData.message,
         wallet_type: authData.wallet_type || 'okx'
       });
+      
+      this.log('info', 'Authentication request sent');
     } catch (error) {
-      this.log('error', 'Authentication failed', error);
-      this.emit('auth_error', error);
+      this.log('error', 'Failed to send authentication', error);
       throw error;
     }
   }
@@ -138,23 +119,17 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * @private
    */
   _initializeNodesData(nodes) {
-    if (!Array.isArray(nodes)) {
-      this.log('warn', 'Invalid nodes data received');
-      return;
-    }
+    if (!Array.isArray(nodes)) return;
     
-    // Clear existing data
     this.nodesData.clear();
     
-    // Initialize with basic data from auth response
     nodes.forEach(node => {
       if (!node || !node.code) return;
       
       this.nodesData.set(node.code, {
-        id: node.id,
-        code: node.code,
+        reference_code: node.code,
         name: node.name || 'Unknown Node',
-        status: 'unknown', // Status will be updated by status_update
+        status: 'unknown',
         type: 'unknown',
         performance: {
           cpu: 0,
@@ -167,7 +142,6 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       });
     });
     
-    // Emit initial nodes data
     this.emit('nodes_initialized', {
       nodes: Array.from(this.nodesData.values()),
       count: this.nodesData.size
@@ -184,68 +158,32 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       return;
     }
     
-    // Clear and rebuild nodes data with complete information
-    this.nodesData.clear();
-    
-    // Update each node's data
+    // Update nodes data
     update.nodes.forEach(nodeUpdate => {
       if (!nodeUpdate || !nodeUpdate.code) return;
       
-      // Store complete node data
+      const existingNode = this.nodesData.get(nodeUpdate.code) || {};
+      
       this.nodesData.set(nodeUpdate.code, {
-        code: nodeUpdate.code,
-        name: nodeUpdate.name,
+        ...existingNode,
+        reference_code: nodeUpdate.code,
+        name: nodeUpdate.name || existingNode.name,
         status: nodeUpdate.status,
-        type: nodeUpdate.type,
-        performance: nodeUpdate.performance || {
-          cpu: 0,
-          memory: 0,
-          disk: 0,
-          network: 0
-        },
+        type: nodeUpdate.type || existingNode.type,
+        performance: nodeUpdate.performance || existingNode.performance,
         last_seen: nodeUpdate.last_seen,
         lastUpdate: new Date()
       });
     });
     
-    // Emit comprehensive update
+    // Emit update event
     this.emit('nodes_updated', {
       nodes: Array.from(this.nodesData.values()),
-      timestamp: update.timestamp || Date.now(),
-      sequence: ++this.lastUpdateSequence
+      timestamp: update.timestamp || Date.now()
     });
-  }
-
-  /**
-   * Handle WebSocket errors
-   * @private
-   */
-  _handleError(data) {
-    this.log('error', 'WebSocket error received:', data);
     
-    // Handle specific error codes
-    switch (data.error_code) {
-      case 'authentication_required':
-        this.authenticated = false;
-        this.emit('auth_required', data);
-        break;
-      
-      case 'auth_failed':
-        this.authenticated = false;
-        this.emit('auth_failed', data);
-        break;
-      
-      case 'rate_limit':
-        this.emit('rate_limit_exceeded', data);
-        break;
-      
-      case 'invalid_message_type':
-        this.log('error', 'Invalid message type sent to server');
-        break;
-      
-      default:
-        this.emit('error_received', data);
-    }
+    // Also emit as status_update for compatibility
+    this.emit('status_update', update);
   }
 
   /**
@@ -257,7 +195,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
     }
     
     if (this.monitoringActive) {
-      this.log('warn', 'Monitoring already active');
+      this.log('info', 'Monitoring already active');
       return;
     }
     
@@ -266,7 +204,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
         type: 'start_monitor'
       });
       
-      this.log('info', 'Sent start_monitor request');
+      this.log('info', 'Start monitoring request sent');
     } catch (error) {
       this.log('error', 'Failed to start monitoring', error);
       throw error;
@@ -277,10 +215,7 @@ export default class UserMonitorWebSocketService extends WebSocketService {
    * Stop real-time monitoring
    */
   async stopMonitoring() {
-    if (!this.monitoringActive) {
-      this.log('warn', 'Monitoring not active');
-      return;
-    }
+    if (!this.monitoringActive) return;
     
     try {
       await this.send({
@@ -288,21 +223,11 @@ export default class UserMonitorWebSocketService extends WebSocketService {
       });
       
       this.monitoringActive = false;
-      this.emit('monitoring_stopped');
-      
-      this.log('info', 'Stopped monitoring');
+      this.log('info', 'Monitoring stopped');
     } catch (error) {
       this.log('error', 'Failed to stop monitoring', error);
       throw error;
     }
-  }
-
-  /**
-   * Get node by reference code
-   * @param {string} code - Node reference code
-   */
-  getNode(code) {
-    return this.nodesData.get(code);
   }
 
   /**
@@ -313,44 +238,12 @@ export default class UserMonitorWebSocketService extends WebSocketService {
   }
 
   /**
-   * Get nodes by status
-   * @param {string} status - Node status
-   */
-  getNodesByStatus(status) {
-    return this.getAllNodes().filter(node => node.status === status);
-  }
-
-  /**
-   * Get monitoring state
-   */
-  getMonitoringState() {
-    return {
-      active: this.monitoringActive,
-      authenticated: this.authenticated,
-      nodesCount: this.nodesData.size,
-      lastUpdateSequence: this.lastUpdateSequence,
-      sessionToken: this.sessionToken
-    };
-  }
-
-  /**
-   * Clear all data (useful for logout)
+   * Clear all data
    */
   clearData() {
     this.nodesData.clear();
     this.nodeReferences = [];
-    this.sessionToken = null;
     this.monitoringActive = false;
-    this.lastUpdateSequence = 0;
     this.authenticated = false;
-  }
-  
-  /**
-   * Override log method to prevent issues with null data
-   */
-  log(level, message, data = null) {
-    // Sanitize data to prevent issues
-    const safeData = data === null || data === undefined ? undefined : data;
-    super.log(level, message, safeData);
   }
 }
