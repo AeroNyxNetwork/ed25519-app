@@ -14,6 +14,7 @@ import React from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import ConnectWallet from '../wallet/ConnectWallet';
+import Logo from '../common/Logo';
 
 export default function Header() {
   return (
@@ -27,14 +28,7 @@ export default function Header() {
               whileTap={{ scale: 0.95 }}
               className="flex items-center gap-3"
             >
-              <div className="w-10 h-10 relative">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" className="w-full h-full">
-                  <g transform="translate(0,512) scale(0.1,-0.1)" fill="#8A2BE2" stroke="none">
-                    <path d="M1277 3833 l-1277 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1278 -1277z"/>
-                    <path d="M3838 3833 l-1278 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1277 -1277z"/>
-                  </g>
-                </svg>
-              </div>
+              <Logo className="w-10 h-10" />
               <span className="text-xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
                 AeroNyx
               </span>
