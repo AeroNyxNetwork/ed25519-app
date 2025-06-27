@@ -1,222 +1,150 @@
 /**
- * WebSocket Provider Component
+ * WebSocket Provider Component for AeroNyx Platform
  * 
  * File Path: src/components/providers/WebSocketProvider.js
  * 
- * Fixed to handle authentication flow correctly
+ * Production-ready WebSocket context provider following Google coding standards.
+ * Provides real-time data updates for the entire application.
  * 
- * @version 6.1.0
+ * @version 2.0.0
  * @author AeroNyx Development Team
  */
 
 'use client';
 
-import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
-import { wsManager } from '../../lib/websocket/WebSocketManager';
+import { useUserMonitorWebSocket } from '../../hooks/useWebSocket';
+import { useSignature } from '../../hooks/useSignature';
+
+/**
+ * WebSocket context type definition
+ * @typedef {Object} WebSocketContextValue
+ * @property {Array} nodes - Current nodes data
+ * @property {string} connectionStatus - Connection status
+ * @property {boolean} isConnected - Whether WebSocket is connected
+ * @property {boolean} isAuthenticated - Whether WebSocket is authenticated
+ * @property {boolean} isMonitoring - Whether monitoring is active
+ * @property {Function} refresh - Manual refresh function
+ * @property {Date} lastUpdate - Last update timestamp
+ */
 
 const WebSocketContext = createContext(null);
 
+/**
+ * WebSocket Provider Component
+ * 
+ * @param {Object} props - Component props
+ * @param {React.ReactNode} props.children - Child components
+ * @returns {React.ReactElement} Provider component
+ */
 export function WebSocketProvider({ children }) {
   const { wallet } = useWallet();
-  const [userMonitorService, setUserMonitorService] = useState(null);
-  const [isInitialized, setIsInitialized] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState('disconnected');
-  const [nodes, setNodes] = useState([]);
-  const [sessionToken, setSessionToken] = useState(null);
-  const [signatureMessage, setSignatureMessage] = useState(null);
+  const { signature, message, isLoading: signatureLoading } = useSignature('websocket');
   
-  // Refs to prevent multiple initialization attempts
-  const initializingRef = useRef(false);
-  const serviceKeyRef = useRef(null);
-  const signatureHandledRef = useRef(false);
-
-  useEffect(() => {
-    if (!wallet.connected || !wallet.address) {
-      // Cleanup when wallet disconnected
-      if (serviceKeyRef.current) {
-        const service = wsManager.getService(serviceKeyRef.current);
-        if (service) {
-          service.disconnect();
-        }
-        wsManager.removeService(serviceKeyRef.current);
-        serviceKeyRef.current = null;
-      }
-      setUserMonitorService(null);
-      setIsInitialized(false);
-      setConnectionStatus('disconnected');
-      setNodes([]);
-      setSessionToken(null);
-      setSignatureMessage(null);
-      signatureHandledRef.current = false;
-      return;
-    }
-
-    // Check if service already exists
-    const existingServiceKey = `userMonitor:${wallet.address}`;
-    const existingService = wsManager.getService(existingServiceKey);
+  // State
+  const [nodes, setNodes] = useState([]);
+  const [lastUpdate, setLastUpdate] = useState(null);
+  
+  // Refs
+  const mountedRef = useRef(true);
+  
+  // WebSocket credentials
+  const wsCredentials = React.useMemo(() => {
+    if (!wallet.connected || !signature || !message) return null;
     
-    if (existingService && existingService.state === 'OPEN') {
-      console.log('Using existing WebSocket service');
-      setUserMonitorService(existingService);
-      serviceKeyRef.current = existingServiceKey;
-      setIsInitialized(true);
-      return;
-    }
-
-    // Prevent multiple initialization attempts
-    if (initializingRef.current || (isInitialized && serviceKeyRef.current)) {
-      return;
-    }
-
-    // Initialize user monitor when wallet connected
-    const initializeUserMonitor = async () => {
-      initializingRef.current = true;
-      
-      try {
-        // Create user monitor service (without credentials for now)
-        const service = wsManager.getUserMonitorService({
-          walletAddress: wallet.address
-        });
-        const serviceKey = `userMonitor:${wallet.address}`;
-        serviceKeyRef.current = serviceKey;
-        
-        setUserMonitorService(service);
-
-        // Setup event handlers
-        service.on('connectionStatusChanged', (status) => {
-          setConnectionStatus(status);
-        });
-
-        service.on('connected', () => {
-          console.log('WebSocket connected successfully');
-          setConnectionStatus('connected');
-        });
-
-        service.on('signature_message', (data) => {
-          // Prevent handling the same signature message multiple times
-          if (signatureHandledRef.current) {
-            console.log('Signature message already handled, ignoring duplicate');
-            return;
-          }
-          
-          console.log('Received signature message from server');
-          signatureHandledRef.current = true;
-          setSignatureMessage(data);
-          
-          // Sign and authenticate
-          handleSignAndAuth(service, data, wallet);
-        });
-
-        service.on('nodes_updated', (data) => {
-          setNodes(data.nodes || []);
-        });
-
-        service.on('auth_success', (data) => {
-          console.log('Authentication successful');
-          setConnectionStatus('authenticated');
-          if (data.session_token) {
-            setSessionToken(data.session_token);
-            // Store session token in localStorage for reconnection
-            localStorage.setItem('aeronyx_session_token', data.session_token);
-          }
-          // Initialize nodes from auth response
-          if (data.nodes) {
-            // Initial nodes only have id, code, name
-            const initialNodes = data.nodes.map(n => ({
-              ...n,
-              status: 'unknown',
-              type: 'unknown',
-              performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
-              last_seen: null
-            }));
-            setNodes(initialNodes);
-          }
-          // startMonitoring is called by UserMonitorWebSocketService
-        });
-
-        service.on('auth_failed', (data) => {
-          console.error('WebSocket auth failed:', data);
-          setConnectionStatus('auth_failed');
-          signatureHandledRef.current = false; // Reset so we can try again
-          // Clear stored session token
-          localStorage.removeItem('aeronyx_session_token');
-        });
-
-        service.on('monitoring_started', () => {
-          setConnectionStatus('monitoring');
-        });
-
-        service.on('error', (data) => {
-          console.error('WebSocket error:', data);
-        });
-
-        // Connect to WebSocket
-        await service.connect();
-        
-        setIsInitialized(true);
-      } catch (error) {
-        console.error('Failed to initialize user monitor:', error);
-        setConnectionStatus('error');
-        setIsInitialized(true);
-      } finally {
-        initializingRef.current = false;
-      }
+    return {
+      walletAddress: wallet.address,
+      signature,
+      message,
+      walletType: 'okx'
     };
-
-    // Handle signing and authentication
-    const handleSignAndAuth = async (service, messageData, wallet) => {
-      try {
-        // Sign the message with wallet
-        const signature = await wallet.provider.request({
-          method: 'personal_sign',
-          params: [messageData.message, wallet.address.toLowerCase()]
-        });
-
-        // Send authentication with signature
-        await service.authenticateWithSignature({
-          wallet_address: wallet.address.toLowerCase(),
-          signature: signature,
-          message: messageData.message,
-          wallet_type: 'okx'
-        });
-      } catch (error) {
-        console.error('Failed to sign and authenticate:', error);
-        setConnectionStatus('auth_failed');
-        signatureHandledRef.current = false; // Reset so we can try again
-      }
-    };
-
-    initializeUserMonitor();
-
-    // Cleanup
+  }, [wallet.connected, wallet.address, signature, message]);
+  
+  // WebSocket hook
+  const {
+    connected,
+    authenticated,
+    monitoring,
+    connect,
+    disconnect
+  } = useUserMonitorWebSocket(wsCredentials, {
+    autoConnect: true,
+    autoMonitor: true,
+    onData: handleWebSocketData,
+    onError: handleWebSocketError
+  });
+  
+  /**
+   * Handle WebSocket data updates
+   */
+  function handleWebSocketData(data) {
+    if (!mountedRef.current) return;
+    
+    if (data && Array.isArray(data.nodes)) {
+      setNodes(data.nodes);
+      setLastUpdate(new Date());
+    }
+  }
+  
+  /**
+   * Handle WebSocket errors
+   */
+  function handleWebSocketError(error) {
+    console.error('[WebSocketProvider] Error:', error);
+  }
+  
+  /**
+   * Manual refresh function
+   */
+  const refresh = useCallback(() => {
+    if (connected && !monitoring) {
+      // Restart monitoring if connected but not monitoring
+      connect();
+    }
+  }, [connected, monitoring, connect]);
+  
+  // Connection status
+  const connectionStatus = React.useMemo(() => {
+    if (monitoring) return 'monitoring';
+    if (authenticated) return 'authenticated';
+    if (connected) return 'connected';
+    if (signatureLoading) return 'connecting';
+    return 'disconnected';
+  }, [connected, authenticated, monitoring, signatureLoading]);
+  
+  // Cleanup on unmount
+  useEffect(() => {
+    mountedRef.current = true;
+    
     return () => {
-      if (serviceKeyRef.current) {
-        wsManager.removeService(serviceKeyRef.current);
-        serviceKeyRef.current = null;
-      }
-      signatureHandledRef.current = false;
+      mountedRef.current = false;
     };
-  }, [wallet.connected, wallet.address, isInitialized]);
-
-  const value = {
-    wsManager,
-    userMonitorService,
-    isInitialized,
-    connectionStatus,
+  }, []);
+  
+  // Context value
+  const contextValue = React.useMemo(() => ({
     nodes,
-    sessionToken,
-    signatureMessage,
-    getNodeService: (referenceCode, options) => wsManager.getNodeService(referenceCode, options)
-  };
-
+    connectionStatus,
+    isConnected: connected,
+    isAuthenticated: authenticated,
+    isMonitoring: monitoring,
+    refresh,
+    lastUpdate
+  }), [nodes, connectionStatus, connected, authenticated, monitoring, refresh, lastUpdate]);
+  
   return (
-    <WebSocketContext.Provider value={value}>
+    <WebSocketContext.Provider value={contextValue}>
       {children}
     </WebSocketContext.Provider>
   );
 }
 
+/**
+ * Hook to use WebSocket context
+ * 
+ * @returns {WebSocketContextValue} WebSocket context value
+ */
 export function useWebSocketContext() {
   const context = useContext(WebSocketContext);
   
@@ -226,3 +154,6 @@ export function useWebSocketContext() {
   
   return context;
 }
+
+// Default export
+export default WebSocketProvider;
