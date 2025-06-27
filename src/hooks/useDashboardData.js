@@ -112,6 +112,12 @@ export function useDashboard(config = {}) {
     if (!data) return null;
     
     console.log('[useDashboard] Processing data from:', source, data);
+    console.log('[useDashboard] Data structure check:', {
+      hasNodes: !!data.nodes,
+      nodesType: typeof data.nodes,
+      isArray: Array.isArray(data.nodes),
+      keys: data.nodes ? Object.keys(data.nodes) : []
+    });
     
     // Handle WebSocket data format
     if (source === DataSource.WEBSOCKET && data.nodes && Array.isArray(data.nodes)) {
