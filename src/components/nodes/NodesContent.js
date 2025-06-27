@@ -1,300 +1,458 @@
 /**
- * Nodes Content Component for AeroNyx Platform
+ * Nodes Content Component - Production Grade
  * 
  * File Path: src/components/nodes/NodesContent.js
  * 
- * Contains the main nodes management UI logic separated from the page component
- * to avoid circular dependencies and SSR issues.
+ * Displays all user nodes
  * 
- * @version 1.0.0
- * @author AeroNyx Development Team
- * @since 2025-01-19
+ * @version 3.0.0
  */
 
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  Server, 
+  Plus, 
+  Search,
+  Filter,
+  CheckCircle,
+  XCircle,
+  AlertCircle,
+  Cpu,
+  HardDrive,
+  Activity,
+  DollarSign
+} from 'lucide-react';
+import clsx from 'clsx';
 
-// Component imports
-import NodeList from '../dashboard/NodeList';
-import BlockchainIntegrationModule from '../dashboard/BlockchainIntegrationModule';
-
-// Hook imports
-import useNodeRegistration from '../../hooks/useNodeRegistration';
 import { useWallet } from '../wallet/WalletProvider';
+import { signMessage } from '../../lib/utils/walletSignature';
+
+// Animation variants
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.1
+    }
+  }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      type: "spring",
+      stiffness: 100
+    }
+  }
+};
 
 export default function NodesContent() {
   const { wallet } = useWallet();
-  const [showBlockchainModal, setShowBlockchainModal] = useState(false);
-  const [selectedNode, setSelectedNode] = useState(null);
-  const [filterStatus, setFilterStatus] = useState('all');
+  const [nodes, setNodes] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const wsRef = useRef(null);
 
-  // Node registration hook
-  const {
-    loading,
-    error,
-    nodes,
-    statistics,
-    refreshNodesOverview,
-    getNodeDetailedStatus
-  } = useNodeRegistration(wallet);
+  // WebSocket connection logic (similar to DashboardContent)
+  const connectWebSocket = useCallback(async () => {
+    if (!wallet.connected) return;
 
-  // Filter nodes based on status and search
-  const filteredNodes = React.useMemo(() => {
-    if (!nodes) return [];
-    
-    return nodes.filter(node => {
-      // Status filter
-      if (filterStatus !== 'all' && node.status !== filterStatus) {
-        return false;
-      }
-      
-      // Search filter
-      if (searchTerm) {
-        const search = searchTerm.toLowerCase();
-        return (
-          node.name?.toLowerCase().includes(search) ||
-          node.referenceCode?.toLowerCase().includes(search) ||
-          node.id?.toString().includes(search)
-        );
-      }
-      
-      return true;
-    });
-  }, [nodes, filterStatus, searchTerm]);
-
-  // Event handlers
-  const handleBlockchainIntegration = useCallback((node) => {
-    setSelectedNode(node);
-    setShowBlockchainModal(true);
-  }, []);
-
-  const handleNodeDetails = useCallback(async (referenceCode) => {
     try {
-      const details = await getNodeDetailedStatus(referenceCode);
-      console.log('Node details:', details);
+      const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
+      wsRef.current = ws;
+
+      ws.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+        
+        switch (data.type) {
+          case 'connected':
+            ws.send(JSON.stringify({
+              type: 'get_message',
+              wallet_address: wallet.address.toLowerCase()
+            }));
+            break;
+            
+          case 'signature_message':
+            try {
+              const signature = await signMessage(
+                wallet.provider,
+                data.message,
+                wallet.address
+              );
+              
+              ws.send(JSON.stringify({
+                type: 'auth',
+                wallet_address: wallet.address.toLowerCase(),
+                signature: signature,
+                message: data.message,
+                wallet_type: 'metamask'
+              }));
+            } catch (error) {
+              console.error('Signing error:', error);
+            }
+            break;
+            
+          case 'auth_success':
+            if (data.nodes) {
+              setNodes(data.nodes);
+            }
+            ws.send(JSON.stringify({ type: 'start_monitor' }));
+            break;
+            
+          case 'status_update':
+            if (data.nodes) {
+              setNodes(data.nodes);
+            }
+            setLoading(false);
+            break;
+        }
+      };
+
+      ws.onerror = () => {
+        setLoading(false);
+      };
+
+      ws.onclose = () => {
+        setLoading(false);
+      };
     } catch (error) {
-      console.error('Failed to fetch node details:', error);
+      console.error('WebSocket error:', error);
+      setLoading(false);
     }
-  }, [getNodeDetailedStatus]);
+  }, [wallet]);
 
-  const handleRefresh = useCallback(() => {
-    refreshNodesOverview();
-  }, [refreshNodesOverview]);
+  useEffect(() => {
+    if (wallet.connected) {
+      connectWebSocket();
+    }
 
-  // Loading state
-  if (loading && !nodes) {
-    return (
-      <div className="py-8">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold">My Nodes</h1>
-          <p className="text-gray-400 mt-1">Loading your nodes...</p>
-        </div>
-        <div className="animate-pulse space-y-4">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="card glass-effect h-48 bg-background-100"></div>
-          ))}
-        </div>
-      </div>
-    );
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [wallet.connected, connectWebSocket]);
+
+  // Filter nodes based on search and status
+  const filteredNodes = nodes.filter(node => {
+    const matchesSearch = node.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         node.code.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesFilter = filterStatus === 'all' || node.status === filterStatus;
+    return matchesSearch && matchesFilter;
+  });
+
+  if (!wallet.connected) {
+    return <WalletConnectionPrompt />;
+  }
+
+  if (loading) {
+    return <LoadingState />;
   }
 
   return (
-    <div className="py-8">
-      {/* Page Header */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold">My Nodes</h1>
-            <p className="text-gray-400 mt-1">Manage and monitor your AeroNyx nodes</p>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            {/* Refresh Button */}
-            <button
-              onClick={handleRefresh}
-              disabled={loading}
-              className="p-2 rounded-md bg-background-100 hover:bg-background-200 transition-colors disabled:opacity-50"
-              title="Refresh nodes"
-            >
-              <svg 
-                xmlns="http://www.w3.org/2000/svg" 
-                className={`h-5 w-5 ${loading ? 'animate-spin' : ''}`} 
-                viewBox="0 0 20 20" 
-                fill="currentColor"
-              >
-                <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-              </svg>
-            </button>
-            
-            {/* Add Node Button */}
-            <Link href="/dashboard/register">
-              <button className="button-primary flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-                </svg>
-                Register New Node
-              </button>
-            </Link>
-          </div>
-        </div>
+    <div className="min-h-screen bg-black">
+      {/* Background effects */}
+      <div className="fixed inset-0">
+        <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-black to-blue-900/20" />
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f2e_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f2e_1px,transparent_1px)] bg-[size:64px_64px]" />
       </div>
+      
+      <div className="relative z-10 px-6 py-8 max-w-7xl mx-auto">
+        {/* Header */}
+        <motion.div 
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8"
+        >
+          <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent mb-2">
+            Your Nodes
+          </h1>
+          <p className="text-gray-400">Manage and monitor all your nodes</p>
+        </motion.div>
 
-      {/* Statistics Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <div className="card glass-effect p-4">
-          <div className="text-xs text-gray-400 mb-1">Total Nodes</div>
-          <div className="text-2xl font-bold">{statistics.total}</div>
-        </div>
-        
-        <div className="card glass-effect p-4">
-          <div className="text-xs text-gray-400 mb-1">Online</div>
-          <div className="text-2xl font-bold text-green-400">{statistics.online}</div>
-        </div>
-        
-        <div className="card glass-effect p-4">
-          <div className="text-xs text-gray-400 mb-1">Active</div>
-          <div className="text-2xl font-bold text-blue-400">{statistics.active}</div>
-        </div>
-        
-        <div className="card glass-effect p-4">
-          <div className="text-xs text-gray-400 mb-1">Offline</div>
-          <div className="text-2xl font-bold text-red-400">{statistics.offline}</div>
-        </div>
-      </div>
-
-      {/* Filters and Search */}
-      <div className="card glass-effect p-4 mb-6">
-        <div className="flex flex-col md:flex-row gap-4">
-          {/* Status Filter */}
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-400">Status:</label>
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="bg-background-100 border border-background-200 rounded-md px-3 py-1 text-sm focus:outline-none focus:border-primary"
-            >
-              <option value="all">All Nodes</option>
-              <option value="active">Active</option>
-              <option value="online">Online</option>
-              <option value="offline">Offline</option>
-              <option value="pending">Pending</option>
-            </select>
-          </div>
-          
+        {/* Controls */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.2 }}
+          className="flex flex-col md:flex-row gap-4 mb-8"
+        >
           {/* Search */}
-          <div className="flex-1">
+          <div className="flex-1 relative">
+            <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
             <input
               type="text"
-              placeholder="Search by name or reference code..."
+              placeholder="Search nodes..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-background-100 border border-background-200 rounded-md px-4 py-2 text-sm focus:outline-none focus:border-primary"
+              className="w-full pl-12 pr-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-purple-500/50 transition-all"
+            />
+          </div>
+
+          {/* Filter */}
+          <div className="flex gap-2">
+            {['all', 'active', 'offline', 'pending'].map((status) => (
+              <button
+                key={status}
+                onClick={() => setFilterStatus(status)}
+                className={clsx(
+                  "px-4 py-2 rounded-lg transition-all",
+                  filterStatus === status
+                    ? "bg-purple-600 text-white"
+                    : "bg-white/5 text-gray-400 hover:bg-white/10"
+                )}
+              >
+                {status.charAt(0).toUpperCase() + status.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          {/* Add Node Button */}
+          <Link href="/dashboard/register">
+            <motion.a
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+            >
+              <Plus className="w-5 h-5" />
+              Register Node
+            </motion.a>
+          </Link>
+        </motion.div>
+
+        {/* Nodes Grid */}
+        <AnimatePresence mode="wait">
+          {filteredNodes.length > 0 ? (
+            <motion.div
+              variants={containerVariants}
+              initial="hidden"
+              animate="visible"
+              className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+            >
+              {filteredNodes.map((node) => (
+                <NodeCard key={node.code} node={node} />
+              ))}
+            </motion.div>
+          ) : (
+            <EmptyState searchTerm={searchTerm} filterStatus={filterStatus} />
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+// Components
+
+function NodeCard({ node }) {
+  const statusConfig = {
+    active: { color: 'green', Icon: CheckCircle, label: 'Active', glow: 'shadow-green-500/20' },
+    offline: { color: 'red', Icon: XCircle, label: 'Offline', glow: 'shadow-red-500/20' },
+    pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending', glow: 'shadow-yellow-500/20' }
+  };
+  
+  const config = statusConfig[node.status] || statusConfig.offline;
+  const { Icon } = config;
+
+  const performance = node.performance || {};
+  const cpu = performance.cpu || 0;
+  const memory = performance.memory || 0;
+  const disk = performance.disk || 0;
+  const network = performance.network || 0;
+
+  return (
+    <motion.div
+      variants={itemVariants}
+      whileHover={{ y: -5 }}
+      className="relative group"
+    >
+      <div className={clsx(
+        "absolute inset-0 rounded-2xl blur-xl transition-all opacity-0 group-hover:opacity-100",
+        `bg-${config.color}-500/20`
+      )} />
+      
+      <div className="relative bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6 hover:border-white/20 transition-all">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-semibold text-white mb-1">{node.name}</h3>
+            <p className="text-sm text-gray-400">{node.code}</p>
+          </div>
+          <div className={clsx(
+            "flex items-center gap-2 px-3 py-1 rounded-full",
+            `bg-${config.color}-500/10 border border-${config.color}-500/20`
+          )}>
+            <Icon className={`w-4 h-4 text-${config.color}-400`} />
+            <span className={`text-xs font-medium text-${config.color}-400`}>{config.label}</span>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="space-y-2">
+            <MetricBar
+              icon={Cpu}
+              label="CPU"
+              value={cpu}
+              color="blue"
+            />
+            <MetricBar
+              icon={HardDrive}
+              label="Memory"
+              value={memory}
+              color="purple"
+            />
+          </div>
+          <div className="space-y-2">
+            <MetricBar
+              icon={HardDrive}
+              label="Disk"
+              value={disk}
+              color="green"
+            />
+            <MetricBar
+              icon={Activity}
+              label="Network"
+              value={network}
+              color="orange"
             />
           </div>
         </div>
+
+        {/* Earnings */}
+        <div className="flex items-center justify-between pt-4 border-t border-white/10">
+          <div className="flex items-center gap-2">
+            <DollarSign className="w-4 h-4 text-green-400" />
+            <span className="text-sm text-gray-400">Earnings</span>
+          </div>
+          <span className="text-lg font-semibold text-white">${node.earnings || '0.00'}</span>
+        </div>
+
+        {/* View Details Link */}
+        <Link href={`/dashboard/nodes/${node.code}`}>
+          <motion.a
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            className="mt-4 block w-full text-center py-2 rounded-lg bg-white/5 text-purple-400 hover:bg-white/10 transition-all"
+          >
+            View Details
+          </motion.a>
+        </Link>
       </div>
+    </motion.div>
+  );
+}
 
-      {/* Error State */}
-      {error && (
-        <div className="card glass-effect p-4 mb-6 border-red-800">
-          <div className="flex items-center gap-2 text-red-400">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-            </svg>
-            <span>{error}</span>
-          </div>
+function MetricBar({ icon: Icon, label, value, color }) {
+  const colorClasses = {
+    blue: 'from-blue-500 to-blue-400',
+    purple: 'from-purple-500 to-purple-400',
+    green: 'from-green-500 to-green-400',
+    orange: 'from-orange-500 to-orange-400'
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs mb-1">
+        <div className="flex items-center gap-1">
+          <Icon className="w-3 h-3 text-gray-400" />
+          <span className="text-gray-400">{label}</span>
         </div>
-      )}
-
-      {/* Node List */}
-      {filteredNodes.length > 0 ? (
-        <NodeList
-          nodes={filteredNodes}
-          onBlockchainIntegrate={handleBlockchainIntegration}
-          onNodeDetails={handleNodeDetails}
+        <span className="text-white font-medium">{value}%</span>
+      </div>
+      <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+        <motion.div
+          initial={{ width: 0 }}
+          animate={{ width: `${value}%` }}
+          transition={{ duration: 1, ease: "easeOut" }}
+          className={clsx("h-full bg-gradient-to-r", colorClasses[color])}
         />
-      ) : (
-        <div className="card glass-effect p-12 text-center">
-          {nodes && nodes.length > 0 ? (
-            <>
-              <h3 className="text-xl font-bold mb-2">No Nodes Found</h3>
-              <p className="text-gray-400">
-                No nodes match your current filters. Try adjusting your search criteria.
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="mb-6">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 text-gray-600 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-                </svg>
-              </div>
-              
-              <h3 className="text-xl font-bold mb-2">No Nodes Yet</h3>
-              <p className="text-gray-400 mb-6">
-                Start building your node network by registering your first node.
-              </p>
-              
-              <Link href="/dashboard/register">
-                <button className="button-primary">
-                  Register Your First Node
-                </button>
-              </Link>
-            </>
-          )}
-        </div>
-      )}
+      </div>
+    </div>
+  );
+}
 
-      {/* Node Statistics Summary */}
-      {nodes && nodes.length > 0 && (
-        <div className="mt-8 card glass-effect p-6">
-          <h3 className="font-bold mb-4">Network Summary</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Total Earnings */}
-            <div>
-              <div className="text-sm text-gray-400 mb-1">Total Earnings</div>
-              <div className="text-xl font-bold text-green-400">
-                ${statistics.totalEarnings.toFixed(2)}
-              </div>
-            </div>
-            
-            {/* Average Health */}
-            <div>
-              <div className="text-sm text-gray-400 mb-1">Average Health Score</div>
-              <div className="text-xl font-bold">
-                {statistics.avgHealthScore}%
-              </div>
-            </div>
-            
-            {/* Node Types */}
-            <div>
-              <div className="text-sm text-gray-400 mb-1">Node Distribution</div>
-              <div className="flex gap-2 text-xs">
-                {Object.entries(statistics.nodesByType).map(([type, count]) => (
-                  <span key={type} className="px-2 py-1 bg-background-100 rounded">
-                    {type}: {count}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+function EmptyState({ searchTerm, filterStatus }) {
+  const hasFilters = searchTerm || filterStatus !== 'all';
 
-      {/* Blockchain Integration Modal */}
-      {showBlockchainModal && selectedNode && (
-        <BlockchainIntegrationModule
-          isOpen={showBlockchainModal}
-          onClose={() => {
-            setShowBlockchainModal(false);
-            setSelectedNode(null);
-          }}
-          selectedNode={selectedNode}
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="text-center py-16"
+    >
+      <div className="w-20 h-20 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-6">
+        <Server className="w-10 h-10 text-gray-600" />
+      </div>
+      <h3 className="text-xl font-semibold text-white mb-2">
+        {hasFilters ? 'No nodes found' : 'No nodes yet'}
+      </h3>
+      <p className="text-gray-400 mb-8">
+        {hasFilters 
+          ? 'Try adjusting your search or filters'
+          : 'Register your first node to get started'
+        }
+      </p>
+      {!hasFilters && (
+        <Link href="/dashboard/register">
+          <motion.a
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+          >
+            <Plus className="w-5 h-5" />
+            Register Node
+          </motion.a>
+        </Link>
+      )}
+    </motion.div>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="text-center"
+      >
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+          className="w-16 h-16 border-4 border-purple-500/20 border-t-purple-500 rounded-full mx-auto mb-4"
         />
-      )}
+        <p className="text-gray-400">Loading your nodes...</p>
+      </motion.div>
+    </div>
+  );
+}
+
+function WalletConnectionPrompt() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="text-center max-w-md"
+      >
+        <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-8">
+          <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Server className="w-10 h-10 text-white" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-4">Connect Your Wallet</h2>
+          <p className="text-gray-400">Connect your wallet to view and manage your nodes.</p>
+        </div>
+      </motion.div>
     </div>
   );
 }
