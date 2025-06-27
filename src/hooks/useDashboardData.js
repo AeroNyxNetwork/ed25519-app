@@ -3,48 +3,46 @@
  * 
  * File Path: src/hooks/useDashboardData.js
  * 
- * Production-ready implementation following Google coding standards.
- * Provides unified data fetching with WebSocket priority and REST fallback.
+ * 仅修复数据处理问题
  * 
- * @version 5.0.0
+ * @version 4.0.1
  * @author AeroNyx Development Team
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
-import { useWebSocketContext } from '../components/providers/WebSocketProvider';
+import { useDashboardWebSocket } from './useWebSocket';
 import { useSignature } from './useSignature';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
+import { cacheService, CacheNamespace } from '../lib/services/CacheService';
 
-/**
- * Data source enumeration
- * @enum {string}
- */
 export const DataSource = {
   WEBSOCKET: 'websocket',
-  REST: 'rest'
+  REST: 'rest',
+  CACHE: 'cache'
 };
 
-/**
- * Dashboard hook for unified data management
- * 
- * @param {Object} config - Configuration options
- * @param {boolean} config.preferWebSocket - Prefer WebSocket over REST (default: true)
- * @param {boolean} config.enableRESTFallback - Enable REST API fallback (default: true)
- * @returns {Object} Dashboard state and controls
- */
 export function useDashboard(config = {}) {
   const {
     preferWebSocket = true,
-    enableRESTFallback = true
+    enableRESTFallback = true,
+    hybridMode = true
   } = config;
   
   const { wallet } = useWallet();
   const { signature, message, isLoading: signatureLoading, error: signatureError } = useSignature('dashboard');
-  const { nodes: wsNodes, connectionStatus, isMonitoring } = useWebSocketContext();
   
-  // State management
-  const [restData, setRestData] = useState(null);
+  // State
+  const [state, setState] = useState({
+    dashboardData: null,
+    nodesOverview: null,
+    isLoading: true,
+    isRefreshing: false,
+    error: null,
+    dataSource: null,
+    lastUpdate: null
+  });
+  
   const [stats, setStats] = useState({
     totalNodes: 0,
     activeNodes: 0,
@@ -54,38 +52,79 @@ export function useDashboard(config = {}) {
     networkContribution: '0%',
     resourceUtilization: 0
   });
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [lastUpdate, setLastUpdate] = useState(null);
   
-  // Refs
   const mountedRef = useRef(true);
-  const hasDataRef = useRef(false);
   
-  // Determine current data source
-  const dataSource = useMemo(() => {
-    if (isMonitoring && wsNodes.length > 0) {
-      return DataSource.WEBSOCKET;
-    }
-    return DataSource.REST;
-  }, [isMonitoring, wsNodes.length]);
+  // WebSocket
+  const wsCredentials = useMemo(() => {
+    if (!wallet.connected || !signature || !message) return null;
+    return {
+      walletAddress: wallet.address,
+      signature,
+      message,
+      walletType: 'okx'
+    };
+  }, [wallet.connected, wallet.address, signature, message]);
   
-  // Use WebSocket nodes if available, otherwise REST data
-  const nodes = useMemo(() => {
-    if (preferWebSocket && wsNodes.length > 0) {
-      return wsNodes;
-    }
-    return restData?.nodes || [];
-  }, [preferWebSocket, wsNodes, restData]);
+  const {
+    connected: wsConnected,
+    authenticated: wsAuthenticated,
+    monitoring: wsMonitoring,
+    data: wsData,
+    error: wsError,
+    connectionHealth: wsConnectionHealth
+  } = useDashboardWebSocket(wsCredentials, {
+    autoConnect: preferWebSocket && !signatureLoading && !signatureError,
+    autoMonitor: true
+  });
   
   /**
-   * Calculate stats from nodes
+   * Process dashboard data - 修复数据处理
    */
-  const calculateStats = useCallback((nodeArray, summary = null) => {
-    if (summary) {
-      // Use summary from API if available
+  const processDashboardData = useCallback((data, source) => {
+    if (!data) return null;
+    
+    console.log('[processDashboardData] Processing data from:', source, data);
+    
+    // Handle WebSocket data
+    if (source === DataSource.WEBSOCKET && data.nodes && Array.isArray(data.nodes)) {
+      const nodes = data.nodes;
+      const processedStats = {
+        totalNodes: nodes.length,
+        activeNodes: nodes.filter(n => n.status === 'active').length,
+        offlineNodes: nodes.filter(n => n.status === 'offline').length,
+        pendingNodes: nodes.filter(n => n.status === 'pending' || n.status === 'registered').length,
+        totalEarnings: 0,
+        networkContribution: `${(nodes.filter(n => n.status === 'active').length * 0.0015).toFixed(4)}%`,
+        resourceUtilization: 0
+      };
+      
       return {
-        totalNodes: summary.total_nodes || 0,
+        dashboardData: {
+          stats: processedStats,
+          nodes: nodes,
+          timestamp: new Date().toISOString(),
+          source
+        },
+        stats: processedStats
+      };
+    }
+    
+    // Handle REST API data - 这是关键修复
+    if (data.nodes && typeof data.nodes === 'object' && !Array.isArray(data.nodes)) {
+      // 合并所有节点数组
+      const allNodes = [];
+      
+      if (data.nodes.online) allNodes.push(...data.nodes.online);
+      if (data.nodes.active) allNodes.push(...data.nodes.active);
+      if (data.nodes.offline) allNodes.push(...data.nodes.offline);
+      
+      console.log('[processDashboardData] Combined nodes:', allNodes.length);
+      
+      const summary = data.summary || {};
+      
+      const processedStats = {
+        totalNodes: summary.total_nodes || allNodes.length,
         activeNodes: summary.online_nodes || 0,
         offlineNodes: summary.offline_nodes || 0,
         pendingNodes: Math.max(0, 
@@ -94,50 +133,35 @@ export function useDashboard(config = {}) {
           (summary.offline_nodes || 0)
         ),
         totalEarnings: parseFloat(summary.total_earnings || 0),
-        networkContribution: `${((summary.online_nodes || 0) * 0.0015).toFixed(4)}%`,
-        resourceUtilization: calculateResourceUtilization(nodeArray)
+        networkContribution: `${(Math.max(0, summary.online_nodes || 0) * 0.0015).toFixed(4)}%`,
+        resourceUtilization: 0
+      };
+      
+      return {
+        dashboardData: {
+          stats: processedStats,
+          nodes: allNodes, // 返回合并后的节点数组
+          timestamp: new Date().toISOString(),
+          source
+        },
+        stats: processedStats
       };
     }
     
-    // Calculate from nodes array
-    const activeNodes = nodeArray.filter(n => n.status === 'active').length;
-    const offlineNodes = nodeArray.filter(n => n.status === 'offline').length;
-    const pendingNodes = nodeArray.filter(n => n.status === 'pending' || n.status === 'registered').length;
-    
-    return {
-      totalNodes: nodeArray.length,
-      activeNodes,
-      offlineNodes,
-      pendingNodes,
-      totalEarnings: nodeArray.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
-      networkContribution: `${(activeNodes * 0.0015).toFixed(4)}%`,
-      resourceUtilization: calculateResourceUtilization(nodeArray)
-    };
+    return null;
   }, []);
   
   /**
-   * Calculate average resource utilization
+   * Fetch REST data
    */
-  const calculateResourceUtilization = useCallback((nodes) => {
-    const activeNodes = nodes.filter(n => n.status === 'active');
-    if (activeNodes.length === 0) return 0;
-    
-    const totalUtil = activeNodes.reduce((sum, node) => {
-      const cpu = node.performance?.cpu || node.performance?.cpu_usage || 0;
-      const memory = node.performance?.memory || node.performance?.memory_usage || 0;
-      return sum + ((cpu + memory) / 2);
-    }, 0);
-    
-    return Math.round(totalUtil / activeNodes.length);
-  }, []);
-  
-  /**
-   * Fetch data from REST API
-   */
-  const fetchRESTData = useCallback(async () => {
+  const fetchRESTData = useCallback(async (forceRefresh = false) => {
     if (!wallet.connected || !signature || !message) return;
     
-    setIsLoading(true);
+    setState(prev => ({
+      ...prev,
+      isRefreshing: !prev.dashboardData,
+      isLoading: !prev.dashboardData
+    }));
     
     try {
       const response = await nodeRegistrationService.getUserNodesOverview(
@@ -147,137 +171,93 @@ export function useDashboard(config = {}) {
         'okx'
       );
       
-      if (!mountedRef.current) return;
-      
       if (response.success && response.data) {
-        // Combine all node arrays
-        const allNodes = [
-          ...(response.data.nodes?.online || []),
-          ...(response.data.nodes?.active || []),
-          ...(response.data.nodes?.offline || [])
-        ];
+        const processed = processDashboardData(response.data, DataSource.REST);
         
-        const processedData = {
-          nodes: allNodes,
-          summary: response.data.summary,
-          timestamp: new Date().toISOString()
-        };
-        
-        setRestData(processedData);
-        setLastUpdate(new Date());
-        setError(null);
-        hasDataRef.current = true;
-        
-        // Update stats with summary data
-        const newStats = calculateStats(allNodes, response.data.summary);
-        setStats(newStats);
-      } else {
-        throw new Error(response.message || 'Failed to fetch dashboard data');
+        if (processed && mountedRef.current) {
+          setState(prev => ({
+            ...prev,
+            dashboardData: processed.dashboardData,
+            nodesOverview: response.data,
+            dataSource: DataSource.REST,
+            lastUpdate: new Date(),
+            error: null,
+            isLoading: false,
+            isRefreshing: false
+          }));
+          
+          setStats(processed.stats);
+        }
       }
-    } catch (err) {
+    } catch (error) {
       if (mountedRef.current) {
-        setError(err.message);
-      }
-    } finally {
-      if (mountedRef.current) {
-        setIsLoading(false);
+        setState(prev => ({
+          ...prev,
+          error: error.message || 'Failed to load dashboard data',
+          isLoading: false,
+          isRefreshing: false
+        }));
       }
     }
-  }, [wallet.connected, wallet.address, signature, message, calculateStats]);
+  }, [wallet.connected, wallet.address, signature, message, processDashboardData]);
   
-  /**
-   * Refresh data
-   */
-  const refresh = useCallback(async () => {
-    await fetchRESTData();
-  }, [fetchRESTData]);
-  
-  // Update stats when nodes change
+  // WebSocket data handler
   useEffect(() => {
-    if (nodes.length > 0) {
-      const newStats = calculateStats(nodes, restData?.summary);
-      setStats(newStats);
-      
-      if (dataSource === DataSource.WEBSOCKET) {
-        setLastUpdate(new Date());
+    if (wsData && wsMonitoring) {
+      const processed = processDashboardData(wsData, DataSource.WEBSOCKET);
+      if (processed && mountedRef.current) {
+        setState(prev => ({
+          ...prev,
+          dashboardData: processed.dashboardData,
+          dataSource: DataSource.WEBSOCKET,
+          lastUpdate: new Date(),
+          error: null
+        }));
+        setStats(processed.stats);
       }
     }
-  }, [nodes, restData?.summary, calculateStats, dataSource]);
+  }, [wsData, wsMonitoring, processDashboardData]);
   
-  // Initial data load
+  // Initial load
   useEffect(() => {
     if (!wallet.connected || signatureLoading) return;
     
-    if (signatureError) {
-      setError('Failed to authenticate. Please reconnect your wallet.');
-      setIsLoading(false);
-      return;
-    }
-    
-    // Always fetch REST data initially
     if (signature && message) {
       fetchRESTData();
     }
-  }, [wallet.connected, signature, message, signatureLoading, signatureError, fetchRESTData]);
+  }, [wallet.connected, signature, message, signatureLoading, fetchRESTData]);
   
   // Cleanup
   useEffect(() => {
     mountedRef.current = true;
-    
     return () => {
       mountedRef.current = false;
-      hasDataRef.current = false;
     };
   }, []);
   
-  // Connection health
-  const connectionHealth = useMemo(() => {
-    if (connectionStatus === 'monitoring') {
-      return { status: 'excellent', label: 'Live Monitoring', color: 'green' };
-    }
-    if (connectionStatus === 'authenticated') {
-      return { status: 'good', label: 'Authenticated', color: 'blue' };
-    }
-    if (connectionStatus === 'connected') {
-      return { status: 'fair', label: 'Connected', color: 'yellow' };
-    }
-    if (error) {
-      return { status: 'error', label: 'Connection Error', color: 'red' };
-    }
-    return { status: 'disconnected', label: 'Disconnected', color: 'gray' };
-  }, [connectionStatus, error]);
+  const refresh = useCallback((force = true) => {
+    return fetchRESTData(force);
+  }, [fetchRESTData]);
   
-  // Dashboard data structure
-  const dashboardData = useMemo(() => {
-    if (!nodes.length) return null;
-    
-    return {
-      nodes,
-      stats,
-      timestamp: lastUpdate?.toISOString() || new Date().toISOString(),
-      source: dataSource
-    };
-  }, [nodes, stats, lastUpdate, dataSource]);
+  const connectionHealth = wsMonitoring ? wsConnectionHealth : {
+    status: state.error ? 'error' : 'good',
+    label: state.error ? 'Error' : 'REST API',
+    color: state.error ? 'red' : 'blue'
+  };
   
   return {
-    // Data
-    dashboardData,
+    dashboardData: state.dashboardData,
+    nodesOverview: state.nodesOverview,
     stats,
-    
-    // States
-    isInitialLoading: isLoading && !hasDataRef.current,
-    isRefreshing: isLoading && hasDataRef.current,
-    error,
-    
-    // Connection info
-    dataSource,
+    isInitialLoading: state.isLoading && !state.dashboardData,
+    isRefreshing: state.isRefreshing,
+    error: state.error,
+    dataSource: state.dataSource,
     connectionHealth,
-    lastUpdate,
-    
-    // Actions
+    isWebSocketActive: wsMonitoring,
+    lastUpdate: state.lastUpdate,
     refresh
   };
 }
 
-// Default export
 export default useDashboard;
