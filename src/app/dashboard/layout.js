@@ -18,6 +18,7 @@ import clsx from 'clsx';
 import { usePathname } from 'next/navigation';
 import { WebSocketProvider } from '../../components/providers/WebSocketProvider';
 import ConnectWallet from '../../components/wallet/ConnectWallet';
+import Logo from '../../components/common/Logo';
 
 /**
  * Navigation items configuration
@@ -56,14 +57,7 @@ export default function DashboardLayout({ children }) {
                   whileTap={{ scale: 0.95 }}
                   className="flex items-center gap-3"
                 >
-                  <div className="w-10 h-10 relative">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" className="w-full h-full">
-                      <g transform="translate(0,512) scale(0.1,-0.1)" fill="#8A2BE2" stroke="none">
-                        <path d="M1277 3833 l-1277 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1278 -1277z"/>
-                        <path d="M3838 3833 l-1278 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1277 -1277z"/>
-                      </g>
-                    </svg>
-                  </div>
+                  <Logo className="w-10 h-10" />
                   <span className="text-xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
                     AeroNyx
                   </span>
@@ -112,14 +106,7 @@ export default function DashboardLayout({ children }) {
           <div className="max-w-7xl mx-auto px-6 py-6">
             <div className="flex flex-col md:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 relative">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" className="w-full h-full">
-                    <g transform="translate(0,512) scale(0.1,-0.1)" fill="#8A2BE2" stroke="none">
-                      <path d="M1277 3833 l-1277 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1278 -1277z"/>
-                      <path d="M3838 3833 l-1278 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1277 -1277z"/>
-                    </g>
-                  </svg>
-                </div>
+                <Logo className="w-8 h-8" />
                 <span className="text-sm text-gray-400">
                   © {new Date().getFullYear()} AeroNyx Network. All rights reserved.
                 </span>
