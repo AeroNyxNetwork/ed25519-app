@@ -3,10 +3,9 @@
  * 
  * File Path: src/components/providers/WebSocketProvider.js
  * 
- * Production-ready WebSocket context provider following Google coding standards.
- * Provides real-time data updates for the entire application.
+ * Production implementation with correct authentication flow.
  * 
- * @version 2.0.0
+ * @version 4.0.0
  * @author AeroNyx Development Team
  */
 
@@ -14,146 +13,164 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { useWallet } from '../wallet/WalletProvider';
-import { useUserMonitorWebSocket } from '../../hooks/useWebSocket';
-import { useSignature } from '../../hooks/useSignature';
-
-/**
- * WebSocket context type definition
- * @typedef {Object} WebSocketContextValue
- * @property {Array} nodes - Current nodes data
- * @property {string} connectionStatus - Connection status
- * @property {boolean} isConnected - Whether WebSocket is connected
- * @property {boolean} isAuthenticated - Whether WebSocket is authenticated
- * @property {boolean} isMonitoring - Whether monitoring is active
- * @property {Function} refresh - Manual refresh function
- * @property {Date} lastUpdate - Last update timestamp
- */
+import { wsManager } from '../../lib/websocket/WebSocketManager';
 
 const WebSocketContext = createContext(null);
 
-/**
- * WebSocket Provider Component
- * 
- * @param {Object} props - Component props
- * @param {React.ReactNode} props.children - Child components
- * @returns {React.ReactElement} Provider component
- */
 export function WebSocketProvider({ children }) {
   const { wallet } = useWallet();
-  const { signature, message, isLoading: signatureLoading } = useSignature('websocket');
   
-  // State
   const [nodes, setNodes] = useState([]);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [lastUpdate, setLastUpdate] = useState(null);
   
-  // Refs
+  const serviceRef = useRef(null);
   const mountedRef = useRef(true);
   
-  // WebSocket credentials
-  const wsCredentials = React.useMemo(() => {
-    if (!wallet.connected || !signature || !message) return null;
+  const initializeWebSocket = useCallback(async () => {
+    if (!wallet.connected || !wallet.address) return;
     
-    return {
-      walletAddress: wallet.address,
-      signature,
-      message,
-      walletType: 'okx'
-    };
-  }, [wallet.connected, wallet.address, signature, message]);
-  
-  // WebSocket hook
-  const {
-    connected,
-    authenticated,
-    monitoring,
-    connect,
-    disconnect
-  } = useUserMonitorWebSocket(wsCredentials, {
-    autoConnect: true,
-    autoMonitor: true,
-    onData: handleWebSocketData,
-    onError: handleWebSocketError
-  });
-  
-  /**
-   * Handle WebSocket data updates
-   */
-  function handleWebSocketData(data) {
-    if (!mountedRef.current) return;
-    
-    if (data && Array.isArray(data.nodes)) {
-      setNodes(data.nodes);
-      setLastUpdate(new Date());
+    try {
+      console.log('[WebSocketProvider] Initializing for:', wallet.address);
+      
+      // Get service
+      const service = wsManager.getUserMonitorService({
+        walletAddress: wallet.address
+      });
+      
+      serviceRef.current = service;
+      
+      // Setup handlers
+      service.on('connected', () => {
+        console.log('[WebSocketProvider] Connected');
+        setConnectionStatus('connected');
+      });
+      
+      service.on('signature_message', async (data) => {
+        console.log('[WebSocketProvider] Got signature message');
+        
+        try {
+          // Sign message
+          const signature = await wallet.provider.request({
+            method: 'personal_sign',
+            params: [data.message, wallet.address.toLowerCase()]
+          });
+          
+          // Send auth
+          await service.authenticateWithSignature({
+            wallet_address: wallet.address,
+            signature: signature,
+            message: data.message,
+            wallet_type: 'okx'
+          });
+        } catch (error) {
+          console.error('[WebSocketProvider] Auth error:', error);
+          setConnectionStatus('error');
+        }
+      });
+      
+      service.on('auth_success', (data) => {
+        console.log('[WebSocketProvider] Authenticated');
+        setConnectionStatus('authenticated');
+      });
+      
+      service.on('auth_failed', () => {
+        console.error('[WebSocketProvider] Auth failed');
+        setConnectionStatus('error');
+      });
+      
+      service.on('monitoring_started', () => {
+        console.log('[WebSocketProvider] Monitoring active');
+        setConnectionStatus('monitoring');
+      });
+      
+      service.on('nodes_updated', (data) => {
+        console.log('[WebSocketProvider] Nodes updated:', data.nodes?.length || 0);
+        if (mountedRef.current && data.nodes) {
+          setNodes(data.nodes);
+          setLastUpdate(new Date());
+        }
+      });
+      
+      service.on('error', (error) => {
+        console.error('[WebSocketProvider] Error:', error);
+      });
+      
+      service.on('disconnected', () => {
+        console.log('[WebSocketProvider] Disconnected');
+        setConnectionStatus('disconnected');
+      });
+      
+      // Connect
+      await service.connect();
+      
+    } catch (error) {
+      console.error('[WebSocketProvider] Init error:', error);
+      setConnectionStatus('error');
     }
-  }
+  }, [wallet.connected, wallet.address, wallet.provider]);
   
-  /**
-   * Handle WebSocket errors
-   */
-  function handleWebSocketError(error) {
-    console.error('[WebSocketProvider] Error:', error);
-  }
+  const disconnect = useCallback(() => {
+    if (serviceRef.current) {
+      serviceRef.current.disconnect();
+      wsManager.removeService(`userMonitor:${wallet.address}`);
+      serviceRef.current = null;
+    }
+    setNodes([]);
+    setConnectionStatus('disconnected');
+  }, [wallet.address]);
   
-  /**
-   * Manual refresh function
-   */
   const refresh = useCallback(() => {
-    if (connected && !monitoring) {
-      // Restart monitoring if connected but not monitoring
-      connect();
+    disconnect();
+    setTimeout(() => initializeWebSocket(), 100);
+  }, [disconnect, initializeWebSocket]);
+  
+  // Initialize on wallet connect
+  useEffect(() => {
+    if (wallet.connected) {
+      initializeWebSocket();
+    } else {
+      disconnect();
     }
-  }, [connected, monitoring, connect]);
+    
+    return () => {
+      if (serviceRef.current) {
+        disconnect();
+      }
+    };
+  }, [wallet.connected, wallet.address]);
   
-  // Connection status
-  const connectionStatus = React.useMemo(() => {
-    if (monitoring) return 'monitoring';
-    if (authenticated) return 'authenticated';
-    if (connected) return 'connected';
-    if (signatureLoading) return 'connecting';
-    return 'disconnected';
-  }, [connected, authenticated, monitoring, signatureLoading]);
-  
-  // Cleanup on unmount
+  // Cleanup
   useEffect(() => {
     mountedRef.current = true;
-    
     return () => {
       mountedRef.current = false;
     };
   }, []);
   
-  // Context value
-  const contextValue = React.useMemo(() => ({
+  const value = React.useMemo(() => ({
     nodes,
     connectionStatus,
-    isConnected: connected,
-    isAuthenticated: authenticated,
-    isMonitoring: monitoring,
+    isConnected: connectionStatus !== 'disconnected',
+    isAuthenticated: ['authenticated', 'monitoring'].includes(connectionStatus),
+    isMonitoring: connectionStatus === 'monitoring',
     refresh,
     lastUpdate
-  }), [nodes, connectionStatus, connected, authenticated, monitoring, refresh, lastUpdate]);
+  }), [nodes, connectionStatus, refresh, lastUpdate]);
   
   return (
-    <WebSocketContext.Provider value={contextValue}>
+    <WebSocketContext.Provider value={value}>
       {children}
     </WebSocketContext.Provider>
   );
 }
 
-/**
- * Hook to use WebSocket context
- * 
- * @returns {WebSocketContextValue} WebSocket context value
- */
 export function useWebSocketContext() {
   const context = useContext(WebSocketContext);
-  
   if (!context) {
     throw new Error('useWebSocketContext must be used within WebSocketProvider');
   }
-  
   return context;
 }
 
-// Default export
 export default WebSocketProvider;
