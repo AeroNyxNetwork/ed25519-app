@@ -1,11 +1,12 @@
 /**
- * Nodes Content Component - Production Grade
+ * Nodes Content Component - Production Grade Fixed Version
  * 
  * File Path: src/components/nodes/NodesContent.js
  * 
- * Displays all user nodes
+ * Fixed WebSocket authentication and loading issues
  * 
- * @version 3.0.0
+ * @version 4.0.0
+ * @author AeroNyx Development Team
  */
 
 'use client';
@@ -24,12 +25,15 @@ import {
   Cpu,
   HardDrive,
   Activity,
-  DollarSign
+  DollarSign,
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 import clsx from 'clsx';
 
 import { useWallet } from '../wallet/WalletProvider';
 import { signMessage } from '../../lib/utils/walletSignature';
+import nodeRegistrationService from '../../lib/api/nodeRegistration';
 
 // Animation variants
 const containerVariants = {
@@ -54,93 +58,258 @@ const itemVariants = {
   }
 };
 
+// WebSocket status enum
+const WsStatus = {
+  IDLE: 'idle',
+  CONNECTING: 'connecting',
+  AUTHENTICATING: 'authenticating',
+  AUTHENTICATED: 'authenticated',
+  MONITORING: 'monitoring',
+  ERROR: 'error',
+  DISCONNECTED: 'disconnected'
+};
+
 export default function NodesContent() {
   const { wallet } = useWallet();
   const [nodes, setNodes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [wsStatus, setWsStatus] = useState(WsStatus.IDLE);
+  const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  
   const wsRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+  const mountedRef = useRef(true);
 
-  // WebSocket connection logic (similar to DashboardContent)
-  const connectWebSocket = useCallback(async () => {
-    if (!wallet.connected) return;
+  /**
+   * Initialize nodes from REST API first
+   * This ensures we have data even if WebSocket fails
+   */
+  const loadInitialNodes = useCallback(async () => {
+    if (!wallet.connected || !wallet.address) return;
 
     try {
-      const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
-      wsRef.current = ws;
+      // Get signature for API authentication
+      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+      if (!messageResponse.success) {
+        throw new Error(messageResponse.message || 'Failed to generate signature message');
+      }
 
-      ws.onmessage = async (event) => {
-        const data = JSON.parse(event.data);
+      const signature = await signMessage(
+        wallet.provider,
+        messageResponse.data.message,
+        wallet.address
+      );
+
+      // Fetch nodes overview from REST API
+      const nodesResponse = await nodeRegistrationService.getUserNodesOverview(
+        wallet.address,
+        signature,
+        messageResponse.data.message,
+        'okx'
+      );
+
+      if (nodesResponse.success && nodesResponse.data) {
+        // Transform REST API nodes to our format
+        const allNodes = [];
         
-        switch (data.type) {
-          case 'connected':
-            ws.send(JSON.stringify({
-              type: 'get_message',
-              wallet_address: wallet.address.toLowerCase()
-            }));
-            break;
-            
-          case 'signature_message':
-            try {
-              const signature = await signMessage(
-                wallet.provider,
-                data.message,
-                wallet.address
-              );
-              
-              ws.send(JSON.stringify({
-                type: 'auth',
-                wallet_address: wallet.address.toLowerCase(),
-                signature: signature,
-                message: data.message,
-                wallet_type: 'metamask'
-              }));
-            } catch (error) {
-              console.error('Signing error:', error);
+        if (nodesResponse.data.nodes) {
+          ['online', 'active', 'offline'].forEach(status => {
+            if (nodesResponse.data.nodes[status]) {
+              nodesResponse.data.nodes[status].forEach(node => {
+                allNodes.push({
+                  ...node,
+                  code: node.reference_code,
+                  name: node.name,
+                  status: node.status || status,
+                  type: node.node_type?.id || 'general',
+                  performance: {
+                    cpu: node.performance?.cpu_usage || 0,
+                    memory: node.performance?.memory_usage || 0,
+                    disk: node.performance?.storage_usage || 0,
+                    network: node.performance?.bandwidth_usage || 0
+                  },
+                  earnings: node.earnings || '0.00',
+                  uptime: node.uptime || '0h 0m',
+                  last_seen: node.last_seen
+                });
+              });
             }
-            break;
-            
-          case 'auth_success':
-            if (data.nodes) {
-              setNodes(data.nodes);
-            }
-            ws.send(JSON.stringify({ type: 'start_monitor' }));
-            break;
-            
-          case 'status_update':
-            if (data.nodes) {
-              setNodes(data.nodes);
-            }
-            setLoading(false);
-            break;
+          });
         }
-      };
 
-      ws.onerror = () => {
+        setNodes(allNodes);
         setLoading(false);
-      };
-
-      ws.onclose = () => {
-        setLoading(false);
-      };
-    } catch (error) {
-      console.error('WebSocket error:', error);
+      }
+    } catch (err) {
+      console.error('[NodesContent] Error loading initial nodes:', err);
+      setError('Failed to load nodes');
       setLoading(false);
     }
   }, [wallet]);
 
+  /**
+   * Connect to WebSocket for real-time updates
+   * This is secondary - REST API data is primary
+   */
+  const connectWebSocket = useCallback(async () => {
+    if (!wallet.connected || !wallet.address) return;
+    
+    // Clean up existing connection
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    try {
+      setWsStatus(WsStatus.CONNECTING);
+      setError(null);
+      
+      const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log('[NodesContent] WebSocket connected');
+        setWsStatus(WsStatus.AUTHENTICATING);
+        
+        // Request signature message
+        ws.send(JSON.stringify({
+          type: 'get_message',
+          wallet_address: wallet.address.toLowerCase()
+        }));
+      };
+
+      ws.onmessage = async (event) => {
+        if (!mountedRef.current) return;
+        
+        try {
+          const data = JSON.parse(event.data);
+          console.log('[NodesContent] WebSocket message:', data.type);
+          
+          switch (data.type) {
+            case 'signature_message':
+              try {
+                const signature = await signMessage(
+                  wallet.provider,
+                  data.message,
+                  wallet.address
+                );
+                
+                ws.send(JSON.stringify({
+                  type: 'auth',
+                  wallet_address: wallet.address.toLowerCase(),
+                  signature: signature,
+                  message: data.message,
+                  wallet_type: 'okx' // Match wallet type
+                }));
+              } catch (signError) {
+                console.error('[NodesContent] Signing error:', signError);
+                setError('Failed to sign authentication message');
+                setWsStatus(WsStatus.ERROR);
+              }
+              break;
+              
+            case 'auth_success':
+              console.log('[NodesContent] WebSocket authenticated');
+              setWsStatus(WsStatus.AUTHENTICATED);
+              
+              // Start monitoring
+              ws.send(JSON.stringify({ type: 'start_monitor' }));
+              break;
+              
+            case 'monitor_started':
+              console.log('[NodesContent] Monitoring started');
+              setWsStatus(WsStatus.MONITORING);
+              break;
+              
+            case 'status_update':
+              if (data.nodes && Array.isArray(data.nodes)) {
+                const updatedNodes = data.nodes.map(node => ({
+                  ...node,
+                  code: node.code || node.reference_code,
+                  performance: {
+                    cpu: node.performance?.cpu || 0,
+                    memory: node.performance?.memory || 0,
+                    disk: node.performance?.disk || 0,
+                    network: node.performance?.network || 0
+                  }
+                }));
+                setNodes(updatedNodes);
+              }
+              break;
+              
+            case 'error':
+              console.error('[NodesContent] WebSocket error:', data.message);
+              setError(data.message || 'WebSocket error');
+              setWsStatus(WsStatus.ERROR);
+              break;
+          }
+        } catch (parseError) {
+          console.error('[NodesContent] Message parsing error:', parseError);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('[NodesContent] WebSocket error:', error);
+        setWsStatus(WsStatus.ERROR);
+        setError('Connection error');
+      };
+
+      ws.onclose = (event) => {
+        console.log('[NodesContent] WebSocket closed:', event.code, event.reason);
+        setWsStatus(WsStatus.DISCONNECTED);
+        
+        // Don't reconnect if component is unmounting or user disconnected
+        if (mountedRef.current && event.code !== 1000) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (mountedRef.current) {
+              connectWebSocket();
+            }
+          }, 5000);
+        }
+      };
+
+    } catch (error) {
+      console.error('[NodesContent] WebSocket setup error:', error);
+      setWsStatus(WsStatus.ERROR);
+      setError('Failed to establish connection');
+    }
+  }, [wallet]);
+
+  // Initialize data loading
   useEffect(() => {
+    mountedRef.current = true;
+    
     if (wallet.connected) {
-      connectWebSocket();
+      // Load initial data from REST API first
+      loadInitialNodes().then(() => {
+        // Then connect WebSocket for real-time updates
+        connectWebSocket();
+      });
+    } else {
+      setLoading(false);
     }
 
     return () => {
+      mountedRef.current = false;
+      
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      
       if (wsRef.current) {
-        wsRef.current.close();
+        wsRef.current.close(1000, 'Component unmounting');
       }
     };
-  }, [wallet.connected, connectWebSocket]);
+  }, [wallet.connected, loadInitialNodes, connectWebSocket]);
+
+  // Handle refresh
+  const handleRefresh = useCallback(() => {
+    setError(null);
+    loadInitialNodes();
+    connectWebSocket();
+  }, [loadInitialNodes, connectWebSocket]);
 
   // Filter nodes based on search and status
   const filteredNodes = nodes.filter(node => {
@@ -150,12 +319,38 @@ export default function NodesContent() {
     return matchesSearch && matchesFilter;
   });
 
+  // Connection status badge
+  const ConnectionBadge = () => {
+    const statusConfig = {
+      [WsStatus.IDLE]: { color: 'gray', label: 'Idle', Icon: Activity },
+      [WsStatus.CONNECTING]: { color: 'yellow', label: 'Connecting', Icon: Loader2, spin: true },
+      [WsStatus.AUTHENTICATING]: { color: 'yellow', label: 'Authenticating', Icon: Loader2, spin: true },
+      [WsStatus.AUTHENTICATED]: { color: 'blue', label: 'Connected', Icon: CheckCircle },
+      [WsStatus.MONITORING]: { color: 'green', label: 'Live', Icon: Activity, pulse: true },
+      [WsStatus.ERROR]: { color: 'red', label: 'Error', Icon: XCircle },
+      [WsStatus.DISCONNECTED]: { color: 'gray', label: 'Offline', Icon: XCircle }
+    };
+
+    const config = statusConfig[wsStatus] || statusConfig[WsStatus.IDLE];
+    const { Icon } = config;
+
+    return (
+      <div className={clsx(
+        "flex items-center gap-2 px-3 py-1 rounded-full text-xs",
+        `bg-${config.color}-500/10 border border-${config.color}-500/20`
+      )}>
+        <Icon className={clsx(
+          `w-4 h-4 text-${config.color}-400`,
+          config.spin && "animate-spin",
+          config.pulse && "animate-pulse"
+        )} />
+        <span className={`text-${config.color}-400`}>{config.label}</span>
+      </div>
+    );
+  };
+
   if (!wallet.connected) {
     return <WalletConnectionPrompt />;
-  }
-
-  if (loading) {
-    return <LoadingState />;
   }
 
   return (
@@ -173,11 +368,48 @@ export default function NodesContent() {
           animate={{ opacity: 1, y: 0 }}
           className="mb-8"
         >
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent mb-2">
-            Your Nodes
-          </h1>
+          <div className="flex items-center justify-between mb-2">
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
+              Your Nodes
+            </h1>
+            <div className="flex items-center gap-4">
+              <ConnectionBadge />
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={handleRefresh}
+                className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-all"
+                disabled={loading}
+              >
+                <RefreshCw className={clsx("w-5 h-5 text-gray-400", loading && "animate-spin")} />
+              </motion.button>
+            </div>
+          </div>
           <p className="text-gray-400">Manage and monitor all your nodes</p>
         </motion.div>
+
+        {/* Error Alert */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3"
+            >
+              <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm text-red-300">{error}</p>
+                <button
+                  onClick={handleRefresh}
+                  className="text-xs text-red-400 underline hover:no-underline mt-1"
+                >
+                  Try again
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Controls */}
         <motion.div
@@ -229,10 +461,13 @@ export default function NodesContent() {
           </Link>
         </motion.div>
 
-        {/* Nodes Grid */}
+        {/* Content */}
         <AnimatePresence mode="wait">
-          {filteredNodes.length > 0 ? (
+          {loading ? (
+            <LoadingState key="loading" />
+          ) : filteredNodes.length > 0 ? (
             <motion.div
+              key="nodes"
               variants={containerVariants}
               initial="hidden"
               animate="visible"
@@ -243,7 +478,7 @@ export default function NodesContent() {
               ))}
             </motion.div>
           ) : (
-            <EmptyState searchTerm={searchTerm} filterStatus={filterStatus} />
+            <EmptyState key="empty" searchTerm={searchTerm} filterStatus={filterStatus} />
           )}
         </AnimatePresence>
       </div>
@@ -251,13 +486,14 @@ export default function NodesContent() {
   );
 }
 
-// Components
-
+// Sub-components remain the same...
 function NodeCard({ node }) {
   const statusConfig = {
     active: { color: 'green', Icon: CheckCircle, label: 'Active', glow: 'shadow-green-500/20' },
+    online: { color: 'green', Icon: CheckCircle, label: 'Online', glow: 'shadow-green-500/20' },
     offline: { color: 'red', Icon: XCircle, label: 'Offline', glow: 'shadow-red-500/20' },
-    pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending', glow: 'shadow-yellow-500/20' }
+    pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending', glow: 'shadow-yellow-500/20' },
+    registered: { color: 'blue', Icon: AlertCircle, label: 'Registered', glow: 'shadow-blue-500/20' }
   };
   
   const config = statusConfig[node.status] || statusConfig.offline;
@@ -285,7 +521,7 @@ function NodeCard({ node }) {
         <div className="flex items-start justify-between mb-4">
           <div>
             <h3 className="text-lg font-semibold text-white mb-1">{node.name}</h3>
-            <p className="text-sm text-gray-400">{node.code}</p>
+            <p className="text-sm text-gray-400 font-mono">{node.code}</p>
           </div>
           <div className={clsx(
             "flex items-center gap-2 px-3 py-1 rounded-full",
@@ -326,6 +562,12 @@ function NodeCard({ node }) {
               color="orange"
             />
           </div>
+        </div>
+
+        {/* Uptime */}
+        <div className="flex items-center justify-between mb-4 text-sm">
+          <span className="text-gray-400">Uptime</span>
+          <span className="text-white">{node.uptime || '0h 0m'}</span>
         </div>
 
         {/* Earnings */}
@@ -420,7 +662,7 @@ function EmptyState({ searchTerm, filterStatus }) {
 
 function LoadingState() {
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center">
+    <div className="flex items-center justify-center min-h-[400px]">
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
