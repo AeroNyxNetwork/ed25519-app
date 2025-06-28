@@ -1,10 +1,11 @@
 /**
- * Dashboard Content Component for AeroNyx Platform
- * Debug version with enhanced logging
+ * Dashboard Content Component - Fixed WebSocket Connection
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * @version 6.0.2-debug
+ * Fixed WebSocket connection issues
+ * 
+ * @version 10.0.0
  * @author AeroNyx Development Team
  */
 
@@ -12,62 +13,82 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  Server, 
+  Activity, 
+  Zap, 
+  DollarSign,
+  RefreshCw,
+  Plus,
+  ChevronRight,
+  AlertCircle,
+  CheckCircle,
+  XCircle,
+  Loader2
+} from 'lucide-react';
+import clsx from 'clsx';
 
 // Component imports
-import DashboardStatsCard from './DashboardStatsCard';
-import NodeList from './NodeList';
-import QuickActionButton from './QuickActionButton';
-import RealTimeNodeMonitor from './RealTimeDashboard';
-import BlockchainIntegrationModule from './BlockchainIntegrationModule';
-
-// Hook imports
 import { useWallet } from '../wallet/WalletProvider';
 import { signMessage } from '../../lib/utils/walletSignature';
 
+// Animation variants
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.1
+    }
+  }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      type: "spring",
+      stiffness: 100
+    }
+  }
+};
+
 /**
  * Dashboard Content Component
- * 
- * @returns {React.ReactElement} Dashboard content
  */
 export default function DashboardContent() {
-  const [showBlockchainModal, setShowBlockchainModal] = useState(false);
-  const [selectedNodeForBlockchain, setSelectedNodeForBlockchain] = useState(null);
-  
-  // Wallet
   const { wallet } = useWallet();
   
-  // WebSocket state
+  // State
   const [wsState, setWsState] = useState({
     connected: false,
     authenticated: false,
     monitoring: false,
-    authState: 'idle', // idle, connecting, requesting_message, signing, authenticating, authenticated, error
+    authState: 'idle',
     error: null
   });
   
-  // Dashboard data state
   const [dashboardData, setDashboardData] = useState({
     nodes: [],
     stats: {
       totalNodes: 0,
       activeNodes: 0,
       offlineNodes: 0,
-      pendingNodes: 0,
       totalEarnings: 0,
-      networkContribution: '0%',
       resourceUtilization: 0
     },
     lastUpdate: null
   });
   
-  const [performanceAlerts, setPerformanceAlerts] = useState([]);
-  
   // Refs
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
-  const reconnectAttemptsRef = useRef(0);
   const mountedRef = useRef(true);
-  const sessionTokenRef = useRef(null);
+  const isConnectingRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
   
   // Calculate resource utilization
   const calculateResourceUtilization = useCallback((nodes) => {
@@ -87,23 +108,17 @@ export default function DashboardContent() {
   
   // Process nodes data from WebSocket
   const processNodesData = useCallback((data) => {
-    console.log('[DashboardContent] Processing nodes data:', data);
-    
     if (!data || !data.nodes || !Array.isArray(data.nodes)) {
-      console.warn('[DashboardContent] Invalid nodes data');
       return;
     }
     
     const nodes = data.nodes;
     
-    // Calculate statistics
     const stats = {
       totalNodes: nodes.length,
       activeNodes: nodes.filter(n => n.status === 'active').length,
       offlineNodes: nodes.filter(n => n.status === 'offline').length,
-      pendingNodes: nodes.filter(n => n.status === 'pending' || n.status === 'registered').length,
       totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
-      networkContribution: `${(Math.max(0, nodes.filter(n => n.status === 'active').length) * 0.0015).toFixed(4)}%`,
       resourceUtilization: calculateResourceUtilization(nodes)
     };
     
@@ -112,59 +127,12 @@ export default function DashboardContent() {
       stats: stats,
       lastUpdate: new Date()
     });
-    
-    // Check for alerts
-    checkPerformanceAlerts(nodes);
   }, [calculateResourceUtilization]);
-  
-  // Check for performance alerts
-  const checkPerformanceAlerts = useCallback((nodes) => {
-    const alerts = [];
-    
-    nodes.forEach(node => {
-      if (node.status === 'active') {
-        const cpu = node.performance?.cpu || 0;
-        const memory = node.performance?.memory || 0;
-        
-        if (cpu > 90) {
-          alerts.push({
-            nodeId: node.code,
-            message: `Node ${node.name}: CPU usage critical (${cpu}%)`,
-            severity: 'critical',
-            timestamp: new Date()
-          });
-        } else if (cpu > 80) {
-          alerts.push({
-            nodeId: node.code,
-            message: `Node ${node.name}: High CPU usage (${cpu}%)`,
-            severity: 'warning',
-            timestamp: new Date()
-          });
-        }
-        
-        if (memory > 90) {
-          alerts.push({
-            nodeId: node.code,
-            message: `Node ${node.name}: Memory usage critical (${memory}%)`,
-            severity: 'critical',
-            timestamp: new Date()
-          });
-        }
-      }
-    });
-    
-    setPerformanceAlerts(alerts.slice(0, 10));
-  }, []);
   
   // Send WebSocket message
   const sendMessage = useCallback((data) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const message = JSON.stringify(data);
-      console.log('[DashboardContent] Sending:', data.type, data);
-      console.log('[DashboardContent] Full message:', message);
-      wsRef.current.send(message);
-    } else {
-      console.warn('[DashboardContent] WebSocket not ready, state:', wsRef.current?.readyState);
+      wsRef.current.send(JSON.stringify(data));
     }
   }, []);
   
@@ -172,87 +140,39 @@ export default function DashboardContent() {
   const handleMessage = useCallback(async (event) => {
     try {
       const data = JSON.parse(event.data);
-      console.log('[DashboardContent] Received:', data.type, data);
+      console.log('[Dashboard] Received message:', data.type);
       
       switch (data.type) {
         case 'connected':
-          // Step 1: Connection established, request signature message
-          console.log('[DashboardContent] Connected, requesting signature message...');
-          setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message' }));
-          
-          // Debug wallet info
-          console.log('[DashboardContent] Wallet info:', {
-            address: wallet.address,
-            addressLowercase: wallet.address.toLowerCase(),
-            provider: wallet.provider ? 'Available' : 'Not available'
-          });
-          
-          // IMPORTANT: Must request signature message with lowercase address
+          setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message', error: null }));
           sendMessage({
             type: 'get_message',
-            wallet_address: wallet.address.toLowerCase()  // FIX: Ensure lowercase
+            wallet_address: wallet.address.toLowerCase()
           });
           break;
           
         case 'signature_message':
-          // Step 2: Received signature message, now sign it
-          console.log('=== [DashboardContent] SIGNATURE MESSAGE DEBUG ===');
-          console.log('[DashboardContent] Full response:', JSON.stringify(data, null, 2));
-          console.log('[DashboardContent] Message:', data.message);
-          console.log('[DashboardContent] Nonce:', data.nonce);
-          console.log('[DashboardContent] Expires in:', data.expires_in);
-          
-          // Parse message details
-          const messageLines = data.message.split('\n');
-          console.log('[DashboardContent] Message lines:', messageLines);
-          
-          // Extract wallet and nonce from message
-          const walletLine = messageLines.find(line => line.startsWith('Wallet:'));
-          const nonceLine = messageLines.find(line => line.startsWith('Nonce:'));
-          const timestampLine = messageLines.find(line => line.startsWith('Timestamp:'));
-          
-          console.log('[DashboardContent] Parsed from message:');
-          console.log('- Wallet line:', walletLine);
-          console.log('- Nonce line:', nonceLine);
-          console.log('- Timestamp line:', timestampLine);
-          
           setWsState(prev => ({ ...prev, authState: 'signing' }));
           
           try {
-            // Sign the message with wallet
             const signature = await signMessage(
               wallet.provider,
               data.message,
               wallet.address
             );
             
-            console.log('=== [DashboardContent] SENDING AUTH DEBUG ===');
-            console.log('[DashboardContent] Message signed, preparing auth...');
-            
-            const authData = {
-              type: 'auth',
-              wallet_address: wallet.address.toLowerCase(),  // FIX: Ensure lowercase
-              signature: signature,
-              message: data.message, // Must be exact same message
-              wallet_type: 'okx'
-            };
-            
-            console.log('[DashboardContent] Auth data to send:', JSON.stringify(authData, null, 2));
-            console.log('[DashboardContent] Wallet address matches:', 
-              wallet.address.toLowerCase() === walletLine?.split(' ')[1]?.toLowerCase()
-            );
-            
             setWsState(prev => ({ ...prev, authState: 'authenticating' }));
             
-            // Send authentication
-            sendMessage(authData);
+            sendMessage({
+              type: 'auth',
+              wallet_address: wallet.address.toLowerCase(),
+              signature: signature,
+              message: data.message,
+              wallet_type: 'okx' // Using okx to match the rest of the app
+            });
             
           } catch (error) {
-            console.error('[DashboardContent] Signing error:', error);
-            console.error('[DashboardContent] Error details:', {
-              message: error.message,
-              stack: error.stack
-            });
+            console.error('[Dashboard] Signing error:', error);
             setWsState(prev => ({ 
               ...prev, 
               authState: 'error', 
@@ -262,10 +182,7 @@ export default function DashboardContent() {
           break;
           
         case 'auth_success':
-          // Step 3: Authentication successful
-          console.log('[DashboardContent] Authentication successful:', data);
-          sessionTokenRef.current = data.session_token;
-          
+          console.log('[Dashboard] Authentication successful');
           setWsState(prev => ({ 
             ...prev, 
             authenticated: true, 
@@ -273,7 +190,8 @@ export default function DashboardContent() {
             error: null
           }));
           
-          // Initialize nodes from auth response
+          reconnectAttemptsRef.current = 0; // Reset reconnect attempts
+          
           if (data.nodes) {
             const initialNodes = data.nodes.map(node => ({
               code: node.code,
@@ -296,88 +214,86 @@ export default function DashboardContent() {
             }));
           }
           
-          // Step 4: Start monitoring
-          console.log('[DashboardContent] Starting monitoring...');
           sendMessage({ type: 'start_monitor' });
           break;
           
         case 'monitor_started':
-          console.log('[DashboardContent] Monitoring started, interval:', data.interval);
+          console.log('[Dashboard] Monitoring started');
           setWsState(prev => ({ ...prev, monitoring: true }));
           break;
           
         case 'status_update':
-          // Regular status updates
-          console.log('[DashboardContent] Status update received');
           setWsState(prev => ({ ...prev, monitoring: true }));
           processNodesData(data);
           break;
           
         case 'error':
-          console.error('[DashboardContent] Server error:', data);
-          console.error('[DashboardContent] Error details:', {
-            message: data.message,
-            error_code: data.error_code,
-            full_data: data
-          });
-          
+          console.error('[Dashboard] Server error:', data);
           setWsState(prev => ({ 
             ...prev, 
-            error: data.message || 'Server error',
-            authState: data.error_code === 'authentication_required' ? 'requesting_message' : prev.authState
+            error: data.message || 'Server error'
           }));
           
-          // Handle specific errors
           if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
-            // Re-authenticate with lowercase address
+            // Need to re-authenticate
+            setWsState(prev => ({ ...prev, authenticated: false, authState: 'requesting_message' }));
             sendMessage({
               type: 'get_message',
-              wallet_address: wallet.address.toLowerCase()  // FIX: Ensure lowercase
+              wallet_address: wallet.address.toLowerCase()
             });
           }
           break;
-          
-        case 'pong':
-          console.log('[DashboardContent] Pong received');
-          break;
-          
-        default:
-          console.log('[DashboardContent] Unknown message type:', data.type);
       }
     } catch (error) {
-      console.error('[DashboardContent] Message handling error:', error);
+      console.error('[Dashboard] Message handling error:', error);
     }
   }, [wallet.address, wallet.provider, sendMessage, processNodesData]);
   
   // Setup WebSocket connection
   const connectWebSocket = useCallback(() => {
-    if (!wallet.connected) {
-      console.log('[DashboardContent] Wallet not connected, skipping WebSocket');
+    // Prevent multiple simultaneous connections
+    if (!wallet.connected || isConnectingRef.current || wsRef.current) {
+      console.log('[Dashboard] Skipping connection:', {
+        walletConnected: wallet.connected,
+        isConnecting: isConnectingRef.current,
+        hasWebSocket: !!wsRef.current
+      });
       return;
     }
     
-    // Clean up existing connection
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
-    
-    console.log('[DashboardContent] Connecting to WebSocket...');
+    isConnectingRef.current = true;
     setWsState(prev => ({ ...prev, authState: 'connecting', error: null }));
     
     try {
+      console.log('[Dashboard] Connecting to WebSocket');
       const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
       wsRef.current = ws;
       
+      // Connection timeout
+      const timeoutId = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          console.error('[Dashboard] Connection timeout');
+          ws.close();
+          setWsState(prev => ({ 
+            ...prev, 
+            authState: 'error',
+            error: 'Connection timeout' 
+          }));
+          isConnectingRef.current = false;
+        }
+      }, 10000);
+      
       ws.onopen = () => {
-        console.log('[DashboardContent] WebSocket opened');
-        reconnectAttemptsRef.current = 0;
+        console.log('[Dashboard] WebSocket connected');
+        clearTimeout(timeoutId);
         // Wait for 'connected' message from server
       };
       
       ws.onmessage = handleMessage;
       
       ws.onerror = (error) => {
-        console.error('[DashboardContent] WebSocket error:', error);
+        console.error('[Dashboard] WebSocket error:', error);
+        clearTimeout(timeoutId);
         setWsState(prev => ({ 
           ...prev, 
           error: 'Connection error' 
@@ -385,7 +301,10 @@ export default function DashboardContent() {
       };
       
       ws.onclose = (event) => {
-        console.log('[DashboardContent] WebSocket closed:', event.code, event.reason);
+        console.log('[Dashboard] WebSocket closed:', event.code, event.reason);
+        clearTimeout(timeoutId);
+        wsRef.current = null;
+        isConnectingRef.current = false;
         
         setWsState(prev => ({ 
           ...prev, 
@@ -395,22 +314,30 @@ export default function DashboardContent() {
           authState: 'idle'
         }));
         
-        // Handle reconnection
-        if (event.code !== 1000 && reconnectAttemptsRef.current < 5 && mountedRef.current) {
+        // Handle reconnection for abnormal closures
+        if (event.code !== 1000 && mountedRef.current && reconnectAttemptsRef.current < 5) {
           reconnectAttemptsRef.current++;
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-          console.log(`[DashboardContent] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
+          const delay = Math.min(3000 * reconnectAttemptsRef.current, 15000);
+          
+          console.log(`[Dashboard] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
           
           reconnectTimeoutRef.current = setTimeout(() => {
-            if (mountedRef.current) {
+            if (mountedRef.current && wallet.connected) {
               connectWebSocket();
             }
           }, delay);
+        } else if (reconnectAttemptsRef.current >= 5) {
+          setWsState(prev => ({ 
+            ...prev, 
+            error: 'Unable to establish connection. Please refresh the page.' 
+          }));
         }
       };
       
     } catch (error) {
-      console.error('[DashboardContent] Connection error:', error);
+      console.error('[Dashboard] WebSocket setup error:', error);
+      wsRef.current = null;
+      isConnectingRef.current = false;
       setWsState(prev => ({ 
         ...prev, 
         authState: 'error', 
@@ -422,13 +349,24 @@ export default function DashboardContent() {
   // Initialize WebSocket when wallet is connected
   useEffect(() => {
     mountedRef.current = true;
+    reconnectAttemptsRef.current = 0;
     
-    if (wallet.connected) {
-      connectWebSocket();
+    if (wallet.connected && wallet.address) {
+      // Add a small delay to ensure wallet is fully ready
+      const initTimeout = setTimeout(() => {
+        if (mountedRef.current && !wsRef.current && !isConnectingRef.current) {
+          connectWebSocket();
+        }
+      }, 500);
+      
+      return () => {
+        clearTimeout(initTimeout);
+      };
     }
     
     return () => {
       mountedRef.current = false;
+      isConnectingRef.current = false;
       
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -436,372 +374,520 @@ export default function DashboardContent() {
       
       if (wsRef.current) {
         wsRef.current.close(1000, 'Component unmounting');
+        wsRef.current = null;
       }
     };
-  }, [wallet.connected, connectWebSocket]);
+  }, [wallet.connected, wallet.address]); // Remove connectWebSocket from dependencies
   
   // Event handlers
-  const handleBlockchainIntegration = useCallback((node) => {
-    setSelectedNodeForBlockchain(node);
-    setShowBlockchainModal(true);
-  }, []);
-  
-  const handleNodeDetails = useCallback(async (referenceCode) => {
-    console.log('Fetching details for node:', referenceCode);
-  }, []);
-  
-  const handleClearAlerts = useCallback(() => {
-    setPerformanceAlerts([]);
-  }, []);
-  
   const handleRefresh = useCallback(() => {
+    console.log('[Dashboard] Refreshing connection');
     reconnectAttemptsRef.current = 0;
-    connectWebSocket();
-  }, [connectWebSocket]);
-  
-  // Connection health
-  const connectionHealth = {
-    excellent: { status: 'excellent', label: 'Live Monitoring', color: 'green' },
-    authenticated: { status: 'good', label: 'Authenticated', color: 'blue' },
-    connected: { status: 'fair', label: 'Connected', color: 'yellow' },
-    connecting: { status: 'connecting', label: 'Connecting...', color: 'yellow' },
-    error: { status: 'error', label: 'Error', color: 'red' },
-    disconnected: { status: 'disconnected', label: 'Disconnected', color: 'gray' }
-  };
-  
-  const currentHealth = wsState.monitoring ? connectionHealth.excellent :
-                       wsState.authenticated ? connectionHealth.authenticated :
-                       wsState.connected ? connectionHealth.connected :
-                       wsState.authState === 'connecting' ? connectionHealth.connecting :
-                       wsState.error ? connectionHealth.error :
-                       connectionHealth.disconnected;
-  
-  // Extract data
-  const { nodes, stats, lastUpdate } = dashboardData;
-  
-  // Determine loading state
-  const isLoading = wallet.connected && wsState.authState === 'connecting';
-  
-  // Determine error state
-  const hasError = wsState.authState === 'error' && nodes.length === 0;
-  
-  if (isLoading) {
-    return (
-      <div className="py-8">
-        <div className="flex flex-col items-center justify-center min-h-[60vh]">
-          <div className="mb-8">
-            <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary"></div>
-          </div>
-          <h2 className="text-xl font-bold mb-2">Connecting to Dashboard</h2>
-          <p className="text-gray-400">Establishing secure connection...</p>
-        </div>
-      </div>
-    );
+    isConnectingRef.current = false;
+    
+    // Close existing connection
+    if (wsRef.current) {
+      wsRef.current.close(1000, 'User refresh');
+      wsRef.current = null;
+    }
+    
+    // Clear any pending reconnect
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    
+    // Reset state
+    setWsState({
+      connected: false,
+      authenticated: false,
+      monitoring: false,
+      authState: 'idle',
+      error: null
+    });
+    
+    // Reconnect after a short delay
+    setTimeout(() => {
+      if (mountedRef.current && wallet.connected) {
+        connectWebSocket();
+      }
+    }, 500);
+  }, [wallet.connected, connectWebSocket]);
+
+  // Loading state
+  if (!wallet.connected) {
+    return <WalletConnectionPrompt />;
   }
-  
-  if (hasError) {
-    return (
-      <div className="py-8">
-        <div className="card glass-effect p-8 text-center">
-          <h2 className="text-2xl font-bold mb-4">Connection Error</h2>
-          <p className="text-gray-400 mb-6">
-            {wsState.error || 'Failed to establish connection'}
-          </p>
-          <button
-            onClick={handleRefresh}
-            className="button-primary"
-          >
-            Retry Connection
-          </button>
-        </div>
-      </div>
-    );
-  }
-  
+
+  const isLoading = wsState.authState === 'connecting' || wsState.authState === 'signing' || wsState.authState === 'authenticating';
+
   return (
-    <div className="py-8">
-      {/* Page Header */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold">Node Dashboard</h1>
-            <p className="text-gray-400 mt-1">
-              {wsState.monitoring ? 'Real-time monitoring active' : 
-               wsState.authenticated ? 'Authenticated, starting monitor...' :
-               wsState.authState === 'requesting_message' ? 'Requesting authentication...' :
-               wsState.authState === 'signing' ? 'Signing message...' :
-               wsState.authState === 'authenticating' ? 'Authenticating...' :
-               wsState.connected ? 'Connected, authenticating...' :
-               'Connect your wallet to view nodes'}
-            </p>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            {/* Connection Status */}
-            <div className={`flex items-center gap-2 px-3 py-1 rounded-md bg-${currentHealth.color}-900/30 border border-${currentHealth.color}-800`}>
-              <div className={`w-2 h-2 rounded-full bg-${currentHealth.color}-500 ${
-                currentHealth.status === 'excellent' ? 'animate-pulse' : ''
-              }`}></div>
-              <span className={`text-xs text-${currentHealth.color}-400`}>
-                {currentHealth.label}
-              </span>
+    <div className="min-h-screen bg-black">
+      {/* Background effects */}
+      <div className="fixed inset-0">
+        <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-black to-blue-900/20" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-900/10 via-transparent to-transparent" />
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f2e_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f2e_1px,transparent_1px)] bg-[size:64px_64px]" />
+      </div>
+      
+      <div className="relative z-10 px-6 py-8 max-w-7xl mx-auto">
+        {/* Header */}
+        <motion.div 
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
+                Node Dashboard
+              </h1>
+              <p className="text-gray-400 mt-1">
+                {getStatusMessage(wsState)}
+              </p>
             </div>
             
-            {/* Refresh Button */}
-            <button
-              onClick={handleRefresh}
-              className="p-2 rounded-md bg-background-100 hover:bg-background-200 transition-colors"
-              title="Reconnect"
-            >
-              <svg 
-                xmlns="http://www.w3.org/2000/svg" 
-                className="h-5 w-5" 
-                viewBox="0 0 20 20" 
-                fill="currentColor"
-              >
-                <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-      
-      {/* Real-time Monitor */}
-      {wsState.monitoring && (
-        <RealTimeNodeMonitor
-          nodes={nodes}
-          performanceAlerts={performanceAlerts}
-          lastUpdate={lastUpdate}
-          updateSource="websocket"
-          connectionStatus={currentHealth}
-          onClearAlerts={handleClearAlerts}
-        />
-      )}
-      
-      {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <DashboardStatsCard
-          title="Total Nodes"
-          value={stats.totalNodes}
-          subtitle={`${stats.activeNodes} active`}
-          icon="servers"
-          color="primary"
-          trend={stats.totalNodes > 0 ? "stable" : undefined}
-        />
-        
-        <DashboardStatsCard
-          title="Network Status"
-          value={stats.activeNodes > 0 ? 'Operational' : 'Offline'}
-          subtitle={`${stats.totalNodes > 0 ? ((stats.activeNodes / stats.totalNodes) * 100).toFixed(0) : 0}% uptime`}
-          icon="status"
-          color={stats.activeNodes > 0 ? 'success' : 'error'}
-        />
-        
-        <DashboardStatsCard
-          title="Resource Usage"
-          value={`${stats.resourceUtilization}%`}
-          subtitle="Average utilization"
-          icon="performance"
-          color="accent"
-        />
-        
-        <DashboardStatsCard
-          title="Network Share"
-          value={stats.networkContribution}
-          subtitle="Your contribution"
-          icon="network"
-          color="secondary"
-        />
-      </div>
-      
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - Node List */}
-        <div className="lg:col-span-2 space-y-6">
-          <div className="card glass-effect">
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-bold">Your Nodes</h2>
-                {nodes.length > 4 && (
-                  <Link 
-                    href="/dashboard/nodes"
-                    className="text-sm text-primary hover:text-primary-600 transition-colors"
-                  >
-                    View All →
-                  </Link>
+            <div className="flex items-center gap-4">
+              <ConnectionBadge status={wsState} />
+              
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={handleRefresh}
+                disabled={isLoading}
+                className={clsx(
+                  "p-3 rounded-xl border transition-all",
+                  "bg-white/5 border-white/10",
+                  "hover:bg-white/10 hover:border-white/20",
+                  "disabled:opacity-50 disabled:cursor-not-allowed"
                 )}
-              </div>
-              
-              {/* Debug info - remove in production */}
-              {process.env.NODE_ENV === 'development' && (
-                <div className="mb-4 p-2 bg-gray-800 rounded text-xs font-mono">
-                  <div>State: {wsState.authState}</div>
-                  <div>Connected: {wsState.connected ? '✓' : '✗'}</div>
-                  <div>Authenticated: {wsState.authenticated ? '✓' : '✗'}</div>
-                  <div>Monitoring: {wsState.monitoring ? '✓' : '✗'}</div>
-                  <div>Nodes: {nodes.length}</div>
-                  {wsState.error && <div className="text-red-400">Error: {wsState.error}</div>}
-                </div>
-              )}
-              
-              {nodes.length > 0 ? (
-                <NodeList
-                  nodes={nodes.slice(0, 4)}
-                  onBlockchainIntegrate={handleBlockchainIntegration}
-                  onNodeDetails={handleNodeDetails}
-                />
-              ) : (
-                <div className="text-center py-12">
-                  <p className="text-gray-400 mb-4">
-                    {wsState.monitoring ? 'No nodes found in your account' : 
-                     wsState.authenticated ? 'Loading nodes...' :
-                     wsState.connected ? 'Authenticating...' :
-                     'Connecting to node network...'}
-                  </p>
-                  {wsState.monitoring && (
-                    <Link href="/dashboard/register">
-                      <button className="button-primary">
-                        Register Your First Node
-                      </button>
-                    </Link>
-                  )}
-                  {!wsState.connected && wallet.connected && (
-                    <button 
-                      onClick={handleRefresh}
-                      className="button-primary"
-                    >
-                      Connect to Nodes
-                    </button>
-                  )}
-                </div>
-              )}
+              >
+                <RefreshCw className={clsx("w-5 h-5 text-gray-400", isLoading && "animate-spin")} />
+              </motion.button>
             </div>
           </div>
-        </div>
+        </motion.div>
         
-        {/* Right Column - Quick Actions & Info */}
-        <div className="space-y-6">
-          {/* Quick Actions */}
-          <div className="card glass-effect p-6">
-            <h3 className="font-bold mb-4">Quick Actions</h3>
-            <div className="space-y-3">
-              <QuickActionButton
-                href="/dashboard/register"
-                icon="plus"
-                title="Register New Node"
-                description="Add a new node to your network"
-                color="primary"
-              />
-              
-              <QuickActionButton
-                href="/dashboard/nodes"
-                icon="servers"
-                title="Manage Nodes"
-                description="View and control all your nodes"
-                color="secondary"
-              />
-              
-              <QuickActionButton
-                href="/dashboard/network"
-                icon="analytics"
-                title="Network Stats"
-                description="View global network statistics"
-                color="accent"
-              />
-            </div>
-          </div>
-          
-          {/* Network Health */}
-          <div className="card glass-effect p-6">
-            <h3 className="font-bold mb-4">Network Health</h3>
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-400">Resource Utilization</span>
-                  <span>{stats.resourceUtilization}%</span>
-                </div>
-                <div className="w-full bg-background-200 rounded-full h-2">
-                  <div 
-                    className="bg-primary rounded-full h-2 transition-all duration-300" 
-                    style={{ width: `${stats.resourceUtilization}%` }}
-                  ></div>
-                </div>
+        {/* Loading State */}
+        <AnimatePresence mode="wait">
+          {isLoading ? (
+            <LoadingState key="loading" />
+          ) : wsState.error && dashboardData.nodes.length === 0 ? (
+            <ErrorState key="error" error={wsState.error} onRetry={handleRefresh} />
+          ) : (
+            <motion.div
+              key="content"
+              variants={containerVariants}
+              initial="hidden"
+              animate="visible"
+            >
+              {/* Stats Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <StatsCard
+                  icon={Server}
+                  title="Total Nodes"
+                  value={dashboardData.stats.totalNodes}
+                  subtitle={`${dashboardData.stats.activeNodes} active`}
+                  trend="neutral"
+                />
+                
+                <StatsCard
+                  icon={Activity}
+                  title="Network Status"
+                  value={dashboardData.stats.activeNodes > 0 ? 'Online' : 'Offline'}
+                  subtitle={`${calculateUptime(dashboardData.stats)}% uptime`}
+                  trend={dashboardData.stats.activeNodes > 0 ? 'up' : 'down'}
+                />
+                
+                <StatsCard
+                  icon={Zap}
+                  title="Resource Usage"
+                  value={`${dashboardData.stats.resourceUtilization}%`}
+                  subtitle="Average utilization"
+                  trend="neutral"
+                />
+                
+                <StatsCard
+                  icon={DollarSign}
+                  title="Total Earnings"
+                  value={`$${dashboardData.stats.totalEarnings.toFixed(2)}`}
+                  subtitle="Lifetime earnings"
+                  trend="up"
+                />
               </div>
               
-              <div>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-gray-400">Active Nodes</span>
-                  <span>{stats.activeNodes} / {stats.totalNodes}</span>
-                </div>
-                <div className="w-full bg-background-200 rounded-full h-2">
-                  <div 
-                    className="bg-green-500 rounded-full h-2 transition-all duration-300" 
-                    style={{ width: `${stats.totalNodes > 0 ? (stats.activeNodes / stats.totalNodes) * 100 : 0}%` }}
-                  ></div>
+              {/* Main Content */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Nodes Section */}
+                <motion.div variants={itemVariants} className="lg:col-span-2">
+                  <GlassCard>
+                    <div className="flex items-center justify-between mb-6">
+                      <h2 className="text-xl font-semibold text-white">Active Nodes</h2>
+                      {dashboardData.nodes.length > 4 && (
+                        <Link 
+                          href="/dashboard/nodes"
+                          className="text-sm text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-all hover:translate-x-1"
+                        >
+                          View all
+                          <ChevronRight className="w-4 h-4" />
+                        </Link>
+                      )}
+                    </div>
+                    
+                    {dashboardData.nodes.length > 0 ? (
+                      <div className="space-y-4">
+                        <AnimatePresence>
+                          {dashboardData.nodes.slice(0, 4).map((node) => (
+                            <NodeCard key={node.code} node={node} />
+                          ))}
+                        </AnimatePresence>
+                      </div>
+                    ) : (
+                      <EmptyNodes isMonitoring={wsState.monitoring} />
+                    )}
+                  </GlassCard>
+                </motion.div>
+                
+                {/* Sidebar */}
+                <div className="space-y-6">
+                  {/* Quick Actions */}
+                  <motion.div variants={itemVariants}>
+                    <GlassCard>
+                      <h3 className="text-lg font-semibold text-white mb-4">Quick Actions</h3>
+                      <div className="space-y-3">
+                        <QuickAction
+                          icon={Plus}
+                          title="Register Node"
+                          href="/dashboard/register"
+                          primary
+                        />
+                        <QuickAction
+                          icon={Server}
+                          title="Manage Nodes"
+                          href="/dashboard/nodes"
+                        />
+                        <QuickAction
+                          icon={Activity}
+                          title="Network Stats"
+                          href="/dashboard/network"
+                        />
+                      </div>
+                    </GlassCard>
+                  </motion.div>
+                  
+                  {/* Network Health */}
+                  <motion.div variants={itemVariants}>
+                    <GlassCard>
+                      <h3 className="text-lg font-semibold text-white mb-4">Network Health</h3>
+                      <div className="space-y-4">
+                        <HealthMetric
+                          label="Active Nodes"
+                          value={dashboardData.stats.activeNodes}
+                          max={dashboardData.stats.totalNodes || 1}
+                          color="green"
+                        />
+                        <HealthMetric
+                          label="Resource Usage"
+                          value={dashboardData.stats.resourceUtilization}
+                          max={100}
+                          color="purple"
+                        />
+                      </div>
+                    </GlassCard>
+                  </motion.div>
                 </div>
               </div>
-            </div>
-          </div>
-          
-          {/* Recent Activity */}
-          <div className="card glass-effect p-6">
-            <h3 className="font-bold mb-4">Recent Activity</h3>
-            <div className="space-y-3 text-sm">
-              {lastUpdate && (
-                <div className="flex items-start gap-2">
-                  <div className="w-2 h-2 rounded-full bg-blue-500 mt-1.5"></div>
-                  <div>
-                    <p className="text-gray-300">Data updated</p>
-                    <p className="text-xs text-gray-500">
-                      {new Date(lastUpdate).toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-              )}
-              
-              {stats.activeNodes > 0 && (
-                <div className="flex items-start gap-2">
-                  <div className="w-2 h-2 rounded-full bg-green-500 mt-1.5"></div>
-                  <div>
-                    <p className="text-gray-300">{stats.activeNodes} nodes online</p>
-                    <p className="text-xs text-gray-500">Network operational</p>
-                  </div>
-                </div>
-              )}
-              
-              {wsState.monitoring && (
-                <div className="flex items-start gap-2">
-                  <div className="w-2 h-2 rounded-full bg-purple-500 mt-1.5 animate-pulse"></div>
-                  <div>
-                    <p className="text-gray-300">Live monitoring active</p>
-                    <p className="text-xs text-gray-500">Real-time updates enabled</p>
-                  </div>
-                </div>
-              )}
-              
-              {performanceAlerts.length > 0 && (
-                <div className="flex items-start gap-2">
-                  <div className="w-2 h-2 rounded-full bg-yellow-500 mt-1.5"></div>
-                  <div>
-                    <p className="text-gray-300">{performanceAlerts.length} performance alerts</p>
-                    <p className="text-xs text-gray-500">Check node status</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
-      
-      {/* Blockchain Integration Modal */}
-      <BlockchainIntegrationModule
-        isOpen={showBlockchainModal}
-        onClose={() => {
-          setShowBlockchainModal(false);
-          setSelectedNodeForBlockchain(null);
-        }}
-        selectedNode={selectedNodeForBlockchain}
-      />
     </div>
   );
+}
+
+// Sub Components remain the same...
+
+function GlassCard({ children, className }) {
+  return (
+    <div className={clsx(
+      "bg-white/5 backdrop-blur-md rounded-2xl border border-white/10",
+      "shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]",
+      "hover:bg-white/[0.07] hover:border-white/20",
+      "transition-all duration-300",
+      className
+    )}>
+      <div className="p-6">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ConnectionBadge({ status }) {
+  const config = {
+    monitoring: { color: 'green', label: 'Live', Icon: Activity, pulse: true },
+    authenticated: { color: 'blue', label: 'Connected', Icon: CheckCircle },
+    connected: { color: 'yellow', label: 'Connecting', Icon: Loader2, spin: true },
+    idle: { color: 'gray', label: 'Offline', Icon: XCircle }
+  };
+  
+  const state = status.monitoring ? 'monitoring' : 
+                status.authenticated ? 'authenticated' :
+                status.connected ? 'connected' : 'idle';
+  
+  const { color, label, Icon, pulse, spin } = config[state];
+  
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className={clsx(
+        "flex items-center gap-2 px-4 py-2 rounded-full",
+        `bg-${color}-500/10 border border-${color}-500/20`
+      )}
+    >
+      <Icon className={clsx(
+        `w-4 h-4 text-${color}-400`,
+        pulse && "animate-pulse",
+        spin && "animate-spin"
+      )} />
+      <span className={`text-xs font-medium text-${color}-400`}>{label}</span>
+    </motion.div>
+  );
+}
+
+function StatsCard({ icon: Icon, title, value, subtitle, trend }) {
+  const trendConfig = {
+    up: { color: 'green', gradient: 'from-green-500/20 to-green-600/20' },
+    down: { color: 'red', gradient: 'from-red-500/20 to-red-600/20' },
+    neutral: { color: 'purple', gradient: 'from-purple-500/20 to-blue-600/20' }
+  };
+  
+  const { gradient } = trendConfig[trend];
+  
+  return (
+    <motion.div
+      variants={itemVariants}
+      whileHover={{ y: -5, transition: { type: "spring", stiffness: 300 } }}
+      className="relative group"
+    >
+      <div className="absolute inset-0 bg-gradient-to-r from-purple-600/20 to-blue-600/20 rounded-2xl blur-xl group-hover:blur-2xl transition-all opacity-0 group-hover:opacity-100" />
+      <GlassCard className="relative">
+        <div className="flex items-start justify-between mb-4">
+          <div className={clsx(
+            "p-3 rounded-xl bg-gradient-to-br",
+            gradient
+          )}>
+            <Icon className="w-6 h-6 text-white" />
+          </div>
+        </div>
+        <h3 className="text-sm font-medium text-gray-400 mb-1">{title}</h3>
+        <p className="text-2xl font-bold text-white mb-1">{value}</p>
+        <p className="text-xs text-gray-500">{subtitle}</p>
+      </GlassCard>
+    </motion.div>
+  );
+}
+
+function NodeCard({ node }) {
+  const statusConfig = {
+    active: { color: 'green', Icon: CheckCircle, label: 'Active' },
+    offline: { color: 'red', Icon: XCircle, label: 'Offline' },
+    pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending' }
+  };
+  
+  const config = statusConfig[node.status] || statusConfig.offline;
+  const { Icon } = config;
+  
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: -20 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 20 }}
+      whileHover={{ x: 5 }}
+      className={clsx(
+        "flex items-center justify-between p-4 rounded-xl",
+        "bg-white/5 hover:bg-white/10",
+        "border border-transparent hover:border-white/10",
+        "transition-all cursor-pointer"
+      )}
+    >
+      <div className="flex items-center gap-4">
+        <div className={clsx(
+          "p-2 rounded-lg",
+          `bg-${config.color}-500/10`
+        )}>
+          <Server className={`w-5 h-5 text-${config.color}-400`} />
+        </div>
+        <div>
+          <h4 className="font-medium text-white">{node.name}</h4>
+          <p className="text-sm text-gray-400">{node.code}</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <div className="text-right">
+          <p className="text-sm font-medium text-white">${node.earnings || '0.00'}</p>
+          <p className="text-xs text-gray-500">Earned</p>
+        </div>
+        <Icon className={`w-5 h-5 text-${config.color}-400`} />
+      </div>
+    </motion.div>
+  );
+}
+
+function QuickAction({ icon: Icon, title, href, primary }) {
+  return (
+    <Link href={href}>
+      <motion.a
+        whileHover={{ scale: 1.02 }}
+        whileTap={{ scale: 0.98 }}
+        className={clsx(
+          "flex items-center gap-3 p-3 rounded-xl transition-all",
+          primary 
+            ? "bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white" 
+            : "bg-white/5 hover:bg-white/10 text-gray-300"
+        )}
+      >
+        <Icon className="w-5 h-5" />
+        <span className="font-medium">{title}</span>
+        <ChevronRight className="w-4 h-4 ml-auto opacity-50" />
+      </motion.a>
+    </Link>
+  );
+}
+
+function HealthMetric({ label, value, max, color }) {
+  const percentage = (value / max) * 100;
+  
+  return (
+    <div>
+      <div className="flex justify-between text-sm mb-2">
+        <span className="text-gray-400">{label}</span>
+        <span className="text-white font-medium">{value}/{max}</span>
+      </div>
+      <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+        <motion.div
+          initial={{ width: 0 }}
+          animate={{ width: `${percentage}%` }}
+          transition={{ duration: 1, ease: "easeOut" }}
+          className={clsx(
+            "h-full bg-gradient-to-r",
+            color === 'green' && "from-green-500 to-green-400",
+            color === 'purple' && "from-purple-500 to-purple-400"
+          )}
+        />
+      </div>
+    </div>
+  );
+}
+
+function EmptyNodes({ isMonitoring }) {
+  return (
+    <div className="text-center py-12">
+      <motion.div
+        initial={{ scale: 0 }}
+        animate={{ scale: 1 }}
+        transition={{ type: "spring", stiffness: 200 }}
+        className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-4"
+      >
+        <Server className="w-8 h-8 text-gray-600" />
+      </motion.div>
+      <h3 className="text-lg font-medium text-white mb-2">No nodes yet</h3>
+      <p className="text-gray-400 mb-6">
+        {isMonitoring ? 'Register your first node to get started' : 'Connecting to network...'}
+      </p>
+      {isMonitoring && (
+        <Link href="/dashboard/register">
+          <motion.a
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+          >
+            <Plus className="w-5 h-5" />
+            Register Node
+          </motion.a>
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function LoadingState() {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="flex flex-col items-center justify-center min-h-[400px]"
+    >
+      <motion.div
+        animate={{ rotate: 360 }}
+        transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+        className="w-16 h-16 border-4 border-purple-500/20 border-t-purple-500 rounded-full"
+      />
+      <p className="mt-4 text-gray-400">Connecting to network...</p>
+    </motion.div>
+  );
+}
+
+function ErrorState({ error, onRetry }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.9 }}
+      className="text-center py-12"
+    >
+      <GlassCard className="max-w-md mx-auto">
+        <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+        <h3 className="text-xl font-semibold text-white mb-2">Connection Error</h3>
+        <p className="text-gray-400 mb-6">{error}</p>
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={onRetry}
+          className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+        >
+          Retry Connection
+        </motion.button>
+      </GlassCard>
+    </motion.div>
+  );
+}
+
+function WalletConnectionPrompt() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="text-center"
+      >
+        <GlassCard className="max-w-md mx-auto">
+          <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Server className="w-10 h-10 text-white" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-4">Connect Your Wallet</h2>
+          <p className="text-gray-400 mb-8">Connect your wallet to access the node dashboard and start monitoring your network.</p>
+          <div className="text-sm text-gray-500">Use the wallet button in the navigation bar to connect.</div>
+        </GlassCard>
+      </motion.div>
+    </div>
+  );
+}
+
+// Helper functions
+function getStatusMessage(wsState) {
+  if (wsState.monitoring) return 'Real-time monitoring active';
+  if (wsState.authenticated) return 'Authenticated, starting monitor...';
+  if (wsState.authState === 'authenticating') return 'Authenticating with network...';
+  if (wsState.authState === 'signing') return 'Signing authentication message...';
+  if (wsState.authState === 'requesting_message') return 'Requesting authentication...';
+  if (wsState.connected) return 'Connecting to network...';
+  return 'Connect your wallet to view nodes';
+}
+
+function calculateUptime(stats) {
+  if (stats.totalNodes === 0) return 0;
+  return Math.round((stats.activeNodes / stats.totalNodes) * 100);
 }
