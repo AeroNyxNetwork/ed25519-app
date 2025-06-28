@@ -174,37 +174,59 @@ export default function DashboardContent() {
    * @returns {Promise<string>} Signature
    */
   const signMessage = useCallback(async (message) => {
+    console.log('[Dashboard] signMessage called');
+    console.log('[Dashboard] Message to sign (first 100 chars):', message.substring(0, 100) + '...');
+    
     // Extract wallet address from message to ensure exact match
     const walletMatch = message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
     if (!walletMatch || !walletMatch[1]) {
+      console.error('[Dashboard] Could not extract wallet address from message');
+      console.error('[Dashboard] Message:', message);
       throw new Error('Could not extract wallet address from message');
     }
     
     const messageWallet = walletMatch[1];
-    console.log('[Dashboard] Signing with wallet address from message:', messageWallet);
+    console.log('[Dashboard] Wallet address from message:', messageWallet);
+    console.log('[Dashboard] Current wallet address:', wallet.address);
+    console.log('[Dashboard] Addresses match:', messageWallet.toLowerCase() === wallet.address.toLowerCase());
     
     // For OKX wallet, ensure we use the correct account
     if (window.okxwallet && wallet.provider === window.okxwallet) {
+      console.log('[Dashboard] Using OKX wallet for signing');
+      
       const accounts = await wallet.provider.request({ method: 'eth_accounts' });
+      console.log('[Dashboard] OKX accounts:', accounts);
+      
       const accountToUse = accounts.find(acc => acc.toLowerCase() === messageWallet.toLowerCase()) || accounts[0];
+      console.log('[Dashboard] Account to use for signing:', accountToUse);
       
-      const signature = await wallet.provider.request({
-        method: 'personal_sign',
-        params: [message, accountToUse]
-      });
-      
-      return signature.startsWith('0x') ? signature : `0x${signature}`;
+      try {
+        const signature = await wallet.provider.request({
+          method: 'personal_sign',
+          params: [message, accountToUse]
+        });
+        
+        console.log('[Dashboard] Raw signature from OKX:', signature);
+        const finalSignature = signature.startsWith('0x') ? signature : `0x${signature}`;
+        console.log('[Dashboard] Final signature:', finalSignature);
+        
+        return finalSignature;
+      } catch (error) {
+        console.error('[Dashboard] OKX signing error:', error);
+        throw error;
+      }
     }
-    
-    // Standard signing for other wallets
+      console.log('[Dashboard] Using standard wallet signing');
     const signature = await wallet.provider.request({
       method: 'personal_sign',
       params: [message, messageWallet]
     });
     
-    return signature.startsWith('0x') ? signature : `0x${signature}`;
+    const finalSignature = signature.startsWith('0x') ? signature : `0x${signature}`;
+    console.log('[Dashboard] Final signature:', finalSignature);
+    
+    return finalSignature;
   }, [wallet]);
-  
   /**
    * Handle WebSocket messages
    * @param {MessageEvent} event - WebSocket message event
@@ -214,24 +236,51 @@ export default function DashboardContent() {
       const data = JSON.parse(event.data);
       console.log('[Dashboard] Received message:', data.type, data);
       
+      // 添加详细的数据日志
+      if (data.type === 'error') {
+        console.error('[Dashboard] Full error data:', JSON.stringify(data, null, 2));
+      }
+      
       switch (data.type) {
         case 'connected':
           // Step 1: WebSocket connected, request signature message
+          console.log('[Dashboard] WebSocket connected, requesting signature message');
           setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message', error: null }));
-          sendMessage({
+          
+          const getMessageRequest = {
             type: 'get_message',
-            wallet_address: wallet.address.toLowerCase() // Backend expects lowercase
-          });
+            wallet_address: wallet.address.toLowerCase()
+          };
+          console.log('[Dashboard] Sending get_message request:', getMessageRequest);
+          sendMessage(getMessageRequest);
           break;
           
         case 'signature_message':
           // Step 2: Received message to sign
+          console.log('[Dashboard] Received signature message');
+          console.log('[Dashboard] Message to sign:', data.message);
+          console.log('[Dashboard] Nonce:', data.nonce);
+          console.log('[Dashboard] Expires in:', data.expires_in);
+          
+          // 保存完整的消息数据
+          window._lastSignatureData = {
+            message: data.message,
+            nonce: data.nonce,
+            timestamp: Date.now()
+          };
+          
           setWsState(prev => ({ ...prev, authState: 'signing' }));
           
           try {
+            // 打印钱包信息
+            console.log('[Dashboard] Wallet address:', wallet.address);
+            console.log('[Dashboard] Wallet provider:', wallet.provider);
+            console.log('[Dashboard] Is OKX wallet:', window.okxwallet && wallet.provider === window.okxwallet);
+            
             // Sign the message
             const signature = await signMessage(data.message);
             console.log('[Dashboard] Signature obtained:', signature);
+            console.log('[Dashboard] Signature length:', signature.length);
             
             setWsState(prev => ({ ...prev, authState: 'authenticating' }));
             
@@ -239,17 +288,34 @@ export default function DashboardContent() {
             const walletMatch = data.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
             const messageWallet = walletMatch ? walletMatch[1] : wallet.address;
             
-            // Send authentication request
-            sendMessage({
+            console.log('[Dashboard] Wallet from message:', messageWallet);
+            console.log('[Dashboard] Original wallet address:', wallet.address);
+            
+            // 构建认证消息
+            const authMessage = {
               type: 'auth',
-              wallet_address: messageWallet.toLowerCase(), // Backend expects lowercase
+              wallet_address: messageWallet.toLowerCase(),
               signature: signature,
-              message: data.message, // Use exact message from server
-              wallet_type: 'okx' // IMPORTANT: Backend code shows OKX-specific handling
-            });
+              message: data.message, // 使用原始消息
+              wallet_type: 'okx'
+            };
+            
+            // 打印完整的认证消息
+            console.log('[Dashboard] Sending auth message:');
+            console.log('  - Type:', authMessage.type);
+            console.log('  - Wallet:', authMessage.wallet_address);
+            console.log('  - Signature:', authMessage.signature);
+            console.log('  - Wallet type:', authMessage.wallet_type);
+            console.log('  - Message length:', authMessage.message.length);
+            console.log('  - Full message:', authMessage.message);
+            console.log('[Dashboard] Auth message JSON size:', JSON.stringify(authMessage).length, 'bytes');
+            
+            // Send authentication request
+            sendMessage(authMessage);
             
           } catch (error) {
             console.error('[Dashboard] Signing error:', error);
+            console.error('[Dashboard] Error stack:', error.stack);
             setWsState(prev => ({ 
               ...prev, 
               authState: 'error', 
@@ -261,6 +327,11 @@ export default function DashboardContent() {
         case 'auth_success':
           // Step 3: Authentication successful
           console.log('[Dashboard] Authentication successful');
+          console.log('[Dashboard] Session token:', data.session_token);
+          console.log('[Dashboard] Wallet address:', data.wallet_address);
+          console.log('[Dashboard] Nodes received:', data.nodes);
+          console.log('[Dashboard] Number of nodes:', data.nodes ? data.nodes.length : 0);
+          
           setWsState(prev => ({ 
             ...prev, 
             authenticated: true, 
@@ -268,20 +339,24 @@ export default function DashboardContent() {
             error: null
           }));
           
-          reconnectAttemptsRef.current = 0; // Reset reconnect attempts
+          reconnectAttemptsRef.current = 0;
           
           // Process initial nodes if provided
           if (data.nodes) {
-            const initialNodes = data.nodes.map(node => ({
-              code: node.code,
-              name: node.name,
-              id: node.id,
-              status: 'unknown', // Will be updated by status_update
-              type: 'unknown',
-              performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
-              earnings: 0,
-              last_seen: null
-            }));
+            console.log('[Dashboard] Processing nodes data');
+            const initialNodes = data.nodes.map((node, index) => {
+              console.log(`[Dashboard] Node ${index + 1}:`, node);
+              return {
+                code: node.code,
+                name: node.name,
+                id: node.id,
+                status: 'unknown',
+                type: 'unknown',
+                performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
+                earnings: 0,
+                last_seen: null
+              };
+            });
             
             setDashboardData(prev => ({
               ...prev,
@@ -291,26 +366,36 @@ export default function DashboardContent() {
                 totalNodes: initialNodes.length
               }
             }));
+          } else {
+            console.log('[Dashboard] No nodes data in auth_success response');
           }
           
           // Start monitoring
+          console.log('[Dashboard] Starting monitoring');
           sendMessage({ type: 'start_monitor' });
           break;
           
         case 'monitor_started':
           // Step 4: Monitoring started
-          console.log('[Dashboard] Monitoring started');
+          console.log('[Dashboard] Monitoring started successfully');
           setWsState(prev => ({ ...prev, monitoring: true }));
           break;
           
         case 'status_update':
           // Step 5: Periodic status updates
+          console.log('[Dashboard] Received status update');
+          console.log('[Dashboard] Nodes in update:', data.nodes ? data.nodes.length : 0);
+          console.log('[Dashboard] Update timestamp:', data.timestamp);
+          
           setWsState(prev => ({ ...prev, monitoring: true }));
           processNodesData(data);
           break;
           
         case 'error':
-          console.error('[Dashboard] Server error:', data);
+          console.error('[Dashboard] Server error:', data.message);
+          console.error('[Dashboard] Error code:', data.error_code);
+          console.error('[Dashboard] Full error object:', data);
+          
           setWsState(prev => ({ 
             ...prev, 
             error: data.message || 'Server error'
@@ -318,7 +403,7 @@ export default function DashboardContent() {
           
           // Handle authentication errors
           if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
-            // Need to re-authenticate
+            console.log('[Dashboard] Authentication required, restarting auth flow');
             setWsState(prev => ({ ...prev, authenticated: false, authState: 'requesting_message' }));
             sendMessage({
               type: 'get_message',
@@ -328,15 +413,17 @@ export default function DashboardContent() {
           break;
           
         case 'pong':
-          // Response to ping
-          console.log('[Dashboard] Pong received');
+          console.log('[Dashboard] Pong received at', new Date().toISOString());
           break;
           
         default:
           console.log('[Dashboard] Unknown message type:', data.type);
+          console.log('[Dashboard] Message data:', data);
       }
     } catch (error) {
       console.error('[Dashboard] Message handling error:', error);
+      console.error('[Dashboard] Error stack:', error.stack);
+      console.error('[Dashboard] Raw message:', event.data);
     }
   }, [wallet.address, sendMessage, processNodesData, signMessage]);
   
