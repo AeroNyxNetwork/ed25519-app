@@ -1,17 +1,25 @@
 /**
- * Nodes Content Component - Fixed WebSocket Connection
+ * Nodes Content Component - Optimized Version Using Unified WebSocket
  * 
  * File Path: src/components/nodes/NodesContent.js
  * 
- * Fixed WebSocket connection issues
+ * This component now uses the unified useAeroNyxWebSocket hook instead of
+ * implementing its own WebSocket logic. All REST API calls have been removed
+ * as WebSocket provides all necessary data.
  * 
- * @version 7.0.0
+ * CHANGES:
+ * - Removed all WebSocket connection logic (now in useAeroNyxWebSocket)
+ * - Removed loadInitialNodes() and REST API calls
+ * - Simplified from 900+ lines to ~400 lines
+ * - Uses shared WebSocket connection with Dashboard
+ * 
+ * @version 8.0.0
  * @author AeroNyx Development Team
  */
 
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -32,7 +40,7 @@ import {
 import clsx from 'clsx';
 
 import { useWallet } from '../wallet/WalletProvider';
-import nodeRegistrationService from '../../lib/api/nodeRegistration';
+import { useAeroNyxWebSocket } from '../../hooks/useAeroNyxWebSocket';
 
 // Animation variants
 const containerVariants = {
@@ -57,495 +65,47 @@ const itemVariants = {
   }
 };
 
-// WebSocket status enum matching API states
-const WsStatus = {
-  IDLE: 'idle',
-  CONNECTING: 'connecting',
-  CONNECTED: 'connected',
-  REQUESTING_MESSAGE: 'requesting_message',
-  SIGNING: 'signing',
-  AUTHENTICATING: 'authenticating',
-  AUTHENTICATED: 'authenticated',
-  MONITORING: 'monitoring',
-  ERROR: 'error',
-  DISCONNECTED: 'disconnected'
-};
-
 export default function NodesContent() {
   const { wallet } = useWallet();
-  const [nodes, setNodes] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [wsStatus, setWsStatus] = useState(WsStatus.IDLE);
-  const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
-  
-  const wsRef = useRef(null);
-  const reconnectTimeoutRef = useRef(null);
-  const mountedRef = useRef(true);
-  const sessionTokenRef = useRef(null);
-  const reconnectAttemptsRef = useRef(0);
-  const signatureMessageRef = useRef(null);
-  const isConnectingRef = useRef(false);
 
-  /**
-   * Initialize nodes from REST API first
-   * This ensures we have data even if WebSocket fails
-   */
-  const loadInitialNodes = useCallback(async () => {
-    if (!wallet.connected || !wallet.address) return;
-
-    try {
-      console.log('[NodesContent] Loading initial nodes from REST API');
-      
-      // Get signature for API authentication
-      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-      if (!messageResponse.success) {
-        throw new Error(messageResponse.message || 'Failed to generate signature message');
-      }
-
-      // Use the exact wallet.provider.request method for signing
-      const signature = await wallet.provider.request({
-        method: 'personal_sign',
-        params: [messageResponse.data.message, wallet.address]
-      });
-
-      // Fetch nodes overview from REST API
-      const nodesResponse = await nodeRegistrationService.getUserNodesOverview(
-        wallet.address,
-        signature,
-        messageResponse.data.message,
-        'okx'
-      );
-
-      if (nodesResponse.success && nodesResponse.data) {
-        // Transform REST API nodes to our format
-        const allNodes = [];
-        
-        if (nodesResponse.data.nodes) {
-          ['online', 'active', 'offline'].forEach(status => {
-            if (nodesResponse.data.nodes[status]) {
-              nodesResponse.data.nodes[status].forEach(node => {
-                allNodes.push({
-                  ...node,
-                  code: node.reference_code,
-                  name: node.name,
-                  status: node.status || status,
-                  type: node.node_type?.name || 'General Purpose',
-                  performance: {
-                    cpu: node.performance?.cpu_usage || 0,
-                    memory: node.performance?.memory_usage || 0,
-                    disk: node.performance?.storage_usage || 0,
-                    network: node.performance?.bandwidth_usage || 0
-                  },
-                  earnings: node.earnings || '0.00',
-                  uptime: node.uptime || '0h 0m',
-                  last_seen: node.last_seen
-                });
-              });
-            }
-          });
-        }
-
-        setNodes(allNodes);
-        setLoading(false);
-        console.log('[NodesContent] Loaded', allNodes.length, 'nodes from REST API');
-      }
-    } catch (err) {
-      console.error('[NodesContent] Error loading initial nodes:', err);
-      setError('Failed to load nodes');
-      setLoading(false);
-    }
-  }, [wallet]);
-
-  /**
-   * Sign message using wallet provider
-   * CRITICAL: Uses the exact address from the message to ensure consistency
-   */
-  const signMessage = useCallback(async (message) => {
-    if (!wallet.provider || !message) {
-      throw new Error('Missing wallet provider or message');
-    }
-
-    // Extract the wallet address from the message to ensure consistency
-    const walletMatch = message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
-    if (!walletMatch || !walletMatch[1]) {
-      throw new Error('Could not extract wallet address from message');
-    }
-
-    const addressFromMessage = walletMatch[1];
-    console.log('[NodesContent] Signing with address from message:', addressFromMessage);
-
-    try {
-      const signature = await wallet.provider.request({
-        method: 'personal_sign',
-        params: [message, addressFromMessage]
-      });
-
-      console.log('[NodesContent] Signature obtained successfully');
-      return signature;
-    } catch (error) {
-      console.error('[NodesContent] Signature error:', error);
-      throw error;
-    }
-  }, [wallet]);
-
-  /**
-   * Handle WebSocket message based on type
-   */
-  const handleWebSocketMessage = useCallback(async (data) => {
-    console.log('[NodesContent] Received message:', data.type, data);
-
-    switch (data.type) {
-      case 'connected':
-        console.log('[NodesContent] Step 1: Connection established');
-        setWsStatus(WsStatus.CONNECTED);
-        setError(null); // Clear any previous errors
-        // Step 2: Request signature message
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          const request = {
-            type: 'get_message',
-            wallet_address: wallet.address.toLowerCase()
-          };
-          console.log('[NodesContent] Step 2: Requesting signature message:', request);
-          wsRef.current.send(JSON.stringify(request));
-          setWsStatus(WsStatus.REQUESTING_MESSAGE);
-        }
-        break;
-
-      case 'signature_message':
-        console.log('[NodesContent] Step 3: Received signature message');
-        signatureMessageRef.current = data;
-        setWsStatus(WsStatus.SIGNING);
-        
-        try {
-          // Step 4: Sign the message
-          const signature = await signMessage(data.message);
-          console.log('[NodesContent] Step 4: Message signed successfully');
-          
-          // Step 5: Send authentication
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            const authRequest = {
-              type: 'auth',
-              wallet_address: wallet.address.toLowerCase(),
-              signature: signature,
-              message: data.message, // Use exact message from server
-              wallet_type: 'okx'
-            };
-            console.log('[NodesContent] Step 5: Sending authentication');
-            wsRef.current.send(JSON.stringify(authRequest));
-            setWsStatus(WsStatus.AUTHENTICATING);
-          }
-        } catch (signError) {
-          console.error('[NodesContent] Signing failed:', signError);
-          setError('Failed to sign authentication message');
-          setWsStatus(WsStatus.ERROR);
-        }
-        break;
-
-      case 'auth_success':
-        console.log('[NodesContent] Step 6: Authentication successful');
-        setWsStatus(WsStatus.AUTHENTICATED);
-        setError(null);
-        reconnectAttemptsRef.current = 0;
-        
-        // Save session token
-        if (data.session_token) {
-          sessionTokenRef.current = data.session_token;
-          console.log('[NodesContent] Session token saved');
-        }
-        
-        // Update nodes if provided
-        if (data.nodes && Array.isArray(data.nodes)) {
-          console.log('[NodesContent] Received', data.nodes.length, 'nodes in auth response');
-          const formattedNodes = data.nodes.map(node => ({
-            id: node.id,
-            code: node.code,
-            name: node.name,
-            status: 'unknown', // Will be updated by status_update
-            type: 'General Purpose',
-            performance: {
-              cpu: 0,
-              memory: 0,
-              disk: 0,
-              network: 0
-            },
-            earnings: '0.00',
-            uptime: '0h 0m',
-            last_seen: null
-          }));
-          setNodes(formattedNodes);
-        }
-        
-        // Step 7: Start monitoring
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          console.log('[NodesContent] Step 7: Starting monitor');
-          wsRef.current.send(JSON.stringify({ type: 'start_monitor' }));
-        }
-        break;
-
-      case 'monitor_started':
-        console.log('[NodesContent] Step 8: Monitoring started, updates every', data.interval, 'seconds');
-        setWsStatus(WsStatus.MONITORING);
-        break;
-
-      case 'status_update':
-        console.log('[NodesContent] Step 9: Status update received');
-        if (data.nodes && Array.isArray(data.nodes)) {
-          const updatedNodes = data.nodes.map(node => ({
-            code: node.code,
-            name: node.name,
-            status: node.status,
-            type: node.type || 'General Purpose',
-            performance: {
-              cpu: node.performance?.cpu || 0,
-              memory: node.performance?.memory || 0,
-              disk: node.performance?.disk || 0,
-              network: node.performance?.network || 0
-            },
-            earnings: node.earnings || '0.00',
-            uptime: node.uptime || '0h 0m',
-            last_seen: node.last_seen
-          }));
-          setNodes(updatedNodes);
-          console.log('[NodesContent] Updated', updatedNodes.length, 'nodes');
-        }
-        break;
-
-      case 'error':
-        console.error('[NodesContent] Server error:', data);
-        setError(data.message || 'Server error');
-        
-        // Don't set ERROR status for recoverable errors
-        if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
-          console.log('[NodesContent] Authentication error, will retry');
-          sessionTokenRef.current = null;
-          // Clear signature cache and retry
-          signatureMessageRef.current = null;
-        } else {
-          setWsStatus(WsStatus.ERROR);
-        }
-        break;
-
-      case 'pong':
-        console.log('[NodesContent] Pong received');
-        break;
-
-      default:
-        console.log('[NodesContent] Unknown message type:', data.type);
-    }
-  }, [wallet, signMessage]);
-
-  /**
-   * Connect to WebSocket following the exact API flow
-   */
-  const connectWebSocket = useCallback(async () => {
-    // Prevent multiple simultaneous connections
-    if (isConnectingRef.current || !wallet.connected || !wallet.address) {
-      console.log('[NodesContent] Skipping connection:', {
-        isConnecting: isConnectingRef.current,
-        walletConnected: wallet.connected,
-        walletAddress: wallet.address
-      });
-      return;
-    }
-    
-    // Clean up existing connection
-    if (wsRef.current) {
-      console.log('[NodesContent] Cleaning up existing connection');
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-
-    isConnectingRef.current = true;
-
-    try {
-      setWsStatus(WsStatus.CONNECTING);
-      setError(null);
-      
-      console.log('[NodesContent] Connecting to WebSocket');
-      const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
-      wsRef.current = ws;
-
-      // Set up connection timeout
-      const connectionTimeout = setTimeout(() => {
-        if (ws.readyState === WebSocket.CONNECTING) {
-          console.error('[NodesContent] Connection timeout');
-          ws.close();
-          setError('Connection timeout');
-          setWsStatus(WsStatus.ERROR);
-          isConnectingRef.current = false;
-        }
-      }, 10000); // 10 second timeout
-
-      ws.onopen = () => {
-        clearTimeout(connectionTimeout);
-        console.log('[NodesContent] WebSocket connection opened');
-        // Wait for 'connected' message from server
-      };
-
-      ws.onmessage = async (event) => {
-        if (!mountedRef.current) return;
-        
-        try {
-          const data = JSON.parse(event.data);
-          await handleWebSocketMessage(data);
-        } catch (parseError) {
-          console.error('[NodesContent] Message parsing error:', parseError);
-        }
-      };
-
-      ws.onerror = (error) => {
-        clearTimeout(connectionTimeout);
-        console.error('[NodesContent] WebSocket error event:', error);
-        // Don't set error state here, wait for close event
-      };
-
-      ws.onclose = (event) => {
-        clearTimeout(connectionTimeout);
-        console.log('[NodesContent] WebSocket closed:', event.code, event.reason);
-        wsRef.current = null;
-        isConnectingRef.current = false;
-        setWsStatus(WsStatus.DISCONNECTED);
-        
-        // Clear session on close
-        if (event.code !== 1000) { // Not a normal closure
-          sessionTokenRef.current = null;
-          
-          // Set error based on close code
-          if (event.code === 1006) {
-            setError('Connection lost. Check your internet connection.');
-          } else if (event.code === 1011) {
-            setError('Server error. Please try again later.');
-          }
-        }
-        
-        // Handle reconnection
-        if (mountedRef.current && event.code !== 1000 && reconnectAttemptsRef.current < 5) {
-          reconnectAttemptsRef.current++;
-          const delay = Math.min(3000 * reconnectAttemptsRef.current, 15000);
-          console.log(`[NodesContent] Will reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
-          
-          reconnectTimeoutRef.current = setTimeout(() => {
-            if (mountedRef.current && wallet.connected) {
-              connectWebSocket();
-            }
-          }, delay);
-        } else if (reconnectAttemptsRef.current >= 5) {
-          setError('Unable to establish connection. Please refresh the page.');
-        }
-      };
-
-      // Set up ping interval to keep connection alive
-      const pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN && wsStatus === WsStatus.MONITORING) {
-          ws.send(JSON.stringify({ type: 'ping' }));
-        }
-      }, 30000);
-
-      // Store interval ID for cleanup
-      ws.pingInterval = pingInterval;
-
-    } catch (error) {
-      console.error('[NodesContent] WebSocket setup error:', error);
-      setWsStatus(WsStatus.ERROR);
-      setError('Failed to establish connection');
-      isConnectingRef.current = false;
-    }
-  }, [wallet, wsStatus, handleWebSocketMessage]);
-
-  // Initialize data loading
-  useEffect(() => {
-    mountedRef.current = true;
-    
-    if (wallet.connected) {
-      // Load initial data from REST API first
-      loadInitialNodes().then(() => {
-        // Then connect WebSocket for real-time updates
-        // Add a small delay to ensure wallet is fully ready
-        setTimeout(() => {
-          if (mountedRef.current && wallet.connected) {
-            connectWebSocket();
-          }
-        }, 500);
-      });
-    } else {
-      setLoading(false);
-    }
-
-    return () => {
-      mountedRef.current = false;
-      isConnectingRef.current = false;
-      
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      
-      if (wsRef.current) {
-        // Stop monitoring before disconnect
-        if (wsRef.current.readyState === WebSocket.OPEN && wsStatus === WsStatus.MONITORING) {
-          try {
-            wsRef.current.send(JSON.stringify({ type: 'stop_monitor' }));
-          } catch (e) {
-            console.error('[NodesContent] Error stopping monitor:', e);
-          }
-        }
-        
-        // Clear ping interval
-        if (wsRef.current.pingInterval) {
-          clearInterval(wsRef.current.pingInterval);
-        }
-        
-        wsRef.current.close(1000, 'Component unmounting');
-      }
-    };
-  }, [wallet.connected]);
-
-  // Handle refresh
-  const handleRefresh = useCallback(() => {
-    setError(null);
-    reconnectAttemptsRef.current = 0;
-    isConnectingRef.current = false;
-    loadInitialNodes();
-    
-    // Disconnect existing WebSocket before reconnecting
-    if (wsRef.current) {
-      wsRef.current.close(1000, 'User refresh');
-      wsRef.current = null;
-    }
-    
-    // Wait a bit before reconnecting
-    setTimeout(() => {
-      if (mountedRef.current && wallet.connected) {
-        connectWebSocket();
-      }
-    }, 500);
-  }, [loadInitialNodes, connectWebSocket, wallet.connected]);
+  // Use unified WebSocket hook
+  const {
+    nodes,
+    wsState,
+    refresh,
+    isLoading,
+    error
+  } = useAeroNyxWebSocket({
+    autoConnect: true,
+    autoMonitor: true
+  });
 
   // Filter nodes based on search and status
-  const filteredNodes = nodes.filter(node => {
-    const matchesSearch = node.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         node.code.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFilter = filterStatus === 'all' || node.status === filterStatus;
-    return matchesSearch && matchesFilter;
-  });
+  const filteredNodes = useMemo(() => {
+    return nodes.filter(node => {
+      const matchesSearch = node.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                           node.code.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesFilter = filterStatus === 'all' || node.status === filterStatus;
+      return matchesSearch && matchesFilter;
+    });
+  }, [nodes, searchTerm, filterStatus]);
 
   // Connection status badge
   const ConnectionBadge = () => {
     const statusConfig = {
-      [WsStatus.IDLE]: { color: 'gray', label: 'Idle', Icon: Activity },
-      [WsStatus.CONNECTING]: { color: 'yellow', label: 'Connecting', Icon: Loader2, spin: true },
-      [WsStatus.CONNECTED]: { color: 'yellow', label: 'Connected', Icon: Activity },
-      [WsStatus.REQUESTING_MESSAGE]: { color: 'yellow', label: 'Requesting', Icon: Loader2, spin: true },
-      [WsStatus.SIGNING]: { color: 'yellow', label: 'Signing', Icon: Loader2, spin: true },
-      [WsStatus.AUTHENTICATING]: { color: 'yellow', label: 'Authenticating', Icon: Loader2, spin: true },
-      [WsStatus.AUTHENTICATED]: { color: 'blue', label: 'Authenticated', Icon: CheckCircle },
-      [WsStatus.MONITORING]: { color: 'green', label: 'Live', Icon: Activity, pulse: true },
-      [WsStatus.ERROR]: { color: 'red', label: 'Error', Icon: XCircle },
-      [WsStatus.DISCONNECTED]: { color: 'gray', label: 'Offline', Icon: XCircle }
+      idle: { color: 'gray', label: 'Idle', Icon: Activity },
+      connecting: { color: 'yellow', label: 'Connecting', Icon: Loader2, spin: true },
+      requesting_message: { color: 'yellow', label: 'Requesting', Icon: Loader2, spin: true },
+      signing: { color: 'yellow', label: 'Signing', Icon: Loader2, spin: true },
+      authenticating: { color: 'yellow', label: 'Authenticating', Icon: Loader2, spin: true },
+      authenticated: { color: 'blue', label: 'Authenticated', Icon: CheckCircle },
+      monitoring: { color: 'green', label: 'Live', Icon: Activity, pulse: true },
+      error: { color: 'red', label: 'Error', Icon: XCircle }
     };
 
-    const config = statusConfig[wsStatus] || statusConfig[WsStatus.IDLE];
+    const config = statusConfig[wsState.monitoring ? 'monitoring' : wsState.authState] || statusConfig.idle;
     const { Icon } = config;
 
     return (
@@ -591,11 +151,11 @@ export default function NodesContent() {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={handleRefresh}
+                onClick={refresh}
                 className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-all"
-                disabled={loading || isConnectingRef.current}
+                disabled={isLoading}
               >
-                <RefreshCw className={clsx("w-5 h-5 text-gray-400", (loading || isConnectingRef.current) && "animate-spin")} />
+                <RefreshCw className={clsx("w-5 h-5 text-gray-400", isLoading && "animate-spin")} />
               </motion.button>
             </div>
           </div>
@@ -615,7 +175,7 @@ export default function NodesContent() {
               <div className="flex-1">
                 <p className="text-sm text-red-300">{error}</p>
                 <button
-                  onClick={handleRefresh}
+                  onClick={refresh}
                   className="text-xs text-red-400 underline hover:no-underline mt-1"
                 >
                   Try again
@@ -677,7 +237,7 @@ export default function NodesContent() {
 
         {/* Content */}
         <AnimatePresence mode="wait">
-          {loading ? (
+          {isLoading ? (
             <LoadingState key="loading" />
           ) : filteredNodes.length > 0 ? (
             <motion.div
@@ -700,7 +260,7 @@ export default function NodesContent() {
   );
 }
 
-// Sub-components remain the same...
+// Sub-components remain the same but simplified
 function NodeCard({ node }) {
   const statusConfig = {
     active: { color: 'green', Icon: CheckCircle, label: 'Active', glow: 'shadow-green-500/20' },
