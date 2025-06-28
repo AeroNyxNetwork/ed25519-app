@@ -1,29 +1,25 @@
 /**
- * Dashboard Content Component - WebSocket Only Implementation
+ * Dashboard Content Component - Optimized Using Unified WebSocket Hook
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * IMPORTANT: This component uses WebSocket ONLY for all data communication.
- * DO NOT add REST API calls - all data must come through WebSocket connection.
+ * This component now uses the unified useAeroNyxWebSocket hook instead of
+ * implementing its own WebSocket logic. The original WebSocket flow has been
+ * extracted to the reusable hook to prevent code duplication.
  * 
- * WebSocket Protocol Flow:
- * 1. Connect to wss://api.aeronyx.network/ws/aeronyx/user-monitor/
- * 2. Receive 'connected' message
- * 3. Send 'get_message' with wallet_address
- * 4. Receive 'signature_message' with message to sign
- * 5. Sign message with wallet
- * 6. Send 'auth' with signature
- * 7. Receive 'auth_success' with nodes
- * 8. Send 'start_monitor' to begin monitoring
- * 9. Receive periodic 'status_update' messages
+ * CHANGES:
+ * - Extracted WebSocket logic to useAeroNyxWebSocket hook
+ * - Reduced from 1100+ lines to ~600 lines
+ * - Maintains exact same functionality and UI
+ * - Shares WebSocket connection with other components
  * 
- * @version 11.0.0
+ * @version 12.0.0
  * @author AeroNyx Development Team
  */
 
 'use client';
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -41,8 +37,8 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 
-// Component imports
 import { useWallet } from '../wallet/WalletProvider';
+import { useAeroNyxWebSocket } from '../../hooks/useAeroNyxWebSocket';
 
 // Animation variants
 const containerVariants = {
@@ -70,561 +66,45 @@ const itemVariants = {
 /**
  * Dashboard Content Component
  * 
- * RULES:
- * 1. NO REST API calls - all data via WebSocket
- * 2. wallet_type MUST be 'okx' for OKX wallet
- * 3. Message signing must use exact wallet address from signature message
- * 4. All wallet addresses sent to backend must be lowercase
- * 5. Signature must include '0x' prefix
+ * Uses the unified WebSocket hook for all data communication
  */
 export default function DashboardContent() {
   const { wallet } = useWallet();
   
-  // State
-  const [wsState, setWsState] = useState({
-    connected: false,
-    authenticated: false,
-    monitoring: false,
-    authState: 'idle', // idle, connecting, requesting_message, signing, authenticating, authenticated, error
-    error: null
+  // Use unified WebSocket hook with auto-connect and auto-monitor
+  const {
+    nodes,
+    stats,
+    wsState,
+    lastUpdate,
+    refresh,
+    isLoading,
+    error
+  } = useAeroNyxWebSocket({
+    autoConnect: true,
+    autoMonitor: true
   });
-  
-  const [dashboardData, setDashboardData] = useState({
-    nodes: [],
-    stats: {
-      totalNodes: 0,
-      activeNodes: 0,
-      offlineNodes: 0,
-      totalEarnings: 0,
-      resourceUtilization: 0
-    },
-    lastUpdate: null
-  });
-  
-  // Refs
-  const wsRef = useRef(null);
-  const reconnectTimeoutRef = useRef(null);
-  const mountedRef = useRef(true);
-  const isConnectingRef = useRef(false);
-  const reconnectAttemptsRef = useRef(0);
-  
-  /**
-   * Calculate resource utilization from nodes
-   * @param {Array} nodes - Array of node objects
-   * @returns {number} Average resource utilization percentage
-   */
-  const calculateResourceUtilization = useCallback((nodes) => {
-    if (!Array.isArray(nodes) || nodes.length === 0) return 0;
-    
-    const activeNodes = nodes.filter(n => n.status === 'active' || n.status === 'online');
-    if (activeNodes.length === 0) return 0;
-    
-    const totalUtil = activeNodes.reduce((sum, node) => {
-      const cpu = node.performance?.cpu || 0;
-      const memory = node.performance?.memory || 0;
-      return sum + ((cpu + memory) / 2);
-    }, 0);
-    
-    return Math.round(totalUtil / activeNodes.length);
-  }, []);
-  
-  /**
-   * Process nodes data from WebSocket status_update
-   * @param {Object} data - WebSocket message data
-   */
-  const processNodesData = useCallback((data) => {
-    if (!data || !data.nodes || !Array.isArray(data.nodes)) {
-      return;
-    }
-    
-    const nodes = data.nodes;
-    
-    const stats = {
-      totalNodes: nodes.length,
-      activeNodes: nodes.filter(n => n.status === 'active').length,
-      offlineNodes: nodes.filter(n => n.status === 'offline').length,
-      totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
-      resourceUtilization: calculateResourceUtilization(nodes)
-    };
-    
-    setDashboardData({
-      nodes: nodes,
-      stats: stats,
-      lastUpdate: new Date()
-    });
-  }, [calculateResourceUtilization]);
-  
-  /**
-   * Send message through WebSocket
-   * @param {Object} data - Data to send
-   */
-  const sendMessage = useCallback((data) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      console.log('[Dashboard] Sending message:', data.type, data);
-      wsRef.current.send(JSON.stringify(data));
-    } else {
-      console.warn('[Dashboard] Cannot send message - WebSocket not open');
-    }
-  }, []);
-  
-  /**
-   * Sign message with wallet
-   * CRITICAL: Must extract wallet address from message to ensure consistency
-   * @param {string} message - Message to sign
-   * @returns {Promise<string>} Signature
-   */
-  const signMessage = useCallback(async (message) => {
-    console.log('[Dashboard] signMessage called');
-    console.log('[Dashboard] Message to sign (first 100 chars):', message.substring(0, 100) + '...');
-    
-    // Extract wallet address from message to ensure exact match
-    const walletMatch = message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
-    if (!walletMatch || !walletMatch[1]) {
-      console.error('[Dashboard] Could not extract wallet address from message');
-      console.error('[Dashboard] Message:', message);
-      throw new Error('Could not extract wallet address from message');
-    }
-    
-    const messageWallet = walletMatch[1];
-    console.log('[Dashboard] Wallet address from message:', messageWallet);
-    console.log('[Dashboard] Current wallet address:', wallet.address);
-    console.log('[Dashboard] Addresses match:', messageWallet.toLowerCase() === wallet.address.toLowerCase());
-    
-    // For OKX wallet, ensure we use the correct account
-    if (window.okxwallet && wallet.provider === window.okxwallet) {
-      console.log('[Dashboard] Using OKX wallet for signing');
-      
-      const accounts = await wallet.provider.request({ method: 'eth_accounts' });
-      console.log('[Dashboard] OKX accounts:', accounts);
-      
-      const accountToUse = accounts.find(acc => acc.toLowerCase() === messageWallet.toLowerCase()) || accounts[0];
-      console.log('[Dashboard] Account to use for signing:', accountToUse);
-      
-      try {
-        const signature = await wallet.provider.request({
-          method: 'personal_sign',
-          params: [message, accountToUse]
-        });
-        
-        console.log('[Dashboard] Raw signature from OKX:', signature);
-        const finalSignature = signature.startsWith('0x') ? signature : `0x${signature}`;
-        console.log('[Dashboard] Final signature:', finalSignature);
-        
-        return finalSignature;
-      } catch (error) {
-        console.error('[Dashboard] OKX signing error:', error);
-        throw error;
-      }
-    }
-      console.log('[Dashboard] Using standard wallet signing');
-    const signature = await wallet.provider.request({
-      method: 'personal_sign',
-      params: [message, messageWallet]
-    });
-    
-    const finalSignature = signature.startsWith('0x') ? signature : `0x${signature}`;
-    console.log('[Dashboard] Final signature:', finalSignature);
-    
-    return finalSignature;
-  }, [wallet]);
-  /**
-   * Handle WebSocket messages
-   * @param {MessageEvent} event - WebSocket message event
-   */
-  const handleMessage = useCallback(async (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      console.log('[Dashboard] Received message:', data.type, data);
-      
-      // 添加详细的数据日志
-      if (data.type === 'error') {
-        console.error('[Dashboard] Full error data:', JSON.stringify(data, null, 2));
-      }
-      
-      switch (data.type) {
-        case 'connected':
-          // Step 1: WebSocket connected, request signature message
-          console.log('[Dashboard] WebSocket connected, requesting signature message');
-          setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message', error: null }));
-          
-          const getMessageRequest = {
-            type: 'get_message',
-            wallet_address: wallet.address.toLowerCase()
-          };
-          console.log('[Dashboard] Sending get_message request:', getMessageRequest);
-          sendMessage(getMessageRequest);
-          break;
-          
-        case 'signature_message':
-          // Step 2: Received message to sign
-          console.log('[Dashboard] Received signature message');
-          console.log('[Dashboard] Message to sign:', data.message);
-          console.log('[Dashboard] Nonce:', data.nonce);
-          console.log('[Dashboard] Expires in:', data.expires_in);
-          
-          // 保存完整的消息数据
-          window._lastSignatureData = {
-            message: data.message,
-            nonce: data.nonce,
-            timestamp: Date.now()
-          };
-          
-          setWsState(prev => ({ ...prev, authState: 'signing' }));
-          
-          try {
-            // 打印钱包信息
-            console.log('[Dashboard] Wallet address:', wallet.address);
-            console.log('[Dashboard] Wallet provider:', wallet.provider);
-            console.log('[Dashboard] Is OKX wallet:', window.okxwallet && wallet.provider === window.okxwallet);
-            
-            // Sign the message
-            const signature = await signMessage(data.message);
-            console.log('[Dashboard] Signature obtained:', signature);
-            console.log('[Dashboard] Signature length:', signature.length);
-            
-            setWsState(prev => ({ ...prev, authState: 'authenticating' }));
-            
-            // Extract wallet address from message for consistency
-            const walletMatch = data.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
-            const messageWallet = walletMatch ? walletMatch[1] : wallet.address;
-            
-            console.log('[Dashboard] Wallet from message:', messageWallet);
-            console.log('[Dashboard] Original wallet address:', wallet.address);
-            
-            // 构建认证消息
-            const authMessage = {
-              type: 'auth',
-              wallet_address: messageWallet.toLowerCase(),
-              signature: signature,
-              message: data.message, // 使用原始消息
-              wallet_type: 'okx'
-            };
-            
-            // 打印完整的认证消息
-            console.log('[Dashboard] Sending auth message:');
-            console.log('  - Type:', authMessage.type);
-            console.log('  - Wallet:', authMessage.wallet_address);
-            console.log('  - Signature:', authMessage.signature);
-            console.log('  - Wallet type:', authMessage.wallet_type);
-            console.log('  - Message length:', authMessage.message.length);
-            console.log('  - Full message:', authMessage.message);
-            console.log('[Dashboard] Auth message JSON size:', JSON.stringify(authMessage).length, 'bytes');
-            
-            // Send authentication request
-            sendMessage(authMessage);
-            
-          } catch (error) {
-            console.error('[Dashboard] Signing error:', error);
-            console.error('[Dashboard] Error stack:', error.stack);
-            setWsState(prev => ({ 
-              ...prev, 
-              authState: 'error', 
-              error: 'Failed to sign message: ' + error.message 
-            }));
-          }
-          break;
-          
-        case 'auth_success':
-          // Step 3: Authentication successful
-          console.log('[Dashboard] Authentication successful');
-          console.log('[Dashboard] Session token:', data.session_token);
-          console.log('[Dashboard] Wallet address:', data.wallet_address);
-          console.log('[Dashboard] Nodes received:', data.nodes);
-          console.log('[Dashboard] Number of nodes:', data.nodes ? data.nodes.length : 0);
-          
-          setWsState(prev => ({ 
-            ...prev, 
-            authenticated: true, 
-            authState: 'authenticated',
-            error: null
-          }));
-          
-          reconnectAttemptsRef.current = 0;
-          
-          // Process initial nodes if provided
-          if (data.nodes) {
-            console.log('[Dashboard] Processing nodes data');
-            const initialNodes = data.nodes.map((node, index) => {
-              console.log(`[Dashboard] Node ${index + 1}:`, node);
-              return {
-                code: node.code,
-                name: node.name,
-                id: node.id,
-                status: 'unknown',
-                type: 'unknown',
-                performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
-                earnings: 0,
-                last_seen: null
-              };
-            });
-            
-            setDashboardData(prev => ({
-              ...prev,
-              nodes: initialNodes,
-              stats: {
-                ...prev.stats,
-                totalNodes: initialNodes.length
-              }
-            }));
-          } else {
-            console.log('[Dashboard] No nodes data in auth_success response');
-          }
-          
-          // Start monitoring
-          console.log('[Dashboard] Starting monitoring');
-          sendMessage({ type: 'start_monitor' });
-          break;
-          
-        case 'monitor_started':
-          // Step 4: Monitoring started
-          console.log('[Dashboard] Monitoring started successfully');
-          setWsState(prev => ({ ...prev, monitoring: true }));
-          break;
-          
-        case 'status_update':
-          // Step 5: Periodic status updates
-          console.log('[Dashboard] Received status update');
-          console.log('[Dashboard] Nodes in update:', data.nodes ? data.nodes.length : 0);
-          console.log('[Dashboard] Update timestamp:', data.timestamp);
-          
-          setWsState(prev => ({ ...prev, monitoring: true }));
-          processNodesData(data);
-          break;
-          
-        case 'error':
-          console.error('[Dashboard] Server error:', data.message);
-          console.error('[Dashboard] Error code:', data.error_code);
-          console.error('[Dashboard] Full error object:', data);
-          
-          setWsState(prev => ({ 
-            ...prev, 
-            error: data.message || 'Server error'
-          }));
-          
-          // Handle authentication errors
-          if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
-            console.log('[Dashboard] Authentication required, restarting auth flow');
-            setWsState(prev => ({ ...prev, authenticated: false, authState: 'requesting_message' }));
-            sendMessage({
-              type: 'get_message',
-              wallet_address: wallet.address.toLowerCase()
-            });
-          }
-          break;
-          
-        case 'pong':
-          console.log('[Dashboard] Pong received at', new Date().toISOString());
-          break;
-          
-        default:
-          console.log('[Dashboard] Unknown message type:', data.type);
-          console.log('[Dashboard] Message data:', data);
-      }
-    } catch (error) {
-      console.error('[Dashboard] Message handling error:', error);
-      console.error('[Dashboard] Error stack:', error.stack);
-      console.error('[Dashboard] Raw message:', event.data);
-    }
-  }, [wallet.address, sendMessage, processNodesData, signMessage]);
-  
-  /**
-   * Connect to WebSocket
-   * IMPORTANT: Only connects when wallet is ready and not already connecting
-   */
-  const connectWebSocket = useCallback(() => {
-    // Prevent multiple simultaneous connections
-    if (!wallet.connected || isConnectingRef.current || wsRef.current) {
-      console.log('[Dashboard] Skipping connection:', {
-        walletConnected: wallet.connected,
-        isConnecting: isConnectingRef.current,
-        hasWebSocket: !!wsRef.current
-      });
-      return;
-    }
-    
-    isConnectingRef.current = true;
-    setWsState(prev => ({ ...prev, authState: 'connecting', error: null }));
-    
-    try {
-      console.log('[Dashboard] Connecting to WebSocket');
-      const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
-      wsRef.current = ws;
-      
-      // Connection timeout
-      const timeoutId = setTimeout(() => {
-        if (ws.readyState === WebSocket.CONNECTING) {
-          console.error('[Dashboard] Connection timeout');
-          ws.close();
-          setWsState(prev => ({ 
-            ...prev, 
-            authState: 'error',
-            error: 'Connection timeout' 
-          }));
-          isConnectingRef.current = false;
-        }
-      }, 10000);
-      
-      ws.onopen = () => {
-        console.log('[Dashboard] WebSocket opened');
-        clearTimeout(timeoutId);
-        // Wait for 'connected' message from server
-      };
-      
-      ws.onmessage = handleMessage;
-      
-      ws.onerror = (error) => {
-        console.error('[Dashboard] WebSocket error:', error);
-        clearTimeout(timeoutId);
-        setWsState(prev => ({ 
-          ...prev, 
-          error: 'Connection error' 
-        }));
-      };
-      
-      ws.onclose = (event) => {
-        console.log('[Dashboard] WebSocket closed:', event.code, event.reason);
-        clearTimeout(timeoutId);
-        wsRef.current = null;
-        isConnectingRef.current = false;
-        
-        setWsState(prev => ({ 
-          ...prev, 
-          connected: false,
-          authenticated: false,
-          monitoring: false,
-          authState: 'idle'
-        }));
-        
-        // Handle reconnection for abnormal closures
-        if (event.code !== 1000 && mountedRef.current && reconnectAttemptsRef.current < 5) {
-          reconnectAttemptsRef.current++;
-          const delay = Math.min(3000 * reconnectAttemptsRef.current, 15000);
-          
-          console.log(`[Dashboard] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
-          
-          reconnectTimeoutRef.current = setTimeout(() => {
-            if (mountedRef.current && wallet.connected) {
-              connectWebSocket();
-            }
-          }, delay);
-        } else if (reconnectAttemptsRef.current >= 5) {
-          setWsState(prev => ({ 
-            ...prev, 
-            error: 'Unable to establish connection. Please refresh the page.' 
-          }));
-        }
-      };
-      
-      // Set up ping interval to keep connection alive
-      const pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }));
-        }
-      }, 30000);
-      
-      // Store interval ID for cleanup
-      ws.pingInterval = pingInterval;
-      
-    } catch (error) {
-      console.error('[Dashboard] WebSocket setup error:', error);
-      wsRef.current = null;
-      isConnectingRef.current = false;
-      setWsState(prev => ({ 
-        ...prev, 
-        authState: 'error', 
-        error: 'Failed to connect' 
-      }));
-    }
-  }, [wallet.connected, handleMessage]);
-  
-  /**
-   * Initialize WebSocket when wallet is connected
-   * IMPORTANT: Do not add connectWebSocket to dependencies to avoid loops
-   */
-  useEffect(() => {
-    mountedRef.current = true;
-    reconnectAttemptsRef.current = 0;
-    
-    if (wallet.connected && wallet.address) {
-      // Add a small delay to ensure wallet is fully ready
-      const initTimeout = setTimeout(() => {
-        if (mountedRef.current && !wsRef.current && !isConnectingRef.current) {
-          connectWebSocket();
-        }
-      }, 500);
-      
-      return () => {
-        clearTimeout(initTimeout);
-      };
-    }
-    
-    return () => {
-      mountedRef.current = false;
-      isConnectingRef.current = false;
-      
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      
-      if (wsRef.current) {
-        // Stop monitoring before disconnect
-        if (wsRef.current.readyState === WebSocket.OPEN && wsState.monitoring) {
-          wsRef.current.send(JSON.stringify({ type: 'stop_monitor' }));
-        }
-        
-        // Clear ping interval
-        if (wsRef.current.pingInterval) {
-          clearInterval(wsRef.current.pingInterval);
-        }
-        
-        wsRef.current.close(1000, 'Component unmounting');
-        wsRef.current = null;
-      }
-    };
-  }, [wallet.connected, wallet.address]); // Do NOT add connectWebSocket here
-  
-  /**
-   * Handle refresh - reconnect WebSocket
-   */
-  const handleRefresh = useCallback(() => {
-    console.log('[Dashboard] Refreshing connection');
-    reconnectAttemptsRef.current = 0;
-    isConnectingRef.current = false;
-    
-    // Close existing connection
-    if (wsRef.current) {
-      wsRef.current.close(1000, 'User refresh');
-      wsRef.current = null;
-    }
-    
-    // Clear any pending reconnect
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    
-    // Reset state
-    setWsState({
-      connected: false,
-      authenticated: false,
-      monitoring: false,
-      authState: 'idle',
-      error: null
-    });
-    
-    // Reconnect after a short delay
-    setTimeout(() => {
-      if (mountedRef.current && wallet.connected) {
-        connectWebSocket();
-      }
-    }, 500);
-  }, [wallet.connected, connectWebSocket]);
 
-  // Loading state
+  // Calculate uptime percentage
+  const calculateUptime = useCallback((nodeStats) => {
+    if (nodeStats.totalNodes === 0) return 0;
+    return Math.round((nodeStats.activeNodes / nodeStats.totalNodes) * 100);
+  }, []);
+
+  // Get status message based on WebSocket state
+  const getStatusMessage = useCallback((state) => {
+    if (state.monitoring) return 'Real-time monitoring active';
+    if (state.authenticated) return 'Authenticated, starting monitor...';
+    if (state.authState === 'authenticating') return 'Authenticating with network...';
+    if (state.authState === 'signing') return 'Signing authentication message...';
+    if (state.authState === 'requesting_message') return 'Requesting authentication...';
+    if (state.connected) return 'Connecting to network...';
+    return 'Connect your wallet to view nodes';
+  }, []);
+
   if (!wallet.connected) {
     return <WalletConnectionPrompt />;
   }
-
-  const isLoading = wsState.authState === 'connecting' || wsState.authState === 'signing' || wsState.authState === 'authenticating';
 
   return (
     <div className="min-h-screen bg-black">
@@ -658,7 +138,7 @@ export default function DashboardContent() {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={handleRefresh}
+                onClick={refresh}
                 disabled={isLoading}
                 className={clsx(
                   "p-3 rounded-xl border transition-all",
@@ -677,8 +157,8 @@ export default function DashboardContent() {
         <AnimatePresence mode="wait">
           {isLoading ? (
             <LoadingState key="loading" />
-          ) : wsState.error && dashboardData.nodes.length === 0 ? (
-            <ErrorState key="error" error={wsState.error} onRetry={handleRefresh} />
+          ) : error && nodes.length === 0 ? (
+            <ErrorState key="error" error={error} onRetry={refresh} />
           ) : (
             <motion.div
               key="content"
@@ -691,23 +171,23 @@ export default function DashboardContent() {
                 <StatsCard
                   icon={Server}
                   title="Total Nodes"
-                  value={dashboardData.stats.totalNodes}
-                  subtitle={`${dashboardData.stats.activeNodes} active`}
+                  value={stats.totalNodes}
+                  subtitle={`${stats.activeNodes} active`}
                   trend="neutral"
                 />
                 
                 <StatsCard
                   icon={Activity}
                   title="Network Status"
-                  value={dashboardData.stats.activeNodes > 0 ? 'Online' : 'Offline'}
-                  subtitle={`${calculateUptime(dashboardData.stats)}% uptime`}
-                  trend={dashboardData.stats.activeNodes > 0 ? 'up' : 'down'}
+                  value={stats.activeNodes > 0 ? 'Online' : 'Offline'}
+                  subtitle={`${calculateUptime(stats)}% uptime`}
+                  trend={stats.activeNodes > 0 ? 'up' : 'down'}
                 />
                 
                 <StatsCard
                   icon={Zap}
                   title="Resource Usage"
-                  value={`${dashboardData.stats.resourceUtilization}%`}
+                  value={`${stats.resourceUtilization}%`}
                   subtitle="Average utilization"
                   trend="neutral"
                 />
@@ -715,7 +195,7 @@ export default function DashboardContent() {
                 <StatsCard
                   icon={DollarSign}
                   title="Total Earnings"
-                  value={`$${dashboardData.stats.totalEarnings.toFixed(2)}`}
+                  value={`$${stats.totalEarnings.toFixed(2)}`}
                   subtitle="Lifetime earnings"
                   trend="up"
                 />
@@ -728,7 +208,7 @@ export default function DashboardContent() {
                   <GlassCard>
                     <div className="flex items-center justify-between mb-6">
                       <h2 className="text-xl font-semibold text-white">Active Nodes</h2>
-                      {dashboardData.nodes.length > 4 && (
+                      {nodes.length > 4 && (
                         <Link 
                           href="/dashboard/nodes"
                           className="text-sm text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-all hover:translate-x-1"
@@ -739,10 +219,10 @@ export default function DashboardContent() {
                       )}
                     </div>
                     
-                    {dashboardData.nodes.length > 0 ? (
+                    {nodes.length > 0 ? (
                       <div className="space-y-4">
                         <AnimatePresence>
-                          {dashboardData.nodes.slice(0, 4).map((node) => (
+                          {nodes.slice(0, 4).map((node) => (
                             <NodeCard key={node.code} node={node} />
                           ))}
                         </AnimatePresence>
@@ -787,13 +267,13 @@ export default function DashboardContent() {
                       <div className="space-y-4">
                         <HealthMetric
                           label="Active Nodes"
-                          value={dashboardData.stats.activeNodes}
-                          max={dashboardData.stats.totalNodes || 1}
+                          value={stats.activeNodes}
+                          max={stats.totalNodes || 1}
                           color="green"
                         />
                         <HealthMetric
                           label="Resource Usage"
-                          value={dashboardData.stats.resourceUtilization}
+                          value={stats.resourceUtilization}
                           max={100}
                           color="purple"
                         />
@@ -810,7 +290,7 @@ export default function DashboardContent() {
   );
 }
 
-// Sub Components (unchanged, keeping them for completeness)
+// Sub Components
 
 function GlassCard({ children, className }) {
   return (
@@ -1080,20 +560,4 @@ function WalletConnectionPrompt() {
       </motion.div>
     </div>
   );
-}
-
-// Helper functions
-function getStatusMessage(wsState) {
-  if (wsState.monitoring) return 'Real-time monitoring active';
-  if (wsState.authenticated) return 'Authenticated, starting monitor...';
-  if (wsState.authState === 'authenticating') return 'Authenticating with network...';
-  if (wsState.authState === 'signing') return 'Signing authentication message...';
-  if (wsState.authState === 'requesting_message') return 'Requesting authentication...';
-  if (wsState.connected) return 'Connecting to network...';
-  return 'Connect your wallet to view nodes';
-}
-
-function calculateUptime(stats) {
-  if (stats.totalNodes === 0) return 0;
-  return Math.round((stats.activeNodes / stats.totalNodes) * 100);
 }
