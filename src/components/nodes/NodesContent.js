@@ -1,11 +1,11 @@
 /**
- * Nodes Content Component - Fully Compliant with AeroNyx WebSocket API
+ * Nodes Content Component - Fixed WebSocket Connection
  * 
  * File Path: src/components/nodes/NodesContent.js
  * 
- * Implements the complete WebSocket connection flow as per API documentation
+ * Fixed WebSocket connection issues
  * 
- * @version 6.0.0
+ * @version 7.0.0
  * @author AeroNyx Development Team
  */
 
@@ -86,6 +86,7 @@ export default function NodesContent() {
   const sessionTokenRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
   const signatureMessageRef = useRef(null);
+  const isConnectingRef = useRef(false);
 
   /**
    * Initialize nodes from REST API first
@@ -199,6 +200,7 @@ export default function NodesContent() {
       case 'connected':
         console.log('[NodesContent] Step 1: Connection established');
         setWsStatus(WsStatus.CONNECTED);
+        setError(null); // Clear any previous errors
         // Step 2: Request signature message
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           const request = {
@@ -313,20 +315,15 @@ export default function NodesContent() {
       case 'error':
         console.error('[NodesContent] Server error:', data);
         setError(data.message || 'Server error');
-        setWsStatus(WsStatus.ERROR);
         
-        // Handle specific error codes
+        // Don't set ERROR status for recoverable errors
         if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
           console.log('[NodesContent] Authentication error, will retry');
           sessionTokenRef.current = null;
-          // Retry connection
-          if (reconnectAttemptsRef.current < 3) {
-            setTimeout(() => {
-              if (mountedRef.current) {
-                connectWebSocket();
-              }
-            }, 3000);
-          }
+          // Clear signature cache and retry
+          signatureMessageRef.current = null;
+        } else {
+          setWsStatus(WsStatus.ERROR);
         }
         break;
 
@@ -343,13 +340,24 @@ export default function NodesContent() {
    * Connect to WebSocket following the exact API flow
    */
   const connectWebSocket = useCallback(async () => {
-    if (!wallet.connected || !wallet.address) return;
+    // Prevent multiple simultaneous connections
+    if (isConnectingRef.current || !wallet.connected || !wallet.address) {
+      console.log('[NodesContent] Skipping connection:', {
+        isConnecting: isConnectingRef.current,
+        walletConnected: wallet.connected,
+        walletAddress: wallet.address
+      });
+      return;
+    }
     
     // Clean up existing connection
     if (wsRef.current) {
+      console.log('[NodesContent] Cleaning up existing connection');
       wsRef.current.close();
       wsRef.current = null;
     }
+
+    isConnectingRef.current = true;
 
     try {
       setWsStatus(WsStatus.CONNECTING);
@@ -359,7 +367,19 @@ export default function NodesContent() {
       const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
       wsRef.current = ws;
 
+      // Set up connection timeout
+      const connectionTimeout = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          console.error('[NodesContent] Connection timeout');
+          ws.close();
+          setError('Connection timeout');
+          setWsStatus(WsStatus.ERROR);
+          isConnectingRef.current = false;
+        }
+      }, 10000); // 10 second timeout
+
       ws.onopen = () => {
+        clearTimeout(connectionTimeout);
         console.log('[NodesContent] WebSocket connection opened');
         // Wait for 'connected' message from server
       };
@@ -376,30 +396,43 @@ export default function NodesContent() {
       };
 
       ws.onerror = (error) => {
+        clearTimeout(connectionTimeout);
         console.error('[NodesContent] WebSocket error event:', error);
-        setWsStatus(WsStatus.ERROR);
-        setError('Connection error');
+        // Don't set error state here, wait for close event
       };
 
       ws.onclose = (event) => {
+        clearTimeout(connectionTimeout);
         console.log('[NodesContent] WebSocket closed:', event.code, event.reason);
+        wsRef.current = null;
+        isConnectingRef.current = false;
         setWsStatus(WsStatus.DISCONNECTED);
         
         // Clear session on close
         if (event.code !== 1000) { // Not a normal closure
           sessionTokenRef.current = null;
+          
+          // Set error based on close code
+          if (event.code === 1006) {
+            setError('Connection lost. Check your internet connection.');
+          } else if (event.code === 1011) {
+            setError('Server error. Please try again later.');
+          }
         }
         
         // Handle reconnection
         if (mountedRef.current && event.code !== 1000 && reconnectAttemptsRef.current < 5) {
           reconnectAttemptsRef.current++;
-          const delay = 3000 * reconnectAttemptsRef.current;
+          const delay = Math.min(3000 * reconnectAttemptsRef.current, 15000);
           console.log(`[NodesContent] Will reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
+          
           reconnectTimeoutRef.current = setTimeout(() => {
-            if (mountedRef.current) {
+            if (mountedRef.current && wallet.connected) {
               connectWebSocket();
             }
           }, delay);
+        } else if (reconnectAttemptsRef.current >= 5) {
+          setError('Unable to establish connection. Please refresh the page.');
         }
       };
 
@@ -417,6 +450,7 @@ export default function NodesContent() {
       console.error('[NodesContent] WebSocket setup error:', error);
       setWsStatus(WsStatus.ERROR);
       setError('Failed to establish connection');
+      isConnectingRef.current = false;
     }
   }, [wallet, wsStatus, handleWebSocketMessage]);
 
@@ -428,7 +462,12 @@ export default function NodesContent() {
       // Load initial data from REST API first
       loadInitialNodes().then(() => {
         // Then connect WebSocket for real-time updates
-        connectWebSocket();
+        // Add a small delay to ensure wallet is fully ready
+        setTimeout(() => {
+          if (mountedRef.current && wallet.connected) {
+            connectWebSocket();
+          }
+        }, 500);
       });
     } else {
       setLoading(false);
@@ -436,6 +475,7 @@ export default function NodesContent() {
 
     return () => {
       mountedRef.current = false;
+      isConnectingRef.current = false;
       
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -444,7 +484,11 @@ export default function NodesContent() {
       if (wsRef.current) {
         // Stop monitoring before disconnect
         if (wsRef.current.readyState === WebSocket.OPEN && wsStatus === WsStatus.MONITORING) {
-          wsRef.current.send(JSON.stringify({ type: 'stop_monitor' }));
+          try {
+            wsRef.current.send(JSON.stringify({ type: 'stop_monitor' }));
+          } catch (e) {
+            console.error('[NodesContent] Error stopping monitor:', e);
+          }
         }
         
         // Clear ping interval
@@ -455,15 +499,28 @@ export default function NodesContent() {
         wsRef.current.close(1000, 'Component unmounting');
       }
     };
-  }, [wallet.connected, loadInitialNodes, connectWebSocket]);
+  }, [wallet.connected]);
 
   // Handle refresh
   const handleRefresh = useCallback(() => {
     setError(null);
     reconnectAttemptsRef.current = 0;
+    isConnectingRef.current = false;
     loadInitialNodes();
-    connectWebSocket();
-  }, [loadInitialNodes, connectWebSocket]);
+    
+    // Disconnect existing WebSocket before reconnecting
+    if (wsRef.current) {
+      wsRef.current.close(1000, 'User refresh');
+      wsRef.current = null;
+    }
+    
+    // Wait a bit before reconnecting
+    setTimeout(() => {
+      if (mountedRef.current && wallet.connected) {
+        connectWebSocket();
+      }
+    }, 500);
+  }, [loadInitialNodes, connectWebSocket, wallet.connected]);
 
   // Filter nodes based on search and status
   const filteredNodes = nodes.filter(node => {
@@ -536,9 +593,9 @@ export default function NodesContent() {
                 whileTap={{ scale: 0.95 }}
                 onClick={handleRefresh}
                 className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-all"
-                disabled={loading}
+                disabled={loading || isConnectingRef.current}
               >
-                <RefreshCw className={clsx("w-5 h-5 text-gray-400", loading && "animate-spin")} />
+                <RefreshCw className={clsx("w-5 h-5 text-gray-400", (loading || isConnectingRef.current) && "animate-spin")} />
               </motion.button>
             </div>
           </div>
