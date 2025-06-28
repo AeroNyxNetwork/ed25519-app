@@ -1,11 +1,11 @@
 /**
- * Nodes Content Component - Production Grade Fixed Version
+ * Nodes Content Component - Fixed for Backend Compatibility
  * 
  * File Path: src/components/nodes/NodesContent.js
  * 
- * Fixed WebSocket authentication and loading issues
+ * Fixed to match backend WebSocket authentication flow
  * 
- * @version 4.0.0
+ * @version 5.0.0
  * @author AeroNyx Development Team
  */
 
@@ -62,6 +62,8 @@ const itemVariants = {
 const WsStatus = {
   IDLE: 'idle',
   CONNECTING: 'connecting',
+  REQUESTING_MESSAGE: 'requesting_message',
+  SIGNING: 'signing',
   AUTHENTICATING: 'authenticating',
   AUTHENTICATED: 'authenticated',
   MONITORING: 'monitoring',
@@ -81,6 +83,7 @@ export default function NodesContent() {
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const mountedRef = useRef(true);
+  const sessionTokenRef = useRef(null);
 
   /**
    * Initialize nodes from REST API first
@@ -90,6 +93,8 @@ export default function NodesContent() {
     if (!wallet.connected || !wallet.address) return;
 
     try {
+      console.log('[NodesContent] Loading initial nodes from REST API');
+      
       // Get signature for API authentication
       const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       if (!messageResponse.success) {
@@ -141,6 +146,7 @@ export default function NodesContent() {
 
         setNodes(allNodes);
         setLoading(false);
+        console.log('[NodesContent] Loaded', allNodes.length, 'nodes from REST API');
       }
     } catch (err) {
       console.error('[NodesContent] Error loading initial nodes:', err);
@@ -166,18 +172,21 @@ export default function NodesContent() {
       setWsStatus(WsStatus.CONNECTING);
       setError(null);
       
+      console.log('[NodesContent] Connecting to WebSocket');
       const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
       wsRef.current = ws;
 
       ws.onopen = () => {
         console.log('[NodesContent] WebSocket connected');
-        setWsStatus(WsStatus.AUTHENTICATING);
+        setWsStatus(WsStatus.REQUESTING_MESSAGE);
         
         // Request signature message
-        ws.send(JSON.stringify({
+        const messageData = {
           type: 'get_message',
-          wallet_address: wallet.address.toLowerCase()
-        }));
+          wallet_address: wallet.address.toLowerCase() // Backend expects lowercase
+        };
+        console.log('[NodesContent] Sending get_message:', messageData);
+        ws.send(JSON.stringify(messageData));
       };
 
       ws.onmessage = async (event) => {
@@ -185,24 +194,51 @@ export default function NodesContent() {
         
         try {
           const data = JSON.parse(event.data);
-          console.log('[NodesContent] WebSocket message:', data.type);
+          console.log('[NodesContent] WebSocket message received:', data.type, data);
           
           switch (data.type) {
+            case 'connected':
+              console.log('[NodesContent] Connected message received');
+              // The backend sends this first, then we need to request signature message
+              setWsStatus(WsStatus.REQUESTING_MESSAGE);
+              const messageData = {
+                type: 'get_message',
+                wallet_address: wallet.address.toLowerCase()
+              };
+              console.log('[NodesContent] Sending get_message after connected:', messageData);
+              ws.send(JSON.stringify(messageData));
+              break;
+              
             case 'signature_message':
+              console.log('[NodesContent] Signature message received:', data.message);
+              setWsStatus(WsStatus.SIGNING);
+              
               try {
+                // Sign the exact message from backend
                 const signature = await signMessage(
                   wallet.provider,
                   data.message,
                   wallet.address
                 );
                 
-                ws.send(JSON.stringify({
+                console.log('[NodesContent] Message signed successfully');
+                setWsStatus(WsStatus.AUTHENTICATING);
+                
+                // Send auth with exact format backend expects
+                const authData = {
                   type: 'auth',
-                  wallet_address: wallet.address.toLowerCase(),
+                  wallet_address: wallet.address.toLowerCase(), // Backend expects lowercase
                   signature: signature,
-                  message: data.message,
-                  wallet_type: 'okx' // Match wallet type
-                }));
+                  message: data.message, // Use exact message from backend
+                  wallet_type: 'okx' // Backend requires this field
+                };
+                
+                console.log('[NodesContent] Sending auth:', {
+                  ...authData,
+                  signature: authData.signature.substring(0, 20) + '...'
+                });
+                
+                ws.send(JSON.stringify(authData));
               } catch (signError) {
                 console.error('[NodesContent] Signing error:', signError);
                 setError('Failed to sign authentication message');
@@ -211,19 +247,47 @@ export default function NodesContent() {
               break;
               
             case 'auth_success':
-              console.log('[NodesContent] WebSocket authenticated');
+              console.log('[NodesContent] Authentication successful');
               setWsStatus(WsStatus.AUTHENTICATED);
               
+              // Store session token if provided
+              if (data.session_token) {
+                sessionTokenRef.current = data.session_token;
+                console.log('[NodesContent] Session token stored');
+              }
+              
+              // Update nodes if provided
+              if (data.nodes && Array.isArray(data.nodes)) {
+                console.log('[NodesContent] Received', data.nodes.length, 'nodes in auth response');
+                const formattedNodes = data.nodes.map(node => ({
+                  ...node,
+                  code: node.code || node.reference_code,
+                  status: 'unknown', // Will be updated by status_update
+                  type: 'general',
+                  performance: {
+                    cpu: 0,
+                    memory: 0,
+                    disk: 0,
+                    network: 0
+                  },
+                  earnings: '0.00',
+                  uptime: '0h 0m'
+                }));
+                setNodes(formattedNodes);
+              }
+              
               // Start monitoring
+              console.log('[NodesContent] Starting monitor');
               ws.send(JSON.stringify({ type: 'start_monitor' }));
               break;
               
             case 'monitor_started':
-              console.log('[NodesContent] Monitoring started');
+              console.log('[NodesContent] Monitoring started successfully');
               setWsStatus(WsStatus.MONITORING);
               break;
               
             case 'status_update':
+              console.log('[NodesContent] Status update received');
               if (data.nodes && Array.isArray(data.nodes)) {
                 const updatedNodes = data.nodes.map(node => ({
                   ...node,
@@ -233,9 +297,12 @@ export default function NodesContent() {
                     memory: node.performance?.memory || 0,
                     disk: node.performance?.disk || 0,
                     network: node.performance?.network || 0
-                  }
+                  },
+                  earnings: node.earnings || '0.00',
+                  uptime: node.uptime || '0h 0m'
                 }));
                 setNodes(updatedNodes);
+                console.log('[NodesContent] Updated', updatedNodes.length, 'nodes');
               }
               break;
               
@@ -243,7 +310,24 @@ export default function NodesContent() {
               console.error('[NodesContent] WebSocket error:', data.message);
               setError(data.message || 'WebSocket error');
               setWsStatus(WsStatus.ERROR);
+              
+              // If authentication failed, try to reconnect
+              if (data.message && data.message.includes('auth')) {
+                console.log('[NodesContent] Auth error, will retry connection');
+                setTimeout(() => {
+                  if (mountedRef.current) {
+                    connectWebSocket();
+                  }
+                }, 3000);
+              }
               break;
+              
+            case 'pong':
+              console.log('[NodesContent] Pong received');
+              break;
+              
+            default:
+              console.log('[NodesContent] Unknown message type:', data.type);
           }
         } catch (parseError) {
           console.error('[NodesContent] Message parsing error:', parseError);
@@ -251,7 +335,7 @@ export default function NodesContent() {
       };
 
       ws.onerror = (error) => {
-        console.error('[NodesContent] WebSocket error:', error);
+        console.error('[NodesContent] WebSocket error event:', error);
         setWsStatus(WsStatus.ERROR);
         setError('Connection error');
       };
@@ -259,9 +343,11 @@ export default function NodesContent() {
       ws.onclose = (event) => {
         console.log('[NodesContent] WebSocket closed:', event.code, event.reason);
         setWsStatus(WsStatus.DISCONNECTED);
+        sessionTokenRef.current = null;
         
         // Don't reconnect if component is unmounting or user disconnected
         if (mountedRef.current && event.code !== 1000) {
+          console.log('[NodesContent] Will reconnect in 5 seconds');
           reconnectTimeoutRef.current = setTimeout(() => {
             if (mountedRef.current) {
               connectWebSocket();
@@ -269,6 +355,16 @@ export default function NodesContent() {
           }, 5000);
         }
       };
+
+      // Send periodic pings to keep connection alive
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000);
+
+      // Store interval ID for cleanup
+      ws.pingInterval = pingInterval;
 
     } catch (error) {
       console.error('[NodesContent] WebSocket setup error:', error);
@@ -299,6 +395,10 @@ export default function NodesContent() {
       }
       
       if (wsRef.current) {
+        // Clear ping interval
+        if (wsRef.current.pingInterval) {
+          clearInterval(wsRef.current.pingInterval);
+        }
         wsRef.current.close(1000, 'Component unmounting');
       }
     };
@@ -324,6 +424,8 @@ export default function NodesContent() {
     const statusConfig = {
       [WsStatus.IDLE]: { color: 'gray', label: 'Idle', Icon: Activity },
       [WsStatus.CONNECTING]: { color: 'yellow', label: 'Connecting', Icon: Loader2, spin: true },
+      [WsStatus.REQUESTING_MESSAGE]: { color: 'yellow', label: 'Requesting', Icon: Loader2, spin: true },
+      [WsStatus.SIGNING]: { color: 'yellow', label: 'Signing', Icon: Loader2, spin: true },
       [WsStatus.AUTHENTICATING]: { color: 'yellow', label: 'Authenticating', Icon: Loader2, spin: true },
       [WsStatus.AUTHENTICATED]: { color: 'blue', label: 'Connected', Icon: CheckCircle },
       [WsStatus.MONITORING]: { color: 'green', label: 'Live', Icon: Activity, pulse: true },
@@ -493,10 +595,11 @@ function NodeCard({ node }) {
     online: { color: 'green', Icon: CheckCircle, label: 'Online', glow: 'shadow-green-500/20' },
     offline: { color: 'red', Icon: XCircle, label: 'Offline', glow: 'shadow-red-500/20' },
     pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending', glow: 'shadow-yellow-500/20' },
-    registered: { color: 'blue', Icon: AlertCircle, label: 'Registered', glow: 'shadow-blue-500/20' }
+    registered: { color: 'blue', Icon: AlertCircle, label: 'Registered', glow: 'shadow-blue-500/20' },
+    unknown: { color: 'gray', Icon: AlertCircle, label: 'Unknown', glow: 'shadow-gray-500/20' }
   };
   
-  const config = statusConfig[node.status] || statusConfig.offline;
+  const config = statusConfig[node.status] || statusConfig.unknown;
   const { Icon } = config;
 
   const performance = node.performance || {};
