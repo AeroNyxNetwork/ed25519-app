@@ -1,11 +1,23 @@
 /**
- * Dashboard Content Component - Fixed WebSocket Connection
+ * Dashboard Content Component - WebSocket Only Implementation
  * 
  * File Path: src/components/dashboard/DashboardContent.js
  * 
- * Fixed WebSocket connection issues
+ * IMPORTANT: This component uses WebSocket ONLY for all data communication.
+ * DO NOT add REST API calls - all data must come through WebSocket connection.
  * 
- * @version 10.0.0
+ * WebSocket Protocol Flow:
+ * 1. Connect to wss://api.aeronyx.network/ws/aeronyx/user-monitor/
+ * 2. Receive 'connected' message
+ * 3. Send 'get_message' with wallet_address
+ * 4. Receive 'signature_message' with message to sign
+ * 5. Sign message with wallet
+ * 6. Send 'auth' with signature
+ * 7. Receive 'auth_success' with nodes
+ * 8. Send 'start_monitor' to begin monitoring
+ * 9. Receive periodic 'status_update' messages
+ * 
+ * @version 11.0.0
  * @author AeroNyx Development Team
  */
 
@@ -31,7 +43,6 @@ import clsx from 'clsx';
 
 // Component imports
 import { useWallet } from '../wallet/WalletProvider';
-import { signMessage } from '../../lib/utils/walletSignature';
 
 // Animation variants
 const containerVariants = {
@@ -58,6 +69,13 @@ const itemVariants = {
 
 /**
  * Dashboard Content Component
+ * 
+ * RULES:
+ * 1. NO REST API calls - all data via WebSocket
+ * 2. wallet_type MUST be 'okx' for OKX wallet
+ * 3. Message signing must use exact wallet address from signature message
+ * 4. All wallet addresses sent to backend must be lowercase
+ * 5. Signature must include '0x' prefix
  */
 export default function DashboardContent() {
   const { wallet } = useWallet();
@@ -67,7 +85,7 @@ export default function DashboardContent() {
     connected: false,
     authenticated: false,
     monitoring: false,
-    authState: 'idle',
+    authState: 'idle', // idle, connecting, requesting_message, signing, authenticating, authenticated, error
     error: null
   });
   
@@ -90,7 +108,11 @@ export default function DashboardContent() {
   const isConnectingRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
   
-  // Calculate resource utilization
+  /**
+   * Calculate resource utilization from nodes
+   * @param {Array} nodes - Array of node objects
+   * @returns {number} Average resource utilization percentage
+   */
   const calculateResourceUtilization = useCallback((nodes) => {
     if (!Array.isArray(nodes) || nodes.length === 0) return 0;
     
@@ -106,7 +128,10 @@ export default function DashboardContent() {
     return Math.round(totalUtil / activeNodes.length);
   }, []);
   
-  // Process nodes data from WebSocket
+  /**
+   * Process nodes data from WebSocket status_update
+   * @param {Object} data - WebSocket message data
+   */
   const processNodesData = useCallback((data) => {
     if (!data || !data.nodes || !Array.isArray(data.nodes)) {
       return;
@@ -129,46 +154,98 @@ export default function DashboardContent() {
     });
   }, [calculateResourceUtilization]);
   
-  // Send WebSocket message
+  /**
+   * Send message through WebSocket
+   * @param {Object} data - Data to send
+   */
   const sendMessage = useCallback((data) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      console.log('[Dashboard] Sending message:', data.type, data);
       wsRef.current.send(JSON.stringify(data));
+    } else {
+      console.warn('[Dashboard] Cannot send message - WebSocket not open');
     }
   }, []);
   
-  // Handle WebSocket messages
+  /**
+   * Sign message with wallet
+   * CRITICAL: Must extract wallet address from message to ensure consistency
+   * @param {string} message - Message to sign
+   * @returns {Promise<string>} Signature
+   */
+  const signMessage = useCallback(async (message) => {
+    // Extract wallet address from message to ensure exact match
+    const walletMatch = message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
+    if (!walletMatch || !walletMatch[1]) {
+      throw new Error('Could not extract wallet address from message');
+    }
+    
+    const messageWallet = walletMatch[1];
+    console.log('[Dashboard] Signing with wallet address from message:', messageWallet);
+    
+    // For OKX wallet, ensure we use the correct account
+    if (window.okxwallet && wallet.provider === window.okxwallet) {
+      const accounts = await wallet.provider.request({ method: 'eth_accounts' });
+      const accountToUse = accounts.find(acc => acc.toLowerCase() === messageWallet.toLowerCase()) || accounts[0];
+      
+      const signature = await wallet.provider.request({
+        method: 'personal_sign',
+        params: [message, accountToUse]
+      });
+      
+      return signature.startsWith('0x') ? signature : `0x${signature}`;
+    }
+    
+    // Standard signing for other wallets
+    const signature = await wallet.provider.request({
+      method: 'personal_sign',
+      params: [message, messageWallet]
+    });
+    
+    return signature.startsWith('0x') ? signature : `0x${signature}`;
+  }, [wallet]);
+  
+  /**
+   * Handle WebSocket messages
+   * @param {MessageEvent} event - WebSocket message event
+   */
   const handleMessage = useCallback(async (event) => {
     try {
       const data = JSON.parse(event.data);
-      console.log('[Dashboard] Received message:', data.type);
+      console.log('[Dashboard] Received message:', data.type, data);
       
       switch (data.type) {
         case 'connected':
+          // Step 1: WebSocket connected, request signature message
           setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message', error: null }));
           sendMessage({
             type: 'get_message',
-            wallet_address: wallet.address.toLowerCase()
+            wallet_address: wallet.address.toLowerCase() // Backend expects lowercase
           });
           break;
           
         case 'signature_message':
+          // Step 2: Received message to sign
           setWsState(prev => ({ ...prev, authState: 'signing' }));
           
           try {
-            const signature = await signMessage(
-              wallet.provider,
-              data.message,
-              wallet.address
-            );
+            // Sign the message
+            const signature = await signMessage(data.message);
+            console.log('[Dashboard] Signature obtained:', signature);
             
             setWsState(prev => ({ ...prev, authState: 'authenticating' }));
             
+            // Extract wallet address from message for consistency
+            const walletMatch = data.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
+            const messageWallet = walletMatch ? walletMatch[1] : wallet.address;
+            
+            // Send authentication request
             sendMessage({
               type: 'auth',
-              wallet_address: wallet.address.toLowerCase(),
+              wallet_address: messageWallet.toLowerCase(), // Backend expects lowercase
               signature: signature,
-              message: data.message,
-              wallet_type: 'okx' // Using okx to match the rest of the app
+              message: data.message, // Use exact message from server
+              wallet_type: 'okx' // IMPORTANT: Backend code shows OKX-specific handling
             });
             
           } catch (error) {
@@ -176,12 +253,13 @@ export default function DashboardContent() {
             setWsState(prev => ({ 
               ...prev, 
               authState: 'error', 
-              error: 'Failed to sign message' 
+              error: 'Failed to sign message: ' + error.message 
             }));
           }
           break;
           
         case 'auth_success':
+          // Step 3: Authentication successful
           console.log('[Dashboard] Authentication successful');
           setWsState(prev => ({ 
             ...prev, 
@@ -192,12 +270,13 @@ export default function DashboardContent() {
           
           reconnectAttemptsRef.current = 0; // Reset reconnect attempts
           
+          // Process initial nodes if provided
           if (data.nodes) {
             const initialNodes = data.nodes.map(node => ({
               code: node.code,
               name: node.name,
               id: node.id,
-              status: 'unknown',
+              status: 'unknown', // Will be updated by status_update
               type: 'unknown',
               performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
               earnings: 0,
@@ -214,15 +293,18 @@ export default function DashboardContent() {
             }));
           }
           
+          // Start monitoring
           sendMessage({ type: 'start_monitor' });
           break;
           
         case 'monitor_started':
+          // Step 4: Monitoring started
           console.log('[Dashboard] Monitoring started');
           setWsState(prev => ({ ...prev, monitoring: true }));
           break;
           
         case 'status_update':
+          // Step 5: Periodic status updates
           setWsState(prev => ({ ...prev, monitoring: true }));
           processNodesData(data);
           break;
@@ -234,6 +316,7 @@ export default function DashboardContent() {
             error: data.message || 'Server error'
           }));
           
+          // Handle authentication errors
           if (data.error_code === 'authentication_required' || data.error_code === 'invalid_signature') {
             // Need to re-authenticate
             setWsState(prev => ({ ...prev, authenticated: false, authState: 'requesting_message' }));
@@ -243,13 +326,24 @@ export default function DashboardContent() {
             });
           }
           break;
+          
+        case 'pong':
+          // Response to ping
+          console.log('[Dashboard] Pong received');
+          break;
+          
+        default:
+          console.log('[Dashboard] Unknown message type:', data.type);
       }
     } catch (error) {
       console.error('[Dashboard] Message handling error:', error);
     }
-  }, [wallet.address, wallet.provider, sendMessage, processNodesData]);
+  }, [wallet.address, sendMessage, processNodesData, signMessage]);
   
-  // Setup WebSocket connection
+  /**
+   * Connect to WebSocket
+   * IMPORTANT: Only connects when wallet is ready and not already connecting
+   */
   const connectWebSocket = useCallback(() => {
     // Prevent multiple simultaneous connections
     if (!wallet.connected || isConnectingRef.current || wsRef.current) {
@@ -284,7 +378,7 @@ export default function DashboardContent() {
       }, 10000);
       
       ws.onopen = () => {
-        console.log('[Dashboard] WebSocket connected');
+        console.log('[Dashboard] WebSocket opened');
         clearTimeout(timeoutId);
         // Wait for 'connected' message from server
       };
@@ -334,6 +428,16 @@ export default function DashboardContent() {
         }
       };
       
+      // Set up ping interval to keep connection alive
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000);
+      
+      // Store interval ID for cleanup
+      ws.pingInterval = pingInterval;
+      
     } catch (error) {
       console.error('[Dashboard] WebSocket setup error:', error);
       wsRef.current = null;
@@ -346,7 +450,10 @@ export default function DashboardContent() {
     }
   }, [wallet.connected, handleMessage]);
   
-  // Initialize WebSocket when wallet is connected
+  /**
+   * Initialize WebSocket when wallet is connected
+   * IMPORTANT: Do not add connectWebSocket to dependencies to avoid loops
+   */
   useEffect(() => {
     mountedRef.current = true;
     reconnectAttemptsRef.current = 0;
@@ -373,13 +480,25 @@ export default function DashboardContent() {
       }
       
       if (wsRef.current) {
+        // Stop monitoring before disconnect
+        if (wsRef.current.readyState === WebSocket.OPEN && wsState.monitoring) {
+          wsRef.current.send(JSON.stringify({ type: 'stop_monitor' }));
+        }
+        
+        // Clear ping interval
+        if (wsRef.current.pingInterval) {
+          clearInterval(wsRef.current.pingInterval);
+        }
+        
         wsRef.current.close(1000, 'Component unmounting');
         wsRef.current = null;
       }
     };
-  }, [wallet.connected, wallet.address]); // Remove connectWebSocket from dependencies
+  }, [wallet.connected, wallet.address]); // Do NOT add connectWebSocket here
   
-  // Event handlers
+  /**
+   * Handle refresh - reconnect WebSocket
+   */
   const handleRefresh = useCallback(() => {
     console.log('[Dashboard] Refreshing connection');
     reconnectAttemptsRef.current = 0;
@@ -604,7 +723,7 @@ export default function DashboardContent() {
   );
 }
 
-// Sub Components remain the same...
+// Sub Components (unchanged, keeping them for completeness)
 
 function GlassCard({ children, className }) {
   return (
