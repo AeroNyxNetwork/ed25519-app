@@ -32,7 +32,7 @@ import clsx from 'clsx';
 import { useWallet } from '../../../components/wallet/WalletProvider';
 import nodeRegistrationService from '../../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
-
+import { useSignature } from '../../../hooks/useSignature';
 
 // Animation variants
 const containerVariants = {
@@ -77,6 +77,9 @@ const RESOURCES = [
 export default function RegisterNode() {
   const { wallet } = useWallet();
   const router = useRouter();
+  
+  // Use the signature hook
+  const signatureData = useSignature('register');
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -127,16 +130,27 @@ export default function RegisterNode() {
   }, []);
 
   const handleSubmit = useCallback(async () => {
+    if (!nodeInfo.name) {
+      setError('Please enter a node name');
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     
     try {
-      // 使用已缓存的签名
-      if (!signature || !message) {
-        setError('Please wait for signature to be generated');
+      // Check if signature is available
+      if (!signatureData.signature || !signatureData.message) {
+        // If not, try to generate it
+        if (!signatureData.isLoading) {
+          setError('Authentication required. Please wait...');
+          // The hook should automatically generate the signature
+        }
         setLoading(false);
         return;
       }
+      
+      console.log('[Register] Using signature from hook');
       
       // Transform resources
       const resourcesPayload = {};
@@ -144,7 +158,13 @@ export default function RegisterNode() {
         resourcesPayload[key] = nodeInfo.resources[key];
       });
       
-      // Create node - 直接使用缓存的签名
+      console.log('[Register] Creating node with payload:', {
+        name: nodeInfo.name,
+        type: nodeInfo.type,
+        resources: resourcesPayload
+      });
+      
+      // Create node using signature from hook
       const createResponse = await nodeRegistrationService.createNode(
         {
           name: nodeInfo.name,
@@ -152,9 +172,11 @@ export default function RegisterNode() {
           resources: resourcesPayload
         },
         wallet.address,
-        signature,  // 使用缓存的签名
-        message     // 使用缓存的消息
+        signatureData.signature,
+        signatureData.message
       );
+      
+      console.log('[Register] Create node response:', createResponse);
       
       if (createResponse.success && createResponse.data) {
         setNodeId(createResponse.data.id);
@@ -164,22 +186,29 @@ export default function RegisterNode() {
         const codeResponse = await nodeRegistrationService.generateRegistrationCode(
           createResponse.data.id,
           wallet.address,
-          signature,  // 使用缓存的签名
-          message,    // 使用缓存的消息
+          signatureData.signature,
+          signatureData.message,
           1
         );
+        
+        console.log('[Register] Registration code response:', codeResponse);
         
         if (codeResponse.success && codeResponse.data) {
           setRegistrationCode(codeResponse.data.registration_code);
           setStep(2);
+        } else {
+          throw new Error(codeResponse.message || 'Failed to generate registration code');
         }
+      } else {
+        throw new Error(createResponse.message || 'Failed to create node');
       }
     } catch (err) {
+      console.error('[Register] Error:', err);
       setError(err.message || 'Failed to register node');
     } finally {
       setLoading(false);
     }
-  }, [wallet, nodeInfo, signature, message]); 
+  }, [wallet.address, nodeInfo, signatureData]);
 
   const completeRegistration = useCallback(async () => {
     setLoading(true);
@@ -388,13 +417,25 @@ export default function RegisterNode() {
                   )}
                 </AnimatePresence>
 
+                {/* Signature Status */}
+                {signatureData.isLoading && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-center gap-3"
+                  >
+                    <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+                    <p className="text-sm text-blue-300">Preparing authentication...</p>
+                  </motion.div>
+                )}
+
                 {/* Submit Button */}
                 <motion.button
                   variants={itemVariants}
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleSubmit}
-                  disabled={!nodeInfo.name || loading}
+                  disabled={!nodeInfo.name || loading || signatureData.isLoading}
                   className={clsx(
                     "w-full py-3 rounded-xl font-medium transition-all flex items-center justify-center gap-2",
                     "bg-gradient-to-r from-purple-600 to-blue-600 text-white",
@@ -405,7 +446,12 @@ export default function RegisterNode() {
                   {loading ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      Signing & Generating...
+                      Generating...
+                    </>
+                  ) : signatureData.isLoading ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Preparing...
                     </>
                   ) : (
                     <>
