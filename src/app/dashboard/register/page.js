@@ -25,7 +25,8 @@ import {
   AlertCircle,
   Loader2,
   ChevronRight,
-  Plus
+  Plus,
+  Wifi
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -139,18 +140,44 @@ export default function RegisterNode() {
     setError(null);
     
     try {
-      // Check if signature is available
-      if (!signatureData.signature || !signatureData.message) {
-        // If not, try to generate it
-        if (!signatureData.isLoading) {
-          setError('Authentication required. Please wait...');
-          // The hook should automatically generate the signature
+      // Ensure we have a valid signature
+      let currentSignature = signatureData.signature;
+      let currentMessage = signatureData.message;
+      
+      // Check if signature is valid
+      if (!signatureData.isValid) {
+        console.log('[Register] No valid signature found, generating new one...');
+        
+        // If hook is already loading, wait for it
+        if (signatureData.isLoading) {
+          setError('Generating authentication signature, please wait...');
+          setLoading(false);
+          return;
         }
-        setLoading(false);
-        return;
+        
+        // Try to generate signature
+        try {
+          const newSignature = await signatureData.generateSignature();
+          if (!newSignature) {
+            throw new Error('Failed to generate signature');
+          }
+          currentSignature = newSignature.signature;
+          currentMessage = newSignature.message;
+        } catch (sigError) {
+          console.error('[Register] Signature generation failed:', sigError);
+          
+          // Check if user rejected
+          if (sigError.message?.includes('rejected')) {
+            setError('Please approve the signature request in your wallet');
+          } else {
+            setError('Failed to authenticate with wallet. Please try again.');
+          }
+          setLoading(false);
+          return;
+        }
       }
       
-      console.log('[Register] Using signature from hook');
+      console.log('[Register] Using signature for node creation');
       
       // Transform resources
       const resourcesPayload = {};
@@ -164,7 +191,7 @@ export default function RegisterNode() {
         resources: resourcesPayload
       });
       
-      // Create node using signature from hook
+      // Create node using signature
       const createResponse = await nodeRegistrationService.createNode(
         {
           name: nodeInfo.name,
@@ -172,8 +199,8 @@ export default function RegisterNode() {
           resources: resourcesPayload
         },
         wallet.address,
-        signatureData.signature,
-        signatureData.message
+        currentSignature,
+        currentMessage
       );
       
       console.log('[Register] Create node response:', createResponse);
@@ -186,8 +213,8 @@ export default function RegisterNode() {
         const codeResponse = await nodeRegistrationService.generateRegistrationCode(
           createResponse.data.id,
           wallet.address,
-          signatureData.signature,
-          signatureData.message,
+          currentSignature,
+          currentMessage,
           1
         );
         
@@ -429,6 +456,36 @@ export default function RegisterNode() {
                   </motion.div>
                 )}
 
+                {signatureData.isValid && !signatureData.isLoading && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="p-4 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center gap-3"
+                  >
+                    <CheckCircle className="w-5 h-5 text-green-400" />
+                    <p className="text-sm text-green-300">Wallet authenticated successfully</p>
+                  </motion.div>
+                )}
+
+                {signatureData.error && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3"
+                  >
+                    <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm text-red-300">{signatureData.error}</p>
+                      <button
+                        onClick={() => signatureData.refreshSignature()}
+                        className="text-xs text-red-400 hover:text-red-300 mt-1 underline"
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+
                 {/* Submit Button */}
                 <motion.button
                   variants={itemVariants}
@@ -451,7 +508,7 @@ export default function RegisterNode() {
                   ) : signatureData.isLoading ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      Preparing...
+                      Authenticating...
                     </>
                   ) : (
                     <>
