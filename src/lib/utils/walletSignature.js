@@ -2,8 +2,31 @@
  * Wallet Signature utilities for AeroNyx platform
  * Multi-wallet support with proper encoding
  * 
- * @version 3.0.0
+ * @version 3.1.0
  */
+
+/**
+ * Detect wallet type from available window objects
+ * @returns {string} Detected wallet type
+ */
+function detectWalletType() {
+  if (window.okxwallet && window.okxwallet.solana) {
+    return 'okx';
+  }
+  if (window.solana && window.solana.isPhantom) {
+    return 'phantom';
+  }
+  if (window.ethereum && window.ethereum.isMetaMask) {
+    return 'metamask';
+  }
+  if (window.solana) {
+    return 'solana';
+  }
+  if (window.ethereum) {
+    return 'ethereum'; // Generic ethereum wallet
+  }
+  return 'unknown';
+}
 
 /**
  * Sign a message with the connected wallet
@@ -21,11 +44,22 @@ export async function signMessage(message, wallet) {
   try {
     let signature;
     const normalizedAddress = wallet.address.toLowerCase();
+    
+    // If wallet type is not provided, try to detect it
+    const walletType = wallet.type || detectWalletType();
+    
+    console.log('[WalletSignature] Detected wallet type:', walletType);
+    console.log('[WalletSignature] Available window objects:', {
+      okxwallet: !!window.okxwallet,
+      solana: !!window.solana,
+      ethereum: !!window.ethereum,
+      phantom: window.solana?.isPhantom
+    });
 
-    switch (wallet.type) {
+    switch (walletType) {
       case 'okx':
-        if (!window.okxwallet) {
-          throw new Error('OKX Wallet not found');
+        if (!window.okxwallet || !window.okxwallet.solana) {
+          throw new Error('OKX Wallet not found. Please ensure OKX Wallet extension is installed.');
         }
         
         // OKX wallet uses Solana-style signing
@@ -39,8 +73,9 @@ export async function signMessage(message, wallet) {
         break;
 
       case 'metamask':
+      case 'ethereum':
         if (!window.ethereum) {
-          throw new Error('MetaMask not found');
+          throw new Error('MetaMask not found. Please ensure MetaMask extension is installed.');
         }
         
         // MetaMask uses personal_sign
@@ -52,40 +87,52 @@ export async function signMessage(message, wallet) {
         // Ensure 0x prefix
         signature = signature.startsWith('0x') ? signature : `0x${signature}`;
         
-        console.log('[WalletSignature] MetaMask signature generated');
+        console.log('[WalletSignature] MetaMask/Ethereum signature generated');
         break;
 
       case 'phantom':
-        if (!window.solana) {
-          throw new Error('Phantom wallet not found');
-        }
-        
-        // Phantom uses Solana-style signing
-        const encodedMessage = new TextEncoder().encode(message);
-        const phantomSigned = await window.solana.signMessage(encodedMessage, 'utf8');
-        // Convert Uint8Array to base64
-        signature = btoa(String.fromCharCode(...phantomSigned.signature));
-        
-        console.log('[WalletSignature] Phantom signature generated');
-        break;
-
       case 'solana':
-        // Generic Solana wallet
         if (!window.solana) {
-          throw new Error('Solana wallet not found');
+          throw new Error('Solana wallet not found. Please ensure Phantom or another Solana wallet is installed.');
         }
         
-        const solanaSigned = await window.solana.signMessage(
-          new TextEncoder().encode(message),
-          'utf8'
-        );
+        // Phantom/Solana uses Solana-style signing
+        const encodedMessage = new TextEncoder().encode(message);
+        const solanaSigned = await window.solana.signMessage(encodedMessage, 'utf8');
+        // Convert Uint8Array to base64
         signature = btoa(String.fromCharCode(...solanaSigned.signature));
         
-        console.log('[WalletSignature] Solana signature generated');
+        console.log('[WalletSignature] Phantom/Solana signature generated');
         break;
 
       default:
-        throw new Error(`Unsupported wallet type: ${wallet.type}`);
+        // Try to detect and use available wallet
+        if (window.okxwallet && window.okxwallet.solana) {
+          console.log('[WalletSignature] Falling back to OKX wallet');
+          const okxSigned = await window.okxwallet.solana.signMessage(
+            new TextEncoder().encode(message)
+          );
+          signature = btoa(String.fromCharCode(...okxSigned.signature));
+          break;
+        } else if (window.solana) {
+          console.log('[WalletSignature] Falling back to Solana wallet');
+          const solanaSigned = await window.solana.signMessage(
+            new TextEncoder().encode(message),
+            'utf8'
+          );
+          signature = btoa(String.fromCharCode(...solanaSigned.signature));
+          break;
+        } else if (window.ethereum) {
+          console.log('[WalletSignature] Falling back to Ethereum wallet');
+          signature = await window.ethereum.request({
+            method: 'personal_sign',
+            params: [message, normalizedAddress]
+          });
+          signature = signature.startsWith('0x') ? signature : `0x${signature}`;
+          break;
+        } else {
+          throw new Error(`No supported wallet found. Please install OKX Wallet, MetaMask, or Phantom.`);
+        }
     }
 
     console.log('[WalletSignature] Message signed successfully');
@@ -94,11 +141,20 @@ export async function signMessage(message, wallet) {
       signature,
       message,
       walletAddress: normalizedAddress,
-      walletType: wallet.type
+      walletType: walletType !== 'unknown' ? walletType : detectWalletType()
     };
 
   } catch (error) {
     console.error('[WalletSignature] Signature error:', error);
+    
+    // Provide more helpful error messages
+    if (error.code === 4001) {
+      throw new Error('User rejected the signature request');
+    }
+    if (error.message?.includes('User denied')) {
+      throw new Error('User denied the signature request');
+    }
+    
     throw error;
   }
 }
@@ -154,8 +210,24 @@ export function isValidSignatureFormat(signature, walletType = 'metamask') {
     return false;
   }
   
+  // If wallet type is not provided, try to detect format
+  if (!walletType || walletType === 'unknown') {
+    // Check if it's hex format (Ethereum)
+    if (signature.startsWith('0x') && /^0x[0-9a-fA-F]+$/.test(signature)) {
+      return true;
+    }
+    // Check if it's base64 format (Solana)
+    try {
+      atob(signature);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  
   switch (walletType) {
     case 'metamask':
+    case 'ethereum':
       // Must have 0x prefix and be valid hex
       if (!signature.startsWith('0x')) {
         return false;
@@ -282,7 +354,7 @@ export function convertSignatureFormat(signature, fromType, toType) {
   }
   
   // Convert from hex to base64
-  if (fromType === 'metamask' && ['okx', 'phantom', 'solana'].includes(toType)) {
+  if ((fromType === 'metamask' || fromType === 'ethereum') && ['okx', 'phantom', 'solana'].includes(toType)) {
     // Remove 0x prefix if present
     const hex = signature.startsWith('0x') ? signature.slice(2) : signature;
     // Convert hex to bytes then to base64
@@ -291,7 +363,7 @@ export function convertSignatureFormat(signature, fromType, toType) {
   }
   
   // Convert from base64 to hex
-  if (['okx', 'phantom', 'solana'].includes(fromType) && toType === 'metamask') {
+  if (['okx', 'phantom', 'solana'].includes(fromType) && (toType === 'metamask' || toType === 'ethereum')) {
     // Convert base64 to bytes
     const bytes = atob(signature).split('').map(char => char.charCodeAt(0));
     // Convert bytes to hex
