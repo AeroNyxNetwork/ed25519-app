@@ -33,6 +33,7 @@ import { useWallet } from '../../../components/wallet/WalletProvider';
 import nodeRegistrationService from '../../../lib/api/nodeRegistration';
 import { signMessage, formatMessageForSigning } from '../../../lib/utils/walletSignature';
 
+
 // Animation variants
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -130,48 +131,47 @@ export default function RegisterNode() {
     setError(null);
     
     try {
-      // Get signature message
-      const response = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+      // 使用已缓存的签名
+      if (!signature || !message) {
+        setError('Please wait for signature to be generated');
+        setLoading(false);
+        return;
+      }
       
-      if (response.success && response.data) {
-        const formattedMessage = formatMessageForSigning(response.data.message);
-        const sig = await signMessage(wallet.provider, formattedMessage, wallet.address);
+      // Transform resources
+      const resourcesPayload = {};
+      Object.keys(nodeInfo.resources).forEach(key => {
+        resourcesPayload[key] = nodeInfo.resources[key];
+      });
+      
+      // Create node - 直接使用缓存的签名
+      const createResponse = await nodeRegistrationService.createNode(
+        {
+          name: nodeInfo.name,
+          type: nodeInfo.type,
+          resources: resourcesPayload
+        },
+        wallet.address,
+        signature,  // 使用缓存的签名
+        message     // 使用缓存的消息
+      );
+      
+      if (createResponse.success && createResponse.data) {
+        setNodeId(createResponse.data.id);
+        setReferenceCode(createResponse.data.reference_code);
         
-        // Transform resources
-        const resourcesPayload = {};
-        Object.keys(nodeInfo.resources).forEach(key => {
-          resourcesPayload[key] = nodeInfo.resources[key];
-        });
-        
-        // Create node
-        const createResponse = await nodeRegistrationService.createNode(
-          {
-            name: nodeInfo.name,
-            type: nodeInfo.type,
-            resources: resourcesPayload
-          },
+        // Generate registration code
+        const codeResponse = await nodeRegistrationService.generateRegistrationCode(
+          createResponse.data.id,
           wallet.address,
-          sig,
-          response.data.message
+          signature,  // 使用缓存的签名
+          message,    // 使用缓存的消息
+          1
         );
         
-        if (createResponse.success && createResponse.data) {
-          setNodeId(createResponse.data.id);
-          setReferenceCode(createResponse.data.reference_code);
-          
-          // Generate registration code
-          const codeResponse = await nodeRegistrationService.generateRegistrationCode(
-            createResponse.data.id,
-            wallet.address,
-            sig,
-            response.data.message,
-            1
-          );
-          
-          if (codeResponse.success && codeResponse.data) {
-            setRegistrationCode(codeResponse.data.registration_code);
-            setStep(2);
-          }
+        if (codeResponse.success && codeResponse.data) {
+          setRegistrationCode(codeResponse.data.registration_code);
+          setStep(2);
         }
       }
     } catch (err) {
@@ -179,7 +179,7 @@ export default function RegisterNode() {
     } finally {
       setLoading(false);
     }
-  }, [wallet, nodeInfo]);
+  }, [wallet, nodeInfo, signature, message]); 
 
   const completeRegistration = useCallback(async () => {
     setLoading(true);
