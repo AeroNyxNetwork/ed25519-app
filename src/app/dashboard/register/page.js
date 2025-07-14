@@ -74,6 +74,24 @@ const RESOURCES = [
   { id: 'bandwidth', name: 'Bandwidth', available: true }
 ];
 
+// Glass Card Component
+function GlassCard({ children, className }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={clsx(
+        "bg-white/5 backdrop-blur-md rounded-2xl border border-white/10",
+        "shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]",
+        "p-8",
+        className
+      )}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
 export default function RegisterNode() {
   const { wallet } = useWallet();
   const router = useRouter();
@@ -510,10 +528,10 @@ export default function RegisterNode() {
                         'Run the setup command with your registration code',
                         'Your server will collect system information and register',
                         'Complete registration by confirming below'
-                      ].map((step, index) => (
+                      ].map((stepText, index) => (
                         <li key={index} className="flex gap-3">
                           <span className="text-purple-400 font-bold">{index + 1}.</span>
-                          <span>{step}</span>
+                          <span>{stepText}</span>
                         </li>
                       ))}
                     </ol>
@@ -611,20 +629,3 @@ export default function RegisterNode() {
     </div>
   );
 }
-
-// Glass Card Component
-function GlassCard({ children, className }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className={clsx(
-        "bg-white/5 backdrop-blur-md rounded-2xl border border-white/10",
-        "shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]",
-        "p-8",
-        className
-      )}
-    >
-      {children}
-    </motion.div>
-  }
