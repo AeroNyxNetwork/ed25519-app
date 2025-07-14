@@ -157,18 +157,40 @@ export default function RegisterNode() {
     setError(null);
     
     try {
+      // Store signature data in local variables to ensure it doesn't get lost
+      let signature = signatureData.signature;
+      let message = signatureData.message;
+      
       // Check if signature is available
-      if (!signatureData.signature || !signatureData.message) {
+      if (!signature || !message) {
+        console.error('[Register] Missing signature data:', {
+          hasSignature: !!signature,
+          hasMessage: !!message,
+          signatureLength: signature?.length,
+          messageLength: message?.length
+        });
+        
         // If not, try to generate it
-        if (!signatureData.isLoading) {
-          setError('Authentication required. Please wait...');
-          // The hook should automatically generate the signature
+        if (!signatureData.isLoading && signatureData.generateSignature) {
+          console.log('[Register] Generating new signature...');
+          const newSignatureData = await signatureData.generateSignature();
+          if (newSignatureData) {
+            signature = newSignatureData.signature;
+            message = newSignatureData.message;
+          }
         }
-        setLoading(false);
-        return;
+        
+        if (!signature || !message) {
+          setError('Authentication required. Please try again.');
+          setLoading(false);
+          return;
+        }
       }
       
-      console.log('[Register] Using signature from hook');
+      console.log('[Register] Using signature:', {
+        signature: signature.substring(0, 20) + '...',
+        message: message.substring(0, 50) + '...'
+      });
       
       // Transform resources
       const resourcesPayload = {};
@@ -182,7 +204,7 @@ export default function RegisterNode() {
         resources: resourcesPayload
       });
       
-      // Create node using signature from hook
+      // Create node using signature
       const createResponse = await nodeRegistrationService.createNode(
         {
           name: nodeInfo.name,
@@ -190,22 +212,65 @@ export default function RegisterNode() {
           resources: resourcesPayload
         },
         wallet.address,
-        signatureData.signature,
-        signatureData.message
+        signature,
+        message
       );
       
       console.log('[Register] Create node response:', createResponse);
+      console.log('[Register] Response data structure:', JSON.stringify(createResponse.data, null, 2));
       
       if (createResponse.success && createResponse.data) {
-        setNodeId(createResponse.data.id);
-        setReferenceCode(createResponse.data.reference_code);
+        // Try to find the node ID in various possible locations
+        const nodeData = createResponse.data;
+        let nodeId = null;
+        let referenceCode = null;
         
-        // Generate registration code
+        // Check different possible field names for node ID
+        if (nodeData.id) {
+          nodeId = nodeData.id;
+        } else if (nodeData.node_id) {
+          nodeId = nodeData.node_id;
+        } else if (nodeData.nodeId) {
+          nodeId = nodeData.nodeId;
+        } else if (nodeData.data && nodeData.data.id) {
+          // Sometimes APIs return nested data
+          nodeId = nodeData.data.id;
+        }
+        
+        // Check different possible field names for reference code
+        if (nodeData.reference_code) {
+          referenceCode = nodeData.reference_code;
+        } else if (nodeData.referenceCode) {
+          referenceCode = nodeData.referenceCode;
+        } else if (nodeData.code) {
+          referenceCode = nodeData.code;
+        } else if (nodeData.data && nodeData.data.reference_code) {
+          referenceCode = nodeData.data.reference_code;
+        }
+        
+        console.log('[Register] Extracted values:', { nodeId, referenceCode });
+        
+        if (!nodeId) {
+          console.error('[Register] Could not find node ID in response:', nodeData);
+          throw new Error('Node ID not found in response');
+        }
+        
+        setNodeId(nodeId);
+        setReferenceCode(referenceCode || '');
+        
+        // Generate registration code - use the same signature and message
+        console.log('[Register] Calling generateRegistrationCode with:', {
+          nodeId: nodeId,
+          walletAddress: wallet.address,
+          signature: signature.substring(0, 20) + '...',
+          message: message.substring(0, 50) + '...'
+        });
+        
         const codeResponse = await nodeRegistrationService.generateRegistrationCode(
-          createResponse.data.id,
+          String(nodeId), // Ensure it's a string
           wallet.address,
-          signatureData.signature,
-          signatureData.message,
+          signature,  // Use the stored signature
+          message,    // Use the stored message
           1
         );
         
