@@ -276,9 +276,19 @@ export default function RegisterNode() {
         );
         
         console.log('[Register] Registration code response:', codeResponse);
+        console.log('[Register] Registration code data:', codeResponse.data);
         
         if (codeResponse.success && codeResponse.data) {
-          setRegistrationCode(codeResponse.data.registration_code);
+          // Extract registration code from response
+          const regCode = codeResponse.data.registration_code || codeResponse.data.code;
+          
+          if (!regCode) {
+            console.error('[Register] No registration code found in response:', codeResponse.data);
+            throw new Error('Registration code not found in response');
+          }
+          
+          console.log('[Register] Setting registration code:', regCode);
+          setRegistrationCode(regCode);
           setStep(2);
         } else {
           throw new Error(codeResponse.message || 'Failed to generate registration code');
@@ -568,35 +578,52 @@ export default function RegisterNode() {
                   <p className="text-gray-400 mt-2">Use this code to configure your server node</p>
                 </motion.div>
 
+                {/* Debug info in development */}
+                {process.env.NODE_ENV === 'development' && (
+                  <div className="mb-4 p-3 bg-gray-800 rounded text-xs">
+                    <p>Debug: Registration Code = {registrationCode || 'NOT SET'}</p>
+                    <p>Debug: Reference Code = {referenceCode || 'NOT SET'}</p>
+                    <p>Debug: Node ID = {nodeId || 'NOT SET'}</p>
+                  </div>
+                )}
+
                 <motion.div variants={itemVariants}>
                   <div className="bg-black/50 border border-white/10 rounded-xl p-6 mb-6">
                     <p className="text-sm text-gray-400 mb-3">Your registration code:</p>
-                    <div className="relative">
-                      <div className="bg-black/70 p-4 rounded-lg font-mono text-lg text-purple-400 break-all mb-3 select-all pr-12">
-                        {registrationCode}
+                    {registrationCode ? (
+                      <>
+                        <div className="relative">
+                          <div className="bg-black/70 p-4 rounded-lg font-mono text-lg text-purple-400 break-all mb-3 select-all pr-12">
+                            {registrationCode}
+                          </div>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(registrationCode);
+                              setCopied(true);
+                              setTimeout(() => setCopied(false), 2000);
+                            }}
+                            className="absolute top-4 right-4 p-2 bg-purple-600/20 hover:bg-purple-600/30 rounded transition-all"
+                            title="Copy registration code"
+                          >
+                            {copied ? (
+                              <CheckCircle className="w-5 h-5 text-green-400" />
+                            ) : (
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                        <p className="text-sm text-gray-400 mb-3">Run this command on your server:</p>
+                        <code className="block bg-black/50 p-4 rounded-lg font-mono text-sm text-purple-400 break-all">
+                          aeronyx-node setup --registration-code {registrationCode}
+                        </code>
+                      </>
+                    ) : (
+                      <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                        <p className="text-red-400">Error: Registration code not found. Please try again.</p>
                       </div>
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(registrationCode);
-                          setCopied(true);
-                          setTimeout(() => setCopied(false), 2000);
-                        }}
-                        className="absolute top-4 right-4 p-2 bg-purple-600/20 hover:bg-purple-600/30 rounded transition-all"
-                        title="Copy registration code"
-                      >
-                        {copied ? (
-                          <CheckCircle className="w-5 h-5 text-green-400" />
-                        ) : (
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                    <p className="text-sm text-gray-400 mb-3">Run this command on your server:</p>
-                    <code className="block bg-black/50 p-4 rounded-lg font-mono text-sm text-purple-400 break-all">
-                      aeronyx-node setup --registration-code {registrationCode}
-                    </code>
+                    )}
                   </div>
 
                   <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 mb-6">
