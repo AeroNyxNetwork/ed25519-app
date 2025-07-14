@@ -105,6 +105,7 @@ export default function RegisterNode() {
   const [registrationCode, setRegistrationCode] = useState('');
   const [referenceCode, setReferenceCode] = useState('');
   const [nodeId, setNodeId] = useState(null);
+  const [copied, setCopied] = useState(false);
   
   const [nodeInfo, setNodeInfo] = useState({
     name: '',
@@ -298,9 +299,11 @@ export default function RegisterNode() {
     setError(null);
     
     try {
+      // Use registration code to check status since that's what the user has
       const statusResponse = await nodeRegistrationService.checkNodeStatus(
-        referenceCode,
-        wallet.address
+        referenceCode,  // reference code (optional)
+        wallet.address, // wallet address
+        registrationCode // registration code - this is what we should use
       );
       
       if (statusResponse.success) {
@@ -313,7 +316,7 @@ export default function RegisterNode() {
     } finally {
       setLoading(false);
     }
-  }, [referenceCode, wallet.address]);
+  }, [referenceCode, wallet.address, registrationCode]);
 
   if (!wallet.connected) {
     return null;
@@ -567,6 +570,29 @@ export default function RegisterNode() {
 
                 <motion.div variants={itemVariants}>
                   <div className="bg-black/50 border border-white/10 rounded-xl p-6 mb-6">
+                    <p className="text-sm text-gray-400 mb-3">Your registration code:</p>
+                    <div className="relative">
+                      <div className="bg-black/70 p-4 rounded-lg font-mono text-lg text-purple-400 break-all mb-3 select-all pr-12">
+                        {registrationCode}
+                      </div>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(registrationCode);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }}
+                        className="absolute top-4 right-4 p-2 bg-purple-600/20 hover:bg-purple-600/30 rounded transition-all"
+                        title="Copy registration code"
+                      >
+                        {copied ? (
+                          <CheckCircle className="w-5 h-5 text-green-400" />
+                        ) : (
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
                     <p className="text-sm text-gray-400 mb-3">Run this command on your server:</p>
                     <code className="block bg-black/50 p-4 rounded-lg font-mono text-sm text-purple-400 break-all">
                       aeronyx-node setup --registration-code {registrationCode}
