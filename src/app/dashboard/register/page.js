@@ -280,7 +280,7 @@ export default function RegisterNode() {
         
         if (codeResponse.success && codeResponse.data) {
           // Extract registration code from response - it's in data.registration_code
-          const regCode = codeResponse.data.registration_code;
+          const regCode = codeResponse.data.data.registration_code;
           
           if (!regCode) {
             console.error('[Register] No registration code found in response:', codeResponse.data);
