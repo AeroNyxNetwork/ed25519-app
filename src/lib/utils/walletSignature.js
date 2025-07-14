@@ -2,7 +2,7 @@
  * Wallet Signature utilities for AeroNyx platform
  * Multi-wallet support with proper encoding
  * 
- * @version 3.1.0
+ * @version 3.2.0
  */
 
 /**
@@ -10,7 +10,7 @@
  * @returns {string} Detected wallet type
  */
 function detectWalletType() {
-  if (window.okxwallet && window.okxwallet.solana) {
+  if (window.okxwallet) {
     return 'okx';
   }
   if (window.solana && window.solana.isPhantom) {
@@ -49,27 +49,27 @@ export async function signMessage(message, wallet) {
     const walletType = wallet.type || detectWalletType();
     
     console.log('[WalletSignature] Detected wallet type:', walletType);
-    console.log('[WalletSignature] Available window objects:', {
-      okxwallet: !!window.okxwallet,
-      solana: !!window.solana,
-      ethereum: !!window.ethereum,
-      phantom: window.solana?.isPhantom
-    });
+    console.log('[WalletSignature] Wallet address:', normalizedAddress);
+    console.log('[WalletSignature] Message to sign:', message);
 
     switch (walletType) {
       case 'okx':
-        if (!window.okxwallet || !window.okxwallet.solana) {
+        if (!window.okxwallet) {
           throw new Error('OKX Wallet not found. Please ensure OKX Wallet extension is installed.');
         }
         
-        // OKX wallet uses Solana-style signing
-        const okxSigned = await window.okxwallet.solana.signMessage(
-          new TextEncoder().encode(message)
-        );
-        // Convert Uint8Array to base64
-        signature = btoa(String.fromCharCode(...okxSigned.signature));
+        // OKX wallet when connected via Ethereum interface uses personal_sign
+        // This matches how it's connected in WalletProvider.js
+        console.log('[WalletSignature] Using OKX wallet Ethereum interface');
+        signature = await window.okxwallet.request({
+          method: 'personal_sign',
+          params: [message, normalizedAddress]
+        });
         
-        console.log('[WalletSignature] OKX signature generated');
+        // Ensure 0x prefix
+        signature = signature.startsWith('0x') ? signature : `0x${signature}`;
+        
+        console.log('[WalletSignature] OKX signature generated successfully');
         break;
 
       case 'metamask':
@@ -107,12 +107,13 @@ export async function signMessage(message, wallet) {
 
       default:
         // Try to detect and use available wallet
-        if (window.okxwallet && window.okxwallet.solana) {
-          console.log('[WalletSignature] Falling back to OKX wallet');
-          const okxSigned = await window.okxwallet.solana.signMessage(
-            new TextEncoder().encode(message)
-          );
-          signature = btoa(String.fromCharCode(...okxSigned.signature));
+        if (window.okxwallet) {
+          console.log('[WalletSignature] Falling back to OKX wallet (Ethereum)');
+          signature = await window.okxwallet.request({
+            method: 'personal_sign',
+            params: [message, normalizedAddress]
+          });
+          signature = signature.startsWith('0x') ? signature : `0x${signature}`;
           break;
         } else if (window.solana) {
           console.log('[WalletSignature] Falling back to Solana wallet');
@@ -136,6 +137,8 @@ export async function signMessage(message, wallet) {
     }
 
     console.log('[WalletSignature] Message signed successfully');
+    console.log('[WalletSignature] Signature length:', signature.length);
+    console.log('[WalletSignature] Signature format:', signature.substring(0, 10) + '...');
 
     return {
       signature,
@@ -150,6 +153,9 @@ export async function signMessage(message, wallet) {
     // Provide more helpful error messages
     if (error.code === 4001) {
       throw new Error('User rejected the signature request');
+    }
+    if (error.code === 4100) {
+      throw new Error('The requested method has not been authorized. Please reconnect your wallet.');
     }
     if (error.message?.includes('User denied')) {
       throw new Error('User denied the signature request');
@@ -226,8 +232,10 @@ export function isValidSignatureFormat(signature, walletType = 'metamask') {
   }
   
   switch (walletType) {
+    case 'okx':
     case 'metamask':
     case 'ethereum':
+      // OKX when connected via Ethereum uses hex format like MetaMask
       // Must have 0x prefix and be valid hex
       if (!signature.startsWith('0x')) {
         return false;
@@ -245,7 +253,6 @@ export function isValidSignatureFormat(signature, walletType = 'metamask') {
       }
       break;
       
-    case 'okx':
     case 'phantom':
     case 'solana':
       // Base64 format for Solana wallets
@@ -354,7 +361,7 @@ export function convertSignatureFormat(signature, fromType, toType) {
   }
   
   // Convert from hex to base64
-  if ((fromType === 'metamask' || fromType === 'ethereum') && ['okx', 'phantom', 'solana'].includes(toType)) {
+  if ((fromType === 'metamask' || fromType === 'ethereum' || fromType === 'okx') && ['phantom', 'solana'].includes(toType)) {
     // Remove 0x prefix if present
     const hex = signature.startsWith('0x') ? signature.slice(2) : signature;
     // Convert hex to bytes then to base64
@@ -363,7 +370,7 @@ export function convertSignatureFormat(signature, fromType, toType) {
   }
   
   // Convert from base64 to hex
-  if (['okx', 'phantom', 'solana'].includes(fromType) && (toType === 'metamask' || toType === 'ethereum')) {
+  if (['phantom', 'solana'].includes(fromType) && (toType === 'metamask' || toType === 'ethereum' || toType === 'okx')) {
     // Convert base64 to bytes
     const bytes = atob(signature).split('').map(char => char.charCodeAt(0));
     // Convert bytes to hex
