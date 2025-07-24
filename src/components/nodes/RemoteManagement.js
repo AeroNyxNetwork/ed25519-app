@@ -6,7 +6,7 @@
  * Provides file listing and command execution capabilities
  * for individual nodes using the remote management API
  * 
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useWallet } from '../wallet/WalletProvider';
-import { useSignature } from '../../hooks/useSignature';
+import nodeRegistrationService from '../../lib/api/nodeRegistration';
 
 // Remote Management Service Class
 class RemoteManagementService {
@@ -40,126 +40,124 @@ class RemoteManagementService {
     this.pendingRequests = new Map();
   }
 
-  async generateSignatureMessage(walletAddress) {
-    const response = await fetch(`${this.apiBaseUrl}/generate-signature-message/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        wallet_address: walletAddress,
-        user_id: 'aeronyx',
-      }),
-    });
-
-    const data = await response.json();
-    if (!data.success) {
-      throw new Error(data.message || 'Failed to generate signature message');
-    }
-    return data.data.message;
-  }
-
   async getRemoteManagementToken(walletAddress, signature, message, walletType, referenceCode) {
-    const response = await fetch(`${this.apiBaseUrl}/remote-management/generate-token/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        wallet_address: walletAddress,
-        signature: signature,
-        message: message,
-        wallet_type: walletType,
-        reference_code: referenceCode,
-        duration_minutes: 60,
-      }),
-    });
+    const response = await nodeRegistrationService.generateRemoteManagementToken(
+      walletAddress,
+      signature,
+      message,
+      walletType,
+      referenceCode
+    );
 
-    const data = await response.json();
-    if (!data.success) {
-      throw new Error(data.message || 'Failed to generate remote management token');
+    if (!response.success) {
+      throw new Error(response.message || 'Failed to generate remote management token');
     }
 
-    this.jwtToken = data.data.token;
-    return data.data;
+    this.jwtToken = response.data.token;
+    return response.data;
   }
 
   async connectWebSocket(walletAddress, signature, message, walletType) {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.wsUrl);
+      let authSteps = {
+        connected: false,
+        messageRequested: false,
+        authenticated: false
+      };
 
       this.ws.onopen = () => {
-        console.log('WebSocket connected');
-        // 等待服务器的 'connected' 消息
+        console.log('Remote WebSocket opened');
+        // Wait for 'connected' message from server
       };
 
       this.ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        console.log('WebSocket message:', data);
+        console.log('Remote WebSocket message:', data);
 
         switch (data.type) {
           case 'connected':
-            // 步骤1: 收到连接消息后，请求签名消息
+            // Step 1: Connection established, request signature message
+            authSteps.connected = true;
             this.ws.send(JSON.stringify({
               type: 'get_message',
               wallet_address: walletAddress.toLowerCase()
             }));
+            authSteps.messageRequested = true;
             break;
             
           case 'signature_message':
-            // 步骤2: 收到签名消息后，发送认证
+            // Step 2: Received message to sign, send authentication
+            // Extract wallet address from message for consistency
+            const walletMatch = data.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
+            const messageWallet = walletMatch ? walletMatch[1] : walletAddress;
+            
             this.ws.send(JSON.stringify({
               type: 'auth',
-              wallet_address: walletAddress,
+              wallet_address: messageWallet.toLowerCase(),
               signature: signature,
               message: message,
-              wallet_type: walletType,
+              wallet_type: walletType
             }));
             break;
 
           case 'auth_success':
+            // Step 3: Authentication successful, enable remote management
             this.isAuthenticated = true;
+            authSteps.authenticated = true;
+            
+            // Send remote_auth with JWT token
             if (this.jwtToken) {
-              this.enableRemoteManagement();
+              this.ws.send(JSON.stringify({
+                type: 'remote_auth',
+                jwt_token: this.jwtToken
+              }));
+            } else {
+              reject(new Error('JWT token not available'));
             }
             break;
 
           case 'remote_auth_success':
+            // Step 4: Remote management enabled
             this.isRemoteEnabled = true;
             resolve(data);
             break;
 
           case 'remote_command_response':
+            // Handle command responses
             this.handleCommandResponse(data);
             break;
 
           case 'error':
-            console.error('WebSocket error:', data);
-            if (!this.isAuthenticated) {
-              reject(new Error(data.message));
-            }
+            console.error('Remote WebSocket error:', data);
+            reject(new Error(data.message || 'WebSocket error'));
+            break;
+            
+          case 'pong':
+            // Handle ping/pong keepalive
+            console.log('Pong received');
             break;
         }
       };
 
       this.ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        console.error('Remote WebSocket error:', error);
         reject(error);
       };
 
       this.ws.onclose = () => {
-        console.log('WebSocket disconnected');
+        console.log('Remote WebSocket disconnected');
         this.isAuthenticated = false;
         this.isRemoteEnabled = false;
       };
+
+      // Set up ping interval to keep connection alive
+      this.pingInterval = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000);
     });
-  }
-
-  enableRemoteManagement() {
-    if (!this.jwtToken || !this.ws || !this.isAuthenticated) {
-      throw new Error('Not authenticated or missing JWT token');
-    }
-
-    this.ws.send(JSON.stringify({
-      type: 'remote_auth',
-      jwt_token: this.jwtToken,
-    }));
   }
 
   async executeCommand(nodeReference, command, args = [], cwd = null) {
@@ -253,6 +251,9 @@ class RemoteManagementService {
   }
 
   disconnect() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -296,26 +297,35 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     try {
       const service = new RemoteManagementService();
 
-      // Step 1: Get signature message
-      const message = await service.generateSignatureMessage(wallet.address);
+      // Step 1: Generate signature message
+      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
+      if (!messageResponse.success) {
+        throw new Error(messageResponse.message || 'Failed to generate signature message');
+      }
+      const signatureMessage = messageResponse.data.message;
 
-      // Step 2: Sign message
+      // Step 2: Sign message with wallet
       const signature = await wallet.provider.request({
         method: 'personal_sign',
-        params: [message, wallet.address]
+        params: [signatureMessage, wallet.address]
       });
 
-      // Step 3: Get JWT Token
+      // Step 3: Get JWT Token for remote management
       await service.getRemoteManagementToken(
         wallet.address,
         signature,
-        message,
+        signatureMessage,
         'okx',
         nodeReference
       );
 
-      // Step 4: Connect WebSocket
-      await service.connectWebSocket(wallet.address, signature, message, 'okx');
+      // Step 4: Connect WebSocket with proper authentication flow
+      await service.connectWebSocket(
+        wallet.address, 
+        signature, 
+        signatureMessage, 
+        'okx'
+      );
 
       setRemoteService(service);
       setIsConnected(true);
