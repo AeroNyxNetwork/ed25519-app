@@ -18,7 +18,7 @@
  * IMPORTANT: This is the ONLY WebSocket connection logic in the entire application.
  * All components MUST use this hook instead of implementing their own WebSocket logic.
  * 
- * @version 1.0.0
+ * @version 2.0.0
  * @author AeroNyx Development Team
  */
 
@@ -26,6 +26,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
+import { setGlobalWebSocket } from './useRemoteManagement';
 
 /**
  * WebSocket connection states - matching DashboardContent exactly
@@ -419,6 +420,9 @@ export function useAeroNyxWebSocket(options = {}) {
         console.log('[useAeroNyxWebSocket] WebSocket opened');
         clearTimeout(timeoutId);
         // Wait for 'connected' message from server
+        
+        // Expose WebSocket instance for remote management
+        setGlobalWebSocket(ws);
       };
       
       ws.onmessage = handleMessage;
@@ -438,6 +442,9 @@ export function useAeroNyxWebSocket(options = {}) {
         clearTimeout(timeoutId);
         wsRef.current = null;
         isConnectingRef.current = false;
+        
+        // Clear global WebSocket reference
+        setGlobalWebSocket(null);
         
         setWsState(prev => ({ 
           ...prev, 
@@ -530,6 +537,9 @@ export function useAeroNyxWebSocket(options = {}) {
         if (wsRef.current.pingInterval) {
           clearInterval(wsRef.current.pingInterval);
         }
+        
+        // Clear global WebSocket reference
+        setGlobalWebSocket(null);
         
         wsRef.current.close(1000, 'Component unmounting');
         wsRef.current = null;
