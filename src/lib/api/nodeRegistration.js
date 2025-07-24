@@ -377,6 +377,39 @@ const nodeRegistrationService = {
         wallet_address: walletAddress.toLowerCase()
       }),
     });
+  },
+
+  /**
+   * Generate remote management token
+   * 
+   * @param {string} walletAddress - User's wallet address
+   * @param {string} signature - Wallet signature
+   * @param {string} message - Signed message
+   * @param {string} walletType - Wallet type
+   * @param {string} referenceCode - Node reference code
+   * @param {number} durationMinutes - Token duration in minutes
+   * @returns {Promise<APIResponse>} Remote management token response
+   */
+  generateRemoteManagementToken: async (walletAddress, signature, message, walletType, referenceCode, durationMinutes = 60) => {
+    if (!walletAddress || !signature || !message || !referenceCode) {
+      return {
+        success: false,
+        data: null,
+        message: 'All parameters are required for remote management token'
+      };
+    }
+    
+    return request('/api/aeronyx/remote-management/generate-token/', {
+      method: 'POST',
+      body: JSON.stringify({
+        wallet_address: walletAddress.toLowerCase(),
+        signature: signature,
+        message: message,
+        wallet_type: walletType,
+        reference_code: referenceCode,
+        duration_minutes: durationMinutes
+      }),
+    });
   }
 };
 
