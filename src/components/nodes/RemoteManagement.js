@@ -6,7 +6,7 @@
  * Provides file listing and command execution capabilities
  * for individual nodes using the remote management API
  * 
- * @version 2.0.0
+ * @version 3.0.0
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -25,250 +25,19 @@ import {
   Loader2
 } from 'lucide-react';
 import clsx from 'clsx';
-import { useWallet } from '../wallet/WalletProvider';
-import nodeRegistrationService from '../../lib/api/nodeRegistration';
-
-// Remote Management Service Class
-class RemoteManagementService {
-  constructor(apiBaseUrl = 'https://api.aeronyx.network/api/aeronyx') {
-    this.apiBaseUrl = apiBaseUrl;
-    this.wsUrl = 'wss://api.aeronyx.network/ws/aeronyx/user-monitor/';
-    this.ws = null;
-    this.jwtToken = null;
-    this.isAuthenticated = false;
-    this.isRemoteEnabled = false;
-    this.pendingRequests = new Map();
-  }
-
-  async getRemoteManagementToken(walletAddress, signature, message, walletType, referenceCode) {
-    const response = await nodeRegistrationService.generateRemoteManagementToken(
-      walletAddress,
-      signature,
-      message,
-      walletType,
-      referenceCode
-    );
-
-    if (!response.success) {
-      throw new Error(response.message || 'Failed to generate remote management token');
-    }
-
-    this.jwtToken = response.data.token;
-    return response.data;
-  }
-
-  async connectWebSocket(walletAddress, signature, message, walletType) {
-    return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.wsUrl);
-      let authSteps = {
-        connected: false,
-        messageRequested: false,
-        authenticated: false
-      };
-
-      this.ws.onopen = () => {
-        console.log('Remote WebSocket opened');
-        // Wait for 'connected' message from server
-      };
-
-      this.ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        console.log('Remote WebSocket message:', data);
-
-        switch (data.type) {
-          case 'connected':
-            // Step 1: Connection established, request signature message
-            authSteps.connected = true;
-            this.ws.send(JSON.stringify({
-              type: 'get_message',
-              wallet_address: walletAddress.toLowerCase()
-            }));
-            authSteps.messageRequested = true;
-            break;
-            
-          case 'signature_message':
-            // Step 2: Received message to sign, send authentication
-            // Extract wallet address from message for consistency
-            const walletMatch = data.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
-            const messageWallet = walletMatch ? walletMatch[1] : walletAddress;
-            
-            this.ws.send(JSON.stringify({
-              type: 'auth',
-              wallet_address: messageWallet.toLowerCase(),
-              signature: signature,
-              message: message,
-              wallet_type: walletType
-            }));
-            break;
-
-          case 'auth_success':
-            // Step 3: Authentication successful, enable remote management
-            this.isAuthenticated = true;
-            authSteps.authenticated = true;
-            
-            // Send remote_auth with JWT token
-            if (this.jwtToken) {
-              this.ws.send(JSON.stringify({
-                type: 'remote_auth',
-                jwt_token: this.jwtToken
-              }));
-            } else {
-              reject(new Error('JWT token not available'));
-            }
-            break;
-
-          case 'remote_auth_success':
-            // Step 4: Remote management enabled
-            this.isRemoteEnabled = true;
-            resolve(data);
-            break;
-
-          case 'remote_command_response':
-            // Handle command responses
-            this.handleCommandResponse(data);
-            break;
-
-          case 'error':
-            console.error('Remote WebSocket error:', data);
-            reject(new Error(data.message || 'WebSocket error'));
-            break;
-            
-          case 'pong':
-            // Handle ping/pong keepalive
-            console.log('Pong received');
-            break;
-        }
-      };
-
-      this.ws.onerror = (error) => {
-        console.error('Remote WebSocket error:', error);
-        reject(error);
-      };
-
-      this.ws.onclose = () => {
-        console.log('Remote WebSocket disconnected');
-        this.isAuthenticated = false;
-        this.isRemoteEnabled = false;
-      };
-
-      // Set up ping interval to keep connection alive
-      this.pingInterval = setInterval(() => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: 'ping' }));
-        }
-      }, 30000);
-    });
-  }
-
-  async executeCommand(nodeReference, command, args = [], cwd = null) {
-    if (!this.isRemoteEnabled) {
-      throw new Error('Remote management not enabled');
-    }
-
-    const requestId = this.generateRequestId();
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingRequests.delete(requestId);
-        reject(new Error('Command timeout'));
-      }, 30000);
-
-      this.pendingRequests.set(requestId, {
-        resolve,
-        reject,
-        timeout,
-      });
-
-      this.ws.send(JSON.stringify({
-        type: 'remote_command',
-        node_reference: nodeReference,
-        request_id: requestId,
-        command: {
-          type: 'execute',
-          cmd: command,
-          args: args,
-          cwd: cwd,
-        },
-      }));
-    });
-  }
-
-  async uploadFile(nodeReference, path, content, base64 = false) {
-    if (!this.isRemoteEnabled) {
-      throw new Error('Remote management not enabled');
-    }
-
-    const requestId = this.generateRequestId();
-
-    if (!base64) {
-      content = btoa(unescape(encodeURIComponent(content)));
-    }
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingRequests.delete(requestId);
-        reject(new Error('Upload timeout'));
-      }, 60000);
-
-      this.pendingRequests.set(requestId, {
-        resolve,
-        reject,
-        timeout,
-      });
-
-      this.ws.send(JSON.stringify({
-        type: 'remote_command',
-        node_reference: nodeReference,
-        request_id: requestId,
-        command: {
-          type: 'upload',
-          path: path,
-          content: content,
-          encoding: 'base64',
-        },
-      }));
-    });
-  }
-
-  handleCommandResponse(data) {
-    const { request_id, success, result, error } = data;
-    const pending = this.pendingRequests.get(request_id);
-
-    if (pending) {
-      clearTimeout(pending.timeout);
-      this.pendingRequests.delete(request_id);
-
-      if (success) {
-        pending.resolve(result);
-      } else {
-        pending.reject(new Error(error || 'Command failed'));
-      }
-    }
-  }
-
-  generateRequestId() {
-    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  }
-
-  disconnect() {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-    }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    this.isAuthenticated = false;
-    this.isRemoteEnabled = false;
-  }
-}
+import { useRemoteManagement } from '../../hooks/useRemoteManagement';
 
 // Main Component
 export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
-  const { wallet } = useWallet();
-  const [remoteService, setRemoteService] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const {
+    isEnabled,
+    isEnabling,
+    error: remoteError,
+    enableRemoteManagement,
+    executeCommand: executeRemoteCommand,
+    uploadFile
+  } = useRemoteManagement(nodeReference);
+  
   const [error, setError] = useState(null);
   
   // Terminal state
@@ -287,62 +56,24 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const terminalRef = useRef(null);
   const historyIndexRef = useRef(-1);
 
-  // Initialize remote management
-  const initializeRemoteManagement = useCallback(async () => {
-    if (!wallet.connected || !nodeReference) return;
-    
-    setIsConnecting(true);
-    setError(null);
-    
-    try {
-      const service = new RemoteManagementService();
-
-      // Step 1: Generate signature message
-      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-      if (!messageResponse.success) {
-        throw new Error(messageResponse.message || 'Failed to generate signature message');
-      }
-      const signatureMessage = messageResponse.data.message;
-
-      // Step 2: Sign message with wallet
-      const signature = await wallet.provider.request({
-        method: 'personal_sign',
-        params: [signatureMessage, wallet.address]
-      });
-
-      // Step 3: Get JWT Token for remote management
-      await service.getRemoteManagementToken(
-        wallet.address,
-        signature,
-        signatureMessage,
-        'okx',
-        nodeReference
-      );
-
-      // Step 4: Connect WebSocket with proper authentication flow
-      await service.connectWebSocket(
-        wallet.address, 
-        signature, 
-        signatureMessage, 
-        'okx'
-      );
-
-      setRemoteService(service);
-      setIsConnected(true);
-      
-      // Load initial directory
-      loadDirectory('/');
-    } catch (err) {
-      console.error('Failed to initialize remote management:', err);
-      setError(err.message);
-    } finally {
-      setIsConnecting(false);
+  // Initialize remote management when modal opens
+  useEffect(() => {
+    if (isOpen && !isEnabled && !isEnabling && nodeReference) {
+      enableRemoteManagement()
+        .then((success) => {
+          if (success) {
+            loadDirectory('/');
+          }
+        })
+        .catch((err) => {
+          setError(err.message);
+        });
     }
-  }, [wallet, nodeReference]);
+  }, [isOpen, isEnabled, isEnabling, nodeReference, enableRemoteManagement]);
 
   // Execute command
   const executeCommand = useCallback(async (cmd) => {
-    if (!remoteService || !cmd.trim()) return;
+    if (!isEnabled || !cmd.trim()) return;
 
     const [cmdName, ...args] = cmd.trim().split(' ');
     
@@ -355,12 +86,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     setCommandHistory(prev => [...prev, entry]);
 
     try {
-      const result = await remoteService.executeCommand(
-        nodeReference,
-        cmdName,
-        args,
-        currentPath
-      );
+      const result = await executeRemoteCommand(cmdName, args, currentPath);
 
       // Add result to history
       setCommandHistory(prev => [...prev, {
@@ -383,19 +109,15 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         timestamp: new Date().toISOString()
       }]);
     }
-  }, [remoteService, nodeReference, currentPath]);
+  }, [isEnabled, executeRemoteCommand, currentPath]);
 
   // Load directory contents
   const loadDirectory = useCallback(async (path) => {
-    if (!remoteService) return;
+    if (!isEnabled) return;
     
     setIsLoadingFiles(true);
     try {
-      const result = await remoteService.executeCommand(
-        nodeReference,
-        'ls',
-        ['-la', path]
-      );
+      const result = await executeRemoteCommand('ls', ['-la', path]);
 
       // Parse ls output
       const lines = result.stdout.split('\n').slice(1).filter(line => line.trim());
@@ -421,7 +143,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     } finally {
       setIsLoadingFiles(false);
     }
-  }, [remoteService, nodeReference]);
+  }, [isEnabled, executeRemoteCommand]);
 
   // Handle file click
   const handleFileClick = useCallback(async (file) => {
@@ -431,11 +153,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       setSelectedFile(file);
       // Load file content if it's a text file
       try {
-        const result = await remoteService.executeCommand(
-          nodeReference,
-          'cat',
-          [file.path]
-        );
+        const result = await executeRemoteCommand('cat', [file.path]);
         setSelectedFile({
           ...file,
           content: result.stdout
@@ -444,7 +162,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         setError(`Failed to read file: ${err.message}`);
       }
     }
-  }, [remoteService, nodeReference, loadDirectory]);
+  }, [executeRemoteCommand, loadDirectory]);
 
   // Handle command input
   const handleCommandSubmit = useCallback((e) => {
@@ -478,15 +196,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     }
   }, [commandHistory]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (remoteService) {
-        remoteService.disconnect();
-      }
-    };
-  }, [remoteService]);
-
   // Auto-scroll terminal
   useEffect(() => {
     if (terminalRef.current) {
@@ -495,6 +204,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   }, [commandHistory]);
 
   if (!isOpen) return null;
+
+  const displayError = error || remoteError;
 
   return (
     <motion.div
@@ -515,7 +226,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             <h2 className="text-xl font-bold text-white">
               Remote Management - {nodeReference}
             </h2>
-            {isConnected && (
+            {isEnabled && (
               <span className="text-xs px-2 py-1 rounded-full bg-green-500/20 text-green-400 border border-green-500/30">
                 Connected
               </span>
@@ -530,19 +241,30 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         </div>
 
         {/* Content */}
-        {!isConnected ? (
+        {!isEnabled ? (
           <div className="flex-1 flex items-center justify-center">
-            {isConnecting ? (
+            {isEnabling ? (
               <div className="text-center">
                 <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-4" />
-                <p className="text-gray-400">Establishing secure connection...</p>
+                <p className="text-gray-400">Enabling remote management...</p>
               </div>
-            ) : error ? (
+            ) : displayError ? (
               <div className="text-center max-w-md">
                 <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
-                <p className="text-red-400 mb-4">{error}</p>
+                <p className="text-red-400 mb-4">{displayError}</p>
                 <button
-                  onClick={initializeRemoteManagement}
+                  onClick={() => {
+                    setError(null);
+                    enableRemoteManagement()
+                      .then((success) => {
+                        if (success) {
+                          loadDirectory('/');
+                        }
+                      })
+                      .catch((err) => {
+                        setError(err.message);
+                      });
+                  }}
                   className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors"
                 >
                   Retry Connection
@@ -551,13 +273,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             ) : (
               <div className="text-center">
                 <Terminal className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-400 mb-4">Connect to manage your node remotely</p>
-                <button
-                  onClick={initializeRemoteManagement}
-                  className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-lg transition-all"
-                >
-                  Enable Remote Management
-                </button>
+                <p className="text-gray-400 mb-4">Initializing remote management...</p>
               </div>
             )}
           </div>
