@@ -86,13 +86,7 @@ class RemoteManagementService {
 
       this.ws.onopen = () => {
         console.log('WebSocket connected');
-        this.ws.send(JSON.stringify({
-          type: 'auth',
-          wallet_address: walletAddress,
-          signature: signature,
-          message: message,
-          wallet_type: walletType,
-        }));
+        // 等待服务器的 'connected' 消息
       };
 
       this.ws.onmessage = (event) => {
@@ -100,6 +94,25 @@ class RemoteManagementService {
         console.log('WebSocket message:', data);
 
         switch (data.type) {
+          case 'connected':
+            // 步骤1: 收到连接消息后，请求签名消息
+            this.ws.send(JSON.stringify({
+              type: 'get_message',
+              wallet_address: walletAddress.toLowerCase()
+            }));
+            break;
+            
+          case 'signature_message':
+            // 步骤2: 收到签名消息后，发送认证
+            this.ws.send(JSON.stringify({
+              type: 'auth',
+              wallet_address: walletAddress,
+              signature: signature,
+              message: message,
+              wallet_type: walletType,
+            }));
+            break;
+
           case 'auth_success':
             this.isAuthenticated = true;
             if (this.jwtToken) {
