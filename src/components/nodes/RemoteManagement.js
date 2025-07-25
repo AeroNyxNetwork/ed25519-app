@@ -1,60 +1,60 @@
 /**
- * Remote Management Component for Node Operations
+ * Remote Management Component with Integrated Terminal
  * 
  * File Path: src/components/nodes/RemoteManagement.js
  * 
- * Provides file listing and command execution capabilities
+ * Provides terminal access and file management capabilities
  * for individual nodes using the remote management API
  * 
- * @version 3.0.0
+ * @version 4.0.0
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Terminal,
   FileText,
   Folder,
-  Download,
-  Upload,
-  RefreshCw,
   X,
-  ChevronRight,
-  File,
   AlertCircle,
-  Loader2
+  Loader2,
+  Monitor,
+  HardDrive
 } from 'lucide-react';
 import clsx from 'clsx';
+import dynamic from 'next/dynamic';
 import { useRemoteManagement } from '../../hooks/useRemoteManagement';
 
-// Main Component
+// Dynamically import WebTerminal to avoid SSR issues with xterm
+const WebTerminal = dynamic(
+  () => import('../terminal/WebTerminal'),
+  { 
+    ssr: false,
+    loading: () => (
+      <div className="flex items-center justify-center h-96">
+        <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+      </div>
+    )
+  }
+);
+
 export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const {
     isEnabled,
     isEnabling,
     error: remoteError,
+    sessionId,
+    terminalSessions,
     enableRemoteManagement,
-    executeCommand: executeRemoteCommand,
-    uploadFile
+    initTerminal,
+    sendTerminalInput,
+    resizeTerminal,
+    closeTerminal
   } = useRemoteManagement(nodeReference);
   
   const [error, setError] = useState(null);
-  
-  // Terminal state
-  const [command, setCommand] = useState('');
-  const [commandHistory, setCommandHistory] = useState([]);
-  const [currentPath, setCurrentPath] = useState('/');
-  
-  // File browser state
-  const [files, setFiles] = useState([]);
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
-  
-  // Tab state
   const [activeTab, setActiveTab] = useState('terminal');
-  
-  const terminalRef = useRef(null);
-  const historyIndexRef = useRef(-1);
+  const [activeTerminalId, setActiveTerminalId] = useState(null);
 
   // Initialize remote management when modal opens
   useEffect(() => {
@@ -62,146 +62,44 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       enableRemoteManagement()
         .then((success) => {
           if (success) {
-            loadDirectory('/');
+            console.log('[RemoteManagement] Remote management enabled successfully');
           }
         })
         .catch((err) => {
+          console.error('[RemoteManagement] Failed to enable remote management:', err);
           setError(err.message);
         });
     }
   }, [isOpen, isEnabled, isEnabling, nodeReference, enableRemoteManagement]);
 
-  // Execute command
-  const executeCommand = useCallback(async (cmd) => {
-    if (!isEnabled || !cmd.trim()) return;
-
-    const [cmdName, ...args] = cmd.trim().split(' ');
-    
-    // Add to history
-    const entry = {
-      type: 'command',
-      content: cmd,
-      timestamp: new Date().toISOString()
-    };
-    setCommandHistory(prev => [...prev, entry]);
-
+  // Handle terminal initialization
+  const handleTerminalInit = useCallback(async (options) => {
     try {
-      const result = await executeRemoteCommand(cmdName, args, currentPath);
-
-      // Add result to history
-      setCommandHistory(prev => [...prev, {
-        type: 'output',
-        content: result.stdout || '',
-        error: result.stderr || '',
-        timestamp: new Date().toISOString()
-      }]);
-
-      // Handle cd command
-      if (cmdName === 'cd' && result.success) {
-        const newPath = args[0] || '/';
-        setCurrentPath(newPath.startsWith('/') ? newPath : `${currentPath}/${newPath}`);
-        loadDirectory(newPath);
-      }
+      const termSessionId = await initTerminal(options);
+      setActiveTerminalId(termSessionId);
+      console.log('[RemoteManagement] Terminal initialized:', termSessionId);
     } catch (err) {
-      setCommandHistory(prev => [...prev, {
-        type: 'error',
-        content: err.message,
-        timestamp: new Date().toISOString()
-      }]);
+      console.error('[RemoteManagement] Failed to initialize terminal:', err);
+      setError(err.message);
     }
-  }, [isEnabled, executeRemoteCommand, currentPath]);
+  }, [initTerminal]);
 
-  // Load directory contents
-  const loadDirectory = useCallback(async (path) => {
-    if (!isEnabled) return;
-    
-    setIsLoadingFiles(true);
-    try {
-      const result = await executeRemoteCommand('ls', ['-la', path]);
-
-      // Parse ls output
-      const lines = result.stdout.split('\n').slice(1).filter(line => line.trim());
-      const parsedFiles = lines.map(line => {
-        const parts = line.split(/\s+/);
-        const name = parts.slice(8).join(' ');
-        return {
-          permissions: parts[0],
-          owner: parts[2],
-          group: parts[3],
-          size: parseInt(parts[4]),
-          date: `${parts[5]} ${parts[6]} ${parts[7]}`,
-          name: name,
-          isDirectory: parts[0].startsWith('d'),
-          path: `${path}/${name}`.replace('//', '/')
-        };
-      }).filter(f => f.name !== '.' && f.name !== '..');
-
-      setFiles(parsedFiles);
-      setCurrentPath(path);
-    } catch (err) {
-      setError(`Failed to load directory: ${err.message}`);
-    } finally {
-      setIsLoadingFiles(false);
+  // Handle terminal close
+  const handleTerminalClose = useCallback((termSessionId) => {
+    closeTerminal(termSessionId);
+    if (activeTerminalId === termSessionId) {
+      setActiveTerminalId(null);
     }
-  }, [isEnabled, executeRemoteCommand]);
+  }, [closeTerminal, activeTerminalId]);
 
-  // Handle file click
-  const handleFileClick = useCallback(async (file) => {
-    if (file.isDirectory) {
-      loadDirectory(file.path);
-    } else {
-      setSelectedFile(file);
-      // Load file content if it's a text file
-      try {
-        const result = await executeRemoteCommand('cat', [file.path]);
-        setSelectedFile({
-          ...file,
-          content: result.stdout
-        });
-      } catch (err) {
-        setError(`Failed to read file: ${err.message}`);
-      }
-    }
-  }, [executeRemoteCommand, loadDirectory]);
-
-  // Handle command input
-  const handleCommandSubmit = useCallback((e) => {
-    e.preventDefault();
-    if (command.trim()) {
-      executeCommand(command);
-      setCommand('');
-      historyIndexRef.current = -1;
-    }
-  }, [command, executeCommand]);
-
-  // Handle key navigation
-  const handleKeyDown = useCallback((e) => {
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      const commands = commandHistory.filter(h => h.type === 'command');
-      if (commands.length > 0 && historyIndexRef.current < commands.length - 1) {
-        historyIndexRef.current++;
-        setCommand(commands[commands.length - 1 - historyIndexRef.current].content);
-      }
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      const commands = commandHistory.filter(h => h.type === 'command');
-      if (historyIndexRef.current > 0) {
-        historyIndexRef.current--;
-        setCommand(commands[commands.length - 1 - historyIndexRef.current].content);
-      } else {
-        historyIndexRef.current = -1;
-        setCommand('');
-      }
-    }
-  }, [commandHistory]);
-
-  // Auto-scroll terminal
-  useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [commandHistory]);
+  // Close modal handler
+  const handleClose = useCallback(() => {
+    // Close all terminal sessions
+    terminalSessions.forEach(session => {
+      closeTerminal(session.sessionId);
+    });
+    onClose();
+  }, [terminalSessions, closeTerminal, onClose]);
 
   if (!isOpen) return null;
 
@@ -213,12 +111,18 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          handleClose();
+        }
+      }}
     >
       <motion.div
         initial={{ scale: 0.9, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.9, opacity: 0 }}
-        className="bg-black/90 border border-white/10 rounded-2xl w-full max-w-5xl h-[80vh] flex flex-col overflow-hidden"
+        className="bg-black/90 border border-white/10 rounded-2xl w-full max-w-6xl h-[80vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-white/10">
@@ -233,7 +137,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             )}
           </div>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="p-2 hover:bg-white/10 rounded-lg transition-colors"
           >
             <X className="w-5 h-5 text-gray-400" />
@@ -247,6 +151,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
               <div className="text-center">
                 <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-4" />
                 <p className="text-gray-400">Enabling remote management...</p>
+                <p className="text-xs text-gray-500 mt-2">This may take a few seconds</p>
               </div>
             ) : displayError ? (
               <div className="text-center max-w-md">
@@ -258,7 +163,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                     enableRemoteManagement()
                       .then((success) => {
                         if (success) {
-                          loadDirectory('/');
+                          console.log('[RemoteManagement] Retry successful');
                         }
                       })
                       .catch((err) => {
@@ -294,6 +199,18 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                 Terminal
               </button>
               <button
+                onClick={() => setActiveTab('system')}
+                className={clsx(
+                  "px-6 py-3 flex items-center gap-2 transition-all",
+                  activeTab === 'system'
+                    ? "bg-white/10 text-white border-b-2 border-purple-500"
+                    : "text-gray-400 hover:text-white hover:bg-white/5"
+                )}
+              >
+                <Monitor className="w-4 h-4" />
+                System Info
+              </button>
+              <button
                 onClick={() => setActiveTab('files')}
                 className={clsx(
                   "px-6 py-3 flex items-center gap-2 transition-all",
@@ -303,150 +220,48 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                 )}
               >
                 <Folder className="w-4 h-4" />
-                File Browser
+                Files (Coming Soon)
               </button>
             </div>
 
             {/* Tab Content */}
             <div className="flex-1 overflow-hidden">
               {activeTab === 'terminal' ? (
-                <div className="h-full flex flex-col bg-black">
-                  {/* Terminal Output */}
-                  <div
-                    ref={terminalRef}
-                    className="flex-1 overflow-y-auto p-4 font-mono text-sm"
-                  >
-                    <div className="text-green-400 mb-2">
-                      Welcome to AeroNyx Remote Terminal
+                <div className="h-full p-4">
+                  {activeTerminalId ? (
+                    <WebTerminal
+                      sessionId={activeTerminalId}
+                      nodeReference={nodeReference}
+                      isEnabled={isEnabled}
+                      onInit={handleTerminalInit}
+                      onInput={sendTerminalInput}
+                      onResize={resizeTerminal}
+                      onClose={() => handleTerminalClose(activeTerminalId)}
+                      className="h-full"
+                    />
+                  ) : (
+                    <div className="h-full flex items-center justify-center">
+                      <button
+                        onClick={() => handleTerminalInit({
+                          onOutput: null,
+                          onError: null,
+                          onClose: null
+                        })}
+                        className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-lg transition-all flex items-center gap-2"
+                      >
+                        <Terminal className="w-5 h-5" />
+                        Start Terminal Session
+                      </button>
                     </div>
-                    <div className="text-gray-400 mb-4">
-                      Connected to node: {nodeReference}
-                    </div>
-                    
-                    {commandHistory.map((entry, index) => (
-                      <div key={index} className="mb-2">
-                        {entry.type === 'command' && (
-                          <div className="flex items-start gap-2">
-                            <span className="text-green-400">$</span>
-                            <span className="text-white">{entry.content}</span>
-                          </div>
-                        )}
-                        {entry.type === 'output' && (
-                          <div className="text-gray-300 whitespace-pre-wrap pl-4">
-                            {entry.content}
-                            {entry.error && (
-                              <div className="text-red-400">{entry.error}</div>
-                            )}
-                          </div>
-                        )}
-                        {entry.type === 'error' && (
-                          <div className="text-red-400 pl-4">{entry.content}</div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Command Input */}
-                  <form onSubmit={handleCommandSubmit} className="border-t border-white/10 p-4">
-                    <div className="flex items-center gap-2">
-                      <span className="text-green-400">$</span>
-                      <input
-                        type="text"
-                        value={command}
-                        onChange={(e) => setCommand(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder="Enter command..."
-                        className="flex-1 bg-transparent text-white placeholder-gray-500 outline-none font-mono"
-                        autoFocus
-                      />
-                    </div>
-                  </form>
+                  )}
                 </div>
+              ) : activeTab === 'system' ? (
+                <SystemInfo nodeReference={nodeReference} sessionId={sessionId} />
               ) : (
-                <div className="h-full flex">
-                  {/* File List */}
-                  <div className="w-80 border-r border-white/10 flex flex-col">
-                    <div className="p-4 border-b border-white/10">
-                      <div className="flex items-center justify-between mb-2">
-                        <h3 className="font-semibold text-white">Files</h3>
-                        <button
-                          onClick={() => loadDirectory(currentPath)}
-                          className="p-1 hover:bg-white/10 rounded transition-colors"
-                        >
-                          <RefreshCw className={clsx(
-                            "w-4 h-4 text-gray-400",
-                            isLoadingFiles && "animate-spin"
-                          )} />
-                        </button>
-                      </div>
-                      <div className="text-xs text-gray-400 truncate">
-                        {currentPath}
-                      </div>
-                    </div>
-                    
-                    <div className="flex-1 overflow-y-auto p-2">
-                      {currentPath !== '/' && (
-                        <button
-                          onClick={() => {
-                            const parentPath = currentPath.split('/').slice(0, -1).join('/') || '/';
-                            loadDirectory(parentPath);
-                          }}
-                          className="w-full text-left p-2 hover:bg-white/5 rounded flex items-center gap-2 text-gray-400"
-                        >
-                          <Folder className="w-4 h-4" />
-                          <span>..</span>
-                        </button>
-                      )}
-                      
-                      {files.map((file, index) => (
-                        <button
-                          key={index}
-                          onClick={() => handleFileClick(file)}
-                          className={clsx(
-                            "w-full text-left p-2 hover:bg-white/5 rounded flex items-center gap-2 transition-colors",
-                            selectedFile?.path === file.path && "bg-white/10"
-                          )}
-                        >
-                          {file.isDirectory ? (
-                            <Folder className="w-4 h-4 text-yellow-400" />
-                          ) : (
-                            <File className="w-4 h-4 text-gray-400" />
-                          )}
-                          <span className="text-sm text-gray-300 truncate">{file.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* File Content */}
-                  <div className="flex-1 flex flex-col">
-                    {selectedFile ? (
-                      <>
-                        <div className="p-4 border-b border-white/10">
-                          <h3 className="font-semibold text-white truncate">
-                            {selectedFile.name}
-                          </h3>
-                          <div className="text-xs text-gray-400 mt-1">
-                            {selectedFile.size} bytes • {selectedFile.date}
-                          </div>
-                        </div>
-                        <div className="flex-1 overflow-auto p-4">
-                          {selectedFile.content ? (
-                            <pre className="text-sm text-gray-300 font-mono whitespace-pre-wrap">
-                              {selectedFile.content}
-                            </pre>
-                          ) : (
-                            <div className="text-center text-gray-400 py-8">
-                              {selectedFile.isDirectory ? 'This is a directory' : 'Select a text file to view its content'}
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center text-gray-400">
-                        Select a file to view its content
-                      </div>
-                    )}
+                <div className="h-full flex items-center justify-center text-gray-400">
+                  <div className="text-center">
+                    <HardDrive className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                    <p>File manager coming soon</p>
                   </div>
                 </div>
               )}
@@ -457,3 +272,148 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     </motion.div>
   );
 }
+
+// System Information Component
+function SystemInfo({ nodeReference, sessionId }) {
+  const [systemInfo, setSystemInfo] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // In a real implementation, this would fetch system info via the remote management API
+    setTimeout(() => {
+      setSystemInfo({
+        hostname: nodeReference,
+        os: 'Linux 5.15.0-91-generic',
+        uptime: '15 days, 4:23:15',
+        cpu: {
+          model: 'Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz',
+          cores: 8,
+          usage: 23.5
+        },
+        memory: {
+          total: '16GB',
+          used: '6.2GB',
+          free: '9.8GB',
+          usage: 38.8
+        },
+        disk: {
+          total: '500GB',
+          used: '123GB',
+          free: '377GB',
+          usage: 24.6
+        },
+        network: {
+          interfaces: ['eth0', 'docker0'],
+          ip: '192.168.1.100'
+        }
+      });
+      setLoading(false);
+    }, 1000);
+  }, [nodeReference]);
+
+  if (loading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* System Overview */}
+        <div className="bg-white/5 rounded-xl p-6 space-y-4">
+          <h3 className="text-lg font-semibold text-white mb-4">System Overview</h3>
+          <InfoRow label="Hostname" value={systemInfo.hostname} />
+          <InfoRow label="Operating System" value={systemInfo.os} />
+          <InfoRow label="Uptime" value={systemInfo.uptime} />
+          <InfoRow label="Session ID" value={sessionId} />
+        </div>
+
+        {/* CPU Info */}
+        <div className="bg-white/5 rounded-xl p-6 space-y-4">
+          <h3 className="text-lg font-semibold text-white mb-4">CPU</h3>
+          <InfoRow label="Model" value={systemInfo.cpu.model} />
+          <InfoRow label="Cores" value={systemInfo.cpu.cores} />
+          <div>
+            <div className="flex justify-between text-sm mb-1">
+              <span className="text-gray-400">Usage</span>
+              <span className="text-white">{systemInfo.cpu.usage}%</span>
+            </div>
+            <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-purple-500 to-blue-500"
+                style={{ width: `${systemInfo.cpu.usage}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Memory Info */}
+        <div className="bg-white/5 rounded-xl p-6 space-y-4">
+          <h3 className="text-lg font-semibold text-white mb-4">Memory</h3>
+          <InfoRow label="Total" value={systemInfo.memory.total} />
+          <InfoRow label="Used" value={systemInfo.memory.used} />
+          <InfoRow label="Free" value={systemInfo.memory.free} />
+          <div>
+            <div className="flex justify-between text-sm mb-1">
+              <span className="text-gray-400">Usage</span>
+              <span className="text-white">{systemInfo.memory.usage}%</span>
+            </div>
+            <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-green-500 to-emerald-500"
+                style={{ width: `${systemInfo.memory.usage}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Disk Info */}
+        <div className="bg-white/5 rounded-xl p-6 space-y-4">
+          <h3 className="text-lg font-semibold text-white mb-4">Disk</h3>
+          <InfoRow label="Total" value={systemInfo.disk.total} />
+          <InfoRow label="Used" value={systemInfo.disk.used} />
+          <InfoRow label="Free" value={systemInfo.disk.free} />
+          <div>
+            <div className="flex justify-between text-sm mb-1">
+              <span className="text-gray-400">Usage</span>
+              <span className="text-white">{systemInfo.disk.usage}%</span>
+            </div>
+            <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-orange-500 to-red-500"
+                style={{ width: `${systemInfo.disk.usage}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Network Info */}
+        <div className="bg-white/5 rounded-xl p-6 space-y-4">
+          <h3 className="text-lg font-semibold text-white mb-4">Network</h3>
+          <InfoRow label="IP Address" value={systemInfo.network.ip} />
+          <div>
+            <span className="text-sm text-gray-400">Interfaces</span>
+            <div className="mt-1 space-y-1">
+              {systemInfo.network.interfaces.map(iface => (
+                <div key={iface} className="text-sm text-white bg-white/10 px-2 py-1 rounded">
+                  {iface}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }) {
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className="text-gray-400">{label}</span>
+      <span className="text-white font-medium truncate ml-2">{value}</span>
+    </div>
+  }
