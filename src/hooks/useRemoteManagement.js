@@ -6,7 +6,7 @@
  * Uses the existing WebSocket connection from useAeroNyxWebSocket
  * to enable remote management functionality
  * 
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -16,10 +16,16 @@ import nodeRegistrationService from '../lib/api/nodeRegistration';
 // Get the WebSocket instance from the global context
 // This is set by useAeroNyxWebSocket when it connects
 let globalWebSocket = null;
+let globalWsState = null;
 
 // Export function to set the global WebSocket (called by useAeroNyxWebSocket)
 export function setGlobalWebSocket(ws) {
   globalWebSocket = ws;
+}
+
+// Export function to set the global WebSocket state
+export function setGlobalWsState(state) {
+  globalWsState = state;
 }
 
 export function useRemoteManagement(nodeReference) {
@@ -28,11 +34,25 @@ export function useRemoteManagement(nodeReference) {
   const [isEnabling, setIsEnabling] = useState(false);
   const [error, setError] = useState(null);
   const pendingRequests = useRef(new Map());
+  const messageHandlerRef = useRef(null);
 
   // Enable remote management
   const enableRemoteManagement = useCallback(async () => {
-    if (!wallet.connected || !nodeReference || !globalWebSocket) {
-      setError('WebSocket not connected or wallet not available');
+    console.log('[useRemoteManagement] enableRemoteManagement called', {
+      walletConnected: wallet.connected,
+      nodeReference,
+      hasGlobalWebSocket: !!globalWebSocket,
+      wsState: globalWsState
+    });
+
+    if (!wallet.connected || !nodeReference) {
+      setError('Wallet not connected or node reference missing');
+      return false;
+    }
+
+    // Check if WebSocket is available and authenticated
+    if (!globalWebSocket || !globalWsState?.authenticated) {
+      setError('WebSocket not connected or not authenticated. Please wait for connection.');
       return false;
     }
 
@@ -41,19 +61,24 @@ export function useRemoteManagement(nodeReference) {
 
     try {
       // Step 1: Generate signature message
+      console.log('[useRemoteManagement] Step 1: Generating signature message');
       const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       if (!messageResponse.success) {
         throw new Error(messageResponse.message || 'Failed to generate signature message');
       }
       const signatureMessage = messageResponse.data.message;
+      console.log('[useRemoteManagement] Signature message received');
 
       // Step 2: Sign message with wallet
+      console.log('[useRemoteManagement] Step 2: Signing message with wallet');
       const signature = await wallet.provider.request({
         method: 'personal_sign',
         params: [signatureMessage, wallet.address]
       });
+      console.log('[useRemoteManagement] Message signed successfully');
 
       // Step 3: Get JWT Token for remote management
+      console.log('[useRemoteManagement] Step 3: Getting JWT token');
       const tokenResponse = await nodeRegistrationService.generateRemoteManagementToken(
         wallet.address,
         signature,
@@ -66,61 +91,105 @@ export function useRemoteManagement(nodeReference) {
         throw new Error(tokenResponse.message || 'Failed to get remote management token');
       }
 
+      // Extract token correctly from the response
       const jwtToken = tokenResponse.data.token;
+      console.log('[useRemoteManagement] JWT token received:', jwtToken ? 'Yes' : 'No');
+      console.log('[useRemoteManagement] Token type:', tokenResponse.data.token_type);
+      console.log('[useRemoteManagement] Expires in:', tokenResponse.data.expires_in);
+
+      if (!jwtToken) {
+        throw new Error('No JWT token received from server');
+      }
 
       // Step 4: Send remote_auth to existing WebSocket
+      console.log('[useRemoteManagement] Step 4: Sending remote_auth message');
+      
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
+          if (messageHandlerRef.current) {
+            globalWebSocket.removeEventListener('message', messageHandlerRef.current);
+            messageHandlerRef.current = null;
+          }
           reject(new Error('Remote auth timeout'));
         }, 10000);
 
         const handleMessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+            console.log('[useRemoteManagement] Received message:', data.type);
+            
             if (data.type === 'remote_auth_success') {
+              console.log('[useRemoteManagement] Remote auth successful');
               clearTimeout(timeout);
               globalWebSocket.removeEventListener('message', handleMessage);
+              messageHandlerRef.current = null;
               setIsEnabled(true);
+              setIsEnabling(false);
               resolve(true);
-            } else if (data.type === 'error' && data.message?.includes('remote')) {
+            } else if (data.type === 'error' && (data.message?.includes('remote') || data.message?.includes('JWT'))) {
+              console.error('[useRemoteManagement] Remote auth error:', data.message);
               clearTimeout(timeout);
               globalWebSocket.removeEventListener('message', handleMessage);
+              messageHandlerRef.current = null;
+              setIsEnabling(false);
               reject(new Error(data.message));
             }
           } catch (err) {
-            // Ignore parse errors
+            console.error('[useRemoteManagement] Error parsing message:', err);
           }
         };
 
+        messageHandlerRef.current = handleMessage;
         globalWebSocket.addEventListener('message', handleMessage);
 
-        // Send remote_auth message
-        globalWebSocket.send(JSON.stringify({
+        // Check WebSocket state before sending
+        if (globalWebSocket.readyState !== WebSocket.OPEN) {
+          clearTimeout(timeout);
+          globalWebSocket.removeEventListener('message', handleMessage);
+          messageHandlerRef.current = null;
+          reject(new Error('WebSocket is not open'));
+          return;
+        }
+
+        // Send remote_auth message with JWT token
+        const authMessage = {
           type: 'remote_auth',
           jwt_token: jwtToken
-        }));
+        };
+        
+        console.log('[useRemoteManagement] Sending remote_auth with JWT token');
+        globalWebSocket.send(JSON.stringify(authMessage));
       });
 
     } catch (err) {
-      console.error('Failed to enable remote management:', err);
+      console.error('[useRemoteManagement] Failed to enable remote management:', err);
       setError(err.message);
-      return false;
-    } finally {
       setIsEnabling(false);
+      return false;
     }
   }, [wallet, nodeReference]);
 
   // Execute remote command
   const executeCommand = useCallback(async (command, args = [], cwd = null) => {
+    console.log('[useRemoteManagement] executeCommand called', { command, args, cwd, isEnabled });
+    
     if (!isEnabled || !globalWebSocket) {
-      throw new Error('Remote management not enabled');
+      throw new Error('Remote management not enabled or WebSocket not available');
+    }
+
+    if (globalWebSocket.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket is not open');
     }
 
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        pendingRequests.current.delete(requestId);
+        const handler = pendingRequests.current.get(requestId);
+        if (handler) {
+          globalWebSocket.removeEventListener('message', handler.handleMessage);
+          pendingRequests.current.delete(requestId);
+        }
         reject(new Error('Command timeout'));
       }, 30000);
 
@@ -128,6 +197,7 @@ export function useRemoteManagement(nodeReference) {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'remote_command_response' && data.request_id === requestId) {
+            console.log('[useRemoteManagement] Command response received:', data);
             clearTimeout(timeout);
             globalWebSocket.removeEventListener('message', handleMessage);
             pendingRequests.current.delete(requestId);
@@ -139,7 +209,7 @@ export function useRemoteManagement(nodeReference) {
             }
           }
         } catch (err) {
-          // Ignore parse errors
+          console.error('[useRemoteManagement] Error parsing command response:', err);
         }
       };
 
@@ -147,7 +217,7 @@ export function useRemoteManagement(nodeReference) {
       globalWebSocket.addEventListener('message', handleMessage);
 
       // Send command
-      globalWebSocket.send(JSON.stringify({
+      const commandMessage = {
         type: 'remote_command',
         node_reference: nodeReference,
         request_id: requestId,
@@ -157,14 +227,23 @@ export function useRemoteManagement(nodeReference) {
           args: args,
           cwd: cwd
         }
-      }));
+      };
+      
+      console.log('[useRemoteManagement] Sending command:', commandMessage);
+      globalWebSocket.send(JSON.stringify(commandMessage));
     });
   }, [isEnabled, nodeReference]);
 
   // Upload file
   const uploadFile = useCallback(async (path, content, base64 = false) => {
+    console.log('[useRemoteManagement] uploadFile called', { path, base64, isEnabled });
+    
     if (!isEnabled || !globalWebSocket) {
-      throw new Error('Remote management not enabled');
+      throw new Error('Remote management not enabled or WebSocket not available');
+    }
+
+    if (globalWebSocket.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket is not open');
     }
 
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -175,7 +254,11 @@ export function useRemoteManagement(nodeReference) {
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        pendingRequests.current.delete(requestId);
+        const handler = pendingRequests.current.get(requestId);
+        if (handler) {
+          globalWebSocket.removeEventListener('message', handler.handleMessage);
+          pendingRequests.current.delete(requestId);
+        }
         reject(new Error('Upload timeout'));
       }, 60000);
 
@@ -183,6 +266,7 @@ export function useRemoteManagement(nodeReference) {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'remote_command_response' && data.request_id === requestId) {
+            console.log('[useRemoteManagement] Upload response received:', data);
             clearTimeout(timeout);
             globalWebSocket.removeEventListener('message', handleMessage);
             pendingRequests.current.delete(requestId);
@@ -194,7 +278,7 @@ export function useRemoteManagement(nodeReference) {
             }
           }
         } catch (err) {
-          // Ignore parse errors
+          console.error('[useRemoteManagement] Error parsing upload response:', err);
         }
       };
 
@@ -202,7 +286,7 @@ export function useRemoteManagement(nodeReference) {
       globalWebSocket.addEventListener('message', handleMessage);
 
       // Send upload command
-      globalWebSocket.send(JSON.stringify({
+      const uploadMessage = {
         type: 'remote_command',
         node_reference: nodeReference,
         request_id: requestId,
@@ -212,13 +296,23 @@ export function useRemoteManagement(nodeReference) {
           content: content,
           encoding: 'base64'
         }
-      }));
+      };
+      
+      console.log('[useRemoteManagement] Sending upload command');
+      globalWebSocket.send(JSON.stringify(uploadMessage));
     });
   }, [isEnabled, nodeReference]);
 
   // Cleanup pending requests on unmount
   useEffect(() => {
     return () => {
+      // Clean up message handler
+      if (messageHandlerRef.current && globalWebSocket) {
+        globalWebSocket.removeEventListener('message', messageHandlerRef.current);
+        messageHandlerRef.current = null;
+      }
+      
+      // Clean up pending requests
       pendingRequests.current.forEach(({ timeout, handleMessage }) => {
         clearTimeout(timeout);
         if (globalWebSocket) {
