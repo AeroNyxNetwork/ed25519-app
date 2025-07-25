@@ -5,7 +5,7 @@
  * 
  * Production-ready API service with WebSocket support
  * 
- * @version 3.0.0
+ * @version 3.1.0
  * @author AeroNyx Development Team
  */
 
@@ -78,7 +78,13 @@ async function request(endpoint, options = {}) {
       };
     }
     
-    // Standardize successful response
+    // Check if the response already has the standardized format
+    if (data && typeof data === 'object' && 'success' in data) {
+      // The API already returns in our expected format
+      return data;
+    }
+    
+    // Otherwise, standardize the successful response
     return {
       success: true,
       data: data,
