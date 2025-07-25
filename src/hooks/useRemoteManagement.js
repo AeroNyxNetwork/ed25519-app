@@ -1,12 +1,12 @@
 /**
- * Remote Management Hook
+ * Remote Management Hook with Terminal Support
  * 
  * File Path: src/hooks/useRemoteManagement.js
  * 
  * Uses the existing WebSocket connection from useAeroNyxWebSocket
- * to enable remote management functionality
+ * to enable remote management and terminal functionality
  * 
- * @version 1.1.0
+ * @version 3.0.0
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -14,7 +14,6 @@ import { useWallet } from '../components/wallet/WalletProvider';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
 
 // Get the WebSocket instance from the global context
-// This is set by useAeroNyxWebSocket when it connects
 let globalWebSocket = null;
 let globalWsState = null;
 
@@ -33,8 +32,12 @@ export function useRemoteManagement(nodeReference) {
   const [isEnabled, setIsEnabled] = useState(false);
   const [isEnabling, setIsEnabling] = useState(false);
   const [error, setError] = useState(null);
+  const [sessionId, setSessionId] = useState(null);
+  const [terminalSessions, setTerminalSessions] = useState(new Map());
+  
   const pendingRequests = useRef(new Map());
   const messageHandlerRef = useRef(null);
+  const terminalHandlersRef = useRef(new Map());
 
   // Enable remote management
   const enableRemoteManagement = useCallback(async () => {
@@ -60,7 +63,7 @@ export function useRemoteManagement(nodeReference) {
     setError(null);
 
     try {
-      // Step 1: Generate signature message
+      // Step 1: Generate signature message for remote management
       console.log('[useRemoteManagement] Step 1: Generating signature message');
       const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
       if (!messageResponse.success) {
@@ -79,14 +82,6 @@ export function useRemoteManagement(nodeReference) {
 
       // Step 3: Get JWT Token for remote management
       console.log('[useRemoteManagement] Step 3: Getting JWT token');
-      console.log('[useRemoteManagement] Request params:', {
-        walletAddress: wallet.address,
-        signatureLength: signature?.length,
-        messageLength: signatureMessage?.length,
-        walletType: 'okx',
-        nodeReference
-      });
-      
       const tokenResponse = await nodeRegistrationService.generateRemoteManagementToken(
         wallet.address,
         signature,
@@ -95,48 +90,18 @@ export function useRemoteManagement(nodeReference) {
         nodeReference
       );
 
-      console.log('[useRemoteManagement] Full token API response:', JSON.stringify(tokenResponse, null, 2));
-      console.log('[useRemoteManagement] Response type:', typeof tokenResponse);
-      console.log('[useRemoteManagement] Response keys:', Object.keys(tokenResponse || {}));
-
-      if (!tokenResponse) {
-        throw new Error('No response received from token API');
-      }
-
       if (!tokenResponse.success) {
-        console.error('[useRemoteManagement] Token API failed:', tokenResponse);
         throw new Error(tokenResponse.message || 'Failed to get remote management token');
       }
 
-      // Check data structure
-      if (!tokenResponse.data) {
-        console.error('[useRemoteManagement] No data in response:', tokenResponse);
-        throw new Error('Invalid response structure - missing data');
-      }
-
-      // The API returns: { success: true, data: { token: "...", ... }, ... }
-      const jwtToken = tokenResponse.data.token;
-      
-      console.log('[useRemoteManagement] JWT token received:', jwtToken ? 'Yes' : 'No');
-      console.log('[useRemoteManagement] Token type:', tokenResponse.data.token_type);
-      console.log('[useRemoteManagement] Expires in:', tokenResponse.data.expires_in);
-      console.log('[useRemoteManagement] Node info:', tokenResponse.data.node);
-      
-      if (jwtToken) {
-        console.log('[useRemoteManagement] Token first 50 chars:', jwtToken.substring(0, 50));
-        console.log('[useRemoteManagement] Token length:', jwtToken.length);
-      }
-
+      const jwtToken = tokenResponse.data?.token;
       if (!jwtToken) {
-        console.error('[useRemoteManagement] tokenResponse.data structure:', {
-          dataType: typeof tokenResponse.data,
-          dataKeys: Object.keys(tokenResponse.data || {}),
-          dataStringified: JSON.stringify(tokenResponse.data)
-        });
-        throw new Error('No JWT token found in server response');
+        throw new Error('No JWT token received from server');
       }
 
-      // Step 4: Send remote_auth to existing WebSocket
+      console.log('[useRemoteManagement] JWT token received, length:', jwtToken.length);
+
+      // Step 4: Send remote_auth message
       console.log('[useRemoteManagement] Step 4: Sending remote_auth message');
       
       return new Promise((resolve, reject) => {
@@ -158,16 +123,28 @@ export function useRemoteManagement(nodeReference) {
               clearTimeout(timeout);
               globalWebSocket.removeEventListener('message', handleMessage);
               messageHandlerRef.current = null;
+              
+              // Store session info
+              setSessionId(data.session_id);
               setIsEnabled(true);
               setIsEnabling(false);
+              
+              // Set up permanent message handler for terminal and commands
+              setupPermanentHandlers();
+              
               resolve(true);
-            } else if (data.type === 'error' && (data.message?.includes('remote') || data.message?.includes('JWT'))) {
-              console.error('[useRemoteManagement] Remote auth error:', data.message);
+            } else if (data.type === 'error' && (
+              data.message?.includes('remote') || 
+              data.message?.includes('JWT') || 
+              data.code === 'AUTH_FAILED' ||
+              data.code === 'MISSING_JWT'
+            )) {
+              console.error('[useRemoteManagement] Remote auth error:', data);
               clearTimeout(timeout);
               globalWebSocket.removeEventListener('message', handleMessage);
               messageHandlerRef.current = null;
               setIsEnabling(false);
-              reject(new Error(data.message));
+              reject(new Error(data.message || 'Remote authentication failed'));
             }
           } catch (err) {
             console.error('[useRemoteManagement] Error parsing message:', err);
@@ -177,25 +154,13 @@ export function useRemoteManagement(nodeReference) {
         messageHandlerRef.current = handleMessage;
         globalWebSocket.addEventListener('message', handleMessage);
 
-        // Check WebSocket state before sending
-        if (globalWebSocket.readyState !== WebSocket.OPEN) {
-          clearTimeout(timeout);
-          globalWebSocket.removeEventListener('message', handleMessage);
-          messageHandlerRef.current = null;
-          reject(new Error('WebSocket is not open'));
-          return;
-        }
-
-        // Send remote_auth message with JWT token
+        // Send remote_auth message
         const authMessage = {
           type: 'remote_auth',
           jwt_token: jwtToken
         };
         
-        console.log('[useRemoteManagement] Sending remote_auth with JWT token');
-        console.log('[useRemoteManagement] Auth message:', JSON.stringify(authMessage));
-        console.log('[useRemoteManagement] WebSocket readyState:', globalWebSocket.readyState);
-        
+        console.log('[useRemoteManagement] Sending remote_auth message');
         globalWebSocket.send(JSON.stringify(authMessage));
       });
 
@@ -207,54 +172,201 @@ export function useRemoteManagement(nodeReference) {
     }
   }, [wallet, nodeReference]);
 
-  // Execute remote command
-  const executeCommand = useCallback(async (command, args = [], cwd = null) => {
-    console.log('[useRemoteManagement] executeCommand called', { command, args, cwd, isEnabled });
+  // Set up permanent handlers for terminal and command responses
+  const setupPermanentHandlers = useCallback(() => {
+    const handler = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        // Handle terminal messages
+        if (data.type === 'term_ready') {
+          const handler = terminalHandlersRef.current.get(data.session_id);
+          if (handler?.onReady) {
+            handler.onReady(data);
+          }
+        } else if (data.type === 'term_output') {
+          const handler = terminalHandlersRef.current.get(data.session_id);
+          if (handler?.onOutput) {
+            handler.onOutput(data.data);
+          }
+        } else if (data.type === 'term_error') {
+          const handler = terminalHandlersRef.current.get(data.session_id);
+          if (handler?.onError) {
+            handler.onError(data.error);
+          }
+        } else if (data.type === 'term_closed') {
+          const handler = terminalHandlersRef.current.get(data.session_id);
+          if (handler?.onClose) {
+            handler.onClose();
+          }
+          terminalHandlersRef.current.delete(data.session_id);
+          setTerminalSessions(prev => {
+            const next = new Map(prev);
+            next.delete(data.session_id);
+            return next;
+          });
+        }
+        
+        // Handle command responses
+        if (data.type === 'remote_command_response') {
+          const pending = pendingRequests.current.get(data.request_id);
+          if (pending) {
+            clearTimeout(pending.timeout);
+            pendingRequests.current.delete(data.request_id);
+            if (data.success) {
+              pending.resolve(data.result);
+            } else {
+              pending.reject(new Error(data.error || 'Command failed'));
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[useRemoteManagement] Error in permanent handler:', err);
+      }
+    };
+
+    globalWebSocket.addEventListener('message', handler);
     
+    // Store handler reference for cleanup
+    messageHandlerRef.current = handler;
+  }, []);
+
+  // Initialize terminal session
+  const initTerminal = useCallback(async (options = {}) => {
     if (!isEnabled || !globalWebSocket) {
-      throw new Error('Remote management not enabled or WebSocket not available');
+      throw new Error('Remote management not enabled');
     }
 
-    if (globalWebSocket.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not open');
+    const termSessionId = sessionId || `term-${Date.now()}`;
+    
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        terminalHandlersRef.current.delete(termSessionId);
+        reject(new Error('Terminal initialization timeout'));
+      }, 10000);
+
+      // Set up handlers for this terminal session
+      terminalHandlersRef.current.set(termSessionId, {
+        onReady: (data) => {
+          clearTimeout(timeout);
+          setTerminalSessions(prev => {
+            const next = new Map(prev);
+            next.set(data.session_id, {
+              sessionId: data.session_id,
+              nodeReference,
+              status: 'ready',
+              rows: options.rows || 24,
+              cols: options.cols || 80
+            });
+            return next;
+          });
+          resolve(data.session_id);
+        },
+        onOutput: options.onOutput || null,
+        onError: options.onError || null,
+        onClose: options.onClose || null
+      });
+
+      // Send term_init message
+      const initMessage = {
+        type: 'term_init',
+        node_reference: nodeReference,
+        session_id: termSessionId,
+        rows: options.rows || 24,
+        cols: options.cols || 80,
+        cwd: options.cwd,
+        env: options.env
+      };
+
+      console.log('[useRemoteManagement] Initializing terminal:', initMessage);
+      globalWebSocket.send(JSON.stringify(initMessage));
+    });
+  }, [isEnabled, nodeReference, sessionId]);
+
+  // Send terminal input
+  const sendTerminalInput = useCallback((termSessionId, data) => {
+    if (!isEnabled || !globalWebSocket) {
+      throw new Error('Remote management not enabled');
+    }
+
+    const message = {
+      type: 'term_input',
+      session_id: termSessionId,
+      data: btoa(data) // Base64 encode
+    };
+
+    globalWebSocket.send(JSON.stringify(message));
+  }, [isEnabled]);
+
+  // Resize terminal
+  const resizeTerminal = useCallback((termSessionId, rows, cols) => {
+    if (!isEnabled || !globalWebSocket) {
+      throw new Error('Remote management not enabled');
+    }
+
+    const message = {
+      type: 'term_resize',
+      session_id: termSessionId,
+      rows,
+      cols
+    };
+
+    globalWebSocket.send(JSON.stringify(message));
+    
+    // Update local state
+    setTerminalSessions(prev => {
+      const next = new Map(prev);
+      const session = next.get(termSessionId);
+      if (session) {
+        session.rows = rows;
+        session.cols = cols;
+      }
+      return next;
+    });
+  }, [isEnabled]);
+
+  // Close terminal
+  const closeTerminal = useCallback((termSessionId) => {
+    if (!isEnabled || !globalWebSocket) {
+      return;
+    }
+
+    const message = {
+      type: 'term_close',
+      session_id: termSessionId
+    };
+
+    globalWebSocket.send(JSON.stringify(message));
+    
+    // Clean up local state
+    terminalHandlersRef.current.delete(termSessionId);
+    setTerminalSessions(prev => {
+      const next = new Map(prev);
+      next.delete(termSessionId);
+      return next;
+    });
+  }, [isEnabled]);
+
+  // Execute command (legacy support)
+  const executeCommand = useCallback(async (command, args = [], cwd = null) => {
+    if (!isEnabled || !globalWebSocket) {
+      throw new Error('Remote management not enabled');
     }
 
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        const handler = pendingRequests.current.get(requestId);
-        if (handler) {
-          globalWebSocket.removeEventListener('message', handler.handleMessage);
-          pendingRequests.current.delete(requestId);
-        }
+        pendingRequests.current.delete(requestId);
         reject(new Error('Command timeout'));
       }, 30000);
 
-      const handleMessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === 'remote_command_response' && data.request_id === requestId) {
-            console.log('[useRemoteManagement] Command response received:', data);
-            clearTimeout(timeout);
-            globalWebSocket.removeEventListener('message', handleMessage);
-            pendingRequests.current.delete(requestId);
+      pendingRequests.current.set(requestId, {
+        resolve,
+        reject,
+        timeout
+      });
 
-            if (data.success) {
-              resolve(data.result);
-            } else {
-              reject(new Error(data.error || 'Command failed'));
-            }
-          }
-        } catch (err) {
-          console.error('[useRemoteManagement] Error parsing command response:', err);
-        }
-      };
-
-      pendingRequests.current.set(requestId, { timeout, handleMessage });
-      globalWebSocket.addEventListener('message', handleMessage);
-
-      // Send command
       const commandMessage = {
         type: 'remote_command',
         node_reference: nodeReference,
@@ -267,21 +379,14 @@ export function useRemoteManagement(nodeReference) {
         }
       };
       
-      console.log('[useRemoteManagement] Sending command:', commandMessage);
       globalWebSocket.send(JSON.stringify(commandMessage));
     });
   }, [isEnabled, nodeReference]);
 
-  // Upload file
+  // Upload file (legacy support)
   const uploadFile = useCallback(async (path, content, base64 = false) => {
-    console.log('[useRemoteManagement] uploadFile called', { path, base64, isEnabled });
-    
     if (!isEnabled || !globalWebSocket) {
-      throw new Error('Remote management not enabled or WebSocket not available');
-    }
-
-    if (globalWebSocket.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not open');
+      throw new Error('Remote management not enabled');
     }
 
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -292,38 +397,16 @@ export function useRemoteManagement(nodeReference) {
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        const handler = pendingRequests.current.get(requestId);
-        if (handler) {
-          globalWebSocket.removeEventListener('message', handler.handleMessage);
-          pendingRequests.current.delete(requestId);
-        }
+        pendingRequests.current.delete(requestId);
         reject(new Error('Upload timeout'));
       }, 60000);
 
-      const handleMessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === 'remote_command_response' && data.request_id === requestId) {
-            console.log('[useRemoteManagement] Upload response received:', data);
-            clearTimeout(timeout);
-            globalWebSocket.removeEventListener('message', handleMessage);
-            pendingRequests.current.delete(requestId);
+      pendingRequests.current.set(requestId, {
+        resolve,
+        reject,
+        timeout
+      });
 
-            if (data.success) {
-              resolve(data.result);
-            } else {
-              reject(new Error(data.error || 'Upload failed'));
-            }
-          }
-        } catch (err) {
-          console.error('[useRemoteManagement] Error parsing upload response:', err);
-        }
-      };
-
-      pendingRequests.current.set(requestId, { timeout, handleMessage });
-      globalWebSocket.addEventListener('message', handleMessage);
-
-      // Send upload command
       const uploadMessage = {
         type: 'remote_command',
         node_reference: nodeReference,
@@ -336,14 +419,18 @@ export function useRemoteManagement(nodeReference) {
         }
       };
       
-      console.log('[useRemoteManagement] Sending upload command');
       globalWebSocket.send(JSON.stringify(uploadMessage));
     });
   }, [isEnabled, nodeReference]);
 
-  // Cleanup pending requests on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Close all terminal sessions
+      terminalSessions.forEach((_, sessionId) => {
+        closeTerminal(sessionId);
+      });
+
       // Clean up message handler
       if (messageHandlerRef.current && globalWebSocket) {
         globalWebSocket.removeEventListener('message', messageHandlerRef.current);
@@ -351,13 +438,13 @@ export function useRemoteManagement(nodeReference) {
       }
       
       // Clean up pending requests
-      pendingRequests.current.forEach(({ timeout, handleMessage }) => {
+      pendingRequests.current.forEach(({ timeout }) => {
         clearTimeout(timeout);
-        if (globalWebSocket) {
-          globalWebSocket.removeEventListener('message', handleMessage);
-        }
       });
       pendingRequests.current.clear();
+      
+      // Clear terminal handlers
+      terminalHandlersRef.current.clear();
     };
   }, []);
 
@@ -365,7 +452,17 @@ export function useRemoteManagement(nodeReference) {
     isEnabled,
     isEnabling,
     error,
+    sessionId,
+    terminalSessions: Array.from(terminalSessions.values()),
     enableRemoteManagement,
+    
+    // Terminal methods
+    initTerminal,
+    sendTerminalInput,
+    resizeTerminal,
+    closeTerminal,
+    
+    // Legacy command methods
     executeCommand,
     uploadFile
   };
