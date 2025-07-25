@@ -18,7 +18,7 @@
  * IMPORTANT: This is the ONLY WebSocket connection logic in the entire application.
  * All components MUST use this hook instead of implementing their own WebSocket logic.
  * 
- * @version 2.0.0
+ * @version 2.1.0
  * @author AeroNyx Development Team
  */
 
@@ -26,7 +26,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
-import { setGlobalWebSocket } from './useRemoteManagement';
+import { setGlobalWebSocket, setGlobalWsState } from './useRemoteManagement';
 
 /**
  * WebSocket connection states - matching DashboardContent exactly
@@ -92,6 +92,11 @@ export function useAeroNyxWebSocket(options = {}) {
   const mountedRef = useRef(true);
   const isConnectingRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
+
+  // Update global WebSocket state whenever it changes
+  useEffect(() => {
+    setGlobalWsState(wsState);
+  }, [wsState]);
 
   /**
    * Calculate resource utilization from nodes
