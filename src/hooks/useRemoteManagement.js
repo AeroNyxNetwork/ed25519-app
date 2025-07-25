@@ -79,6 +79,14 @@ export function useRemoteManagement(nodeReference) {
 
       // Step 3: Get JWT Token for remote management
       console.log('[useRemoteManagement] Step 3: Getting JWT token');
+      console.log('[useRemoteManagement] Request params:', {
+        walletAddress: wallet.address,
+        signatureLength: signature?.length,
+        messageLength: signatureMessage?.length,
+        walletType: 'okx',
+        nodeReference
+      });
+      
       const tokenResponse = await nodeRegistrationService.generateRemoteManagementToken(
         wallet.address,
         signature,
@@ -87,18 +95,45 @@ export function useRemoteManagement(nodeReference) {
         nodeReference
       );
 
+      console.log('[useRemoteManagement] Full token API response:', JSON.stringify(tokenResponse, null, 2));
+      console.log('[useRemoteManagement] Response type:', typeof tokenResponse);
+      console.log('[useRemoteManagement] Response keys:', Object.keys(tokenResponse || {}));
+
+      if (!tokenResponse) {
+        throw new Error('No response received from token API');
+      }
+
       if (!tokenResponse.success) {
+        console.error('[useRemoteManagement] Token API failed:', tokenResponse);
         throw new Error(tokenResponse.message || 'Failed to get remote management token');
       }
 
-      // Extract token correctly from the response
+      // Check data structure
+      if (!tokenResponse.data) {
+        console.error('[useRemoteManagement] No data in response:', tokenResponse);
+        throw new Error('Invalid response structure - missing data');
+      }
+
+      // The API returns: { success: true, data: { token: "...", ... }, ... }
       const jwtToken = tokenResponse.data.token;
+      
       console.log('[useRemoteManagement] JWT token received:', jwtToken ? 'Yes' : 'No');
       console.log('[useRemoteManagement] Token type:', tokenResponse.data.token_type);
       console.log('[useRemoteManagement] Expires in:', tokenResponse.data.expires_in);
+      console.log('[useRemoteManagement] Node info:', tokenResponse.data.node);
+      
+      if (jwtToken) {
+        console.log('[useRemoteManagement] Token first 50 chars:', jwtToken.substring(0, 50));
+        console.log('[useRemoteManagement] Token length:', jwtToken.length);
+      }
 
       if (!jwtToken) {
-        throw new Error('No JWT token received from server');
+        console.error('[useRemoteManagement] tokenResponse.data structure:', {
+          dataType: typeof tokenResponse.data,
+          dataKeys: Object.keys(tokenResponse.data || {}),
+          dataStringified: JSON.stringify(tokenResponse.data)
+        });
+        throw new Error('No JWT token found in server response');
       }
 
       // Step 4: Send remote_auth to existing WebSocket
@@ -158,6 +193,9 @@ export function useRemoteManagement(nodeReference) {
         };
         
         console.log('[useRemoteManagement] Sending remote_auth with JWT token');
+        console.log('[useRemoteManagement] Auth message:', JSON.stringify(authMessage));
+        console.log('[useRemoteManagement] WebSocket readyState:', globalWebSocket.readyState);
+        
         globalWebSocket.send(JSON.stringify(authMessage));
       });
 
