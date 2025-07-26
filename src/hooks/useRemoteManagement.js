@@ -1,20 +1,17 @@
 /**
- * Remote Management Hook with Fixed Signature Handling
+ * Remote Management Hook with Global Signature Support
  * 
  * File Path: src/hooks/useRemoteManagement.js
  * 
- * Fixed issues:
- * - Signature cache not being refreshed when expired
- * - JWT token not being regenerated after expiry
- * - Message handler conflicts
+ * Updated to use global signature manager instead of per-purpose signatures
  * 
- * @version 4.1.0
+ * @version 5.0.0
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
-import { useCachedSignature } from './useCachedSignature';
+import { useGlobalSignature } from './useGlobalSignature';
 
 // Get the WebSocket instance from the global context
 let globalWebSocket = null;
@@ -33,17 +30,15 @@ export function setGlobalWsState(state) {
 export function useRemoteManagement(nodeReference) {
   const { wallet } = useWallet();
   
-  // Use cached signature for remote management
+  // Use global signature manager
   const {
     signature,
     message,
     ensureSignature,
-    refreshSignature,
     isLoading: isSignatureLoading,
     error: signatureError,
-    remainingTimeFormatted,
-    isValid: isSignatureValid
-  } = useCachedSignature('remote-management');
+    remainingTimeFormatted
+  } = useGlobalSignature();
   
   const [isEnabled, setIsEnabled] = useState(false);
   const [isEnabling, setIsEnabling] = useState(false);
@@ -71,7 +66,6 @@ export function useRemoteManagement(nodeReference) {
       hasGlobalWebSocket: !!globalWebSocket,
       wsState: globalWsState,
       hasCachedSignature: !!signature,
-      isSignatureValid,
       signatureRemainingTime: remainingTimeFormatted,
       hasValidJWT: isJwtValid()
     });
@@ -97,23 +91,15 @@ export function useRemoteManagement(nodeReference) {
     setError(null);
 
     try {
-      // Step 1: Ensure we have a valid signature
-      console.log('[useRemoteManagement] Step 1: Ensuring valid signature');
-      
-      // Force refresh if signature is about to expire (less than 1 minute remaining)
-      let signatureData;
-      if (!isSignatureValid || (signature && remainingTimeFormatted && remainingTimeFormatted.includes('s'))) {
-        console.log('[useRemoteManagement] Signature expired or expiring soon, refreshing...');
-        signatureData = await refreshSignature();
-      } else {
-        signatureData = await ensureSignature();
-      }
+      // Step 1: Ensure we have a valid signature from global manager
+      console.log('[useRemoteManagement] Step 1: Ensuring valid global signature');
+      const signatureData = await ensureSignature();
       
       if (!signatureData || !signatureData.signature || !signatureData.message) {
         throw new Error('Failed to obtain signature');
       }
 
-      console.log('[useRemoteManagement] Using signature (valid for:', remainingTimeFormatted, ')');
+      console.log('[useRemoteManagement] Using global signature (valid for:', remainingTimeFormatted, ')');
 
       // Step 2: Get JWT Token for remote management
       console.log('[useRemoteManagement] Step 2: Getting JWT token');
@@ -126,27 +112,7 @@ export function useRemoteManagement(nodeReference) {
       );
 
       if (!tokenResponse.success) {
-        // If signature invalid, try refreshing
-        if (tokenResponse.message?.includes('signature') || tokenResponse.message?.includes('expired')) {
-          console.log('[useRemoteManagement] Signature rejected, refreshing and retrying...');
-          const newSignatureData = await refreshSignature();
-          
-          const retryResponse = await nodeRegistrationService.generateRemoteManagementToken(
-            wallet.address,
-            newSignatureData.signature,
-            newSignatureData.message,
-            'okx',
-            nodeReference
-          );
-          
-          if (!retryResponse.success) {
-            throw new Error(retryResponse.message || 'Failed to get remote management token after retry');
-          }
-          
-          tokenResponse.data = retryResponse.data;
-        } else {
-          throw new Error(tokenResponse.message || 'Failed to get remote management token');
-        }
+        throw new Error(tokenResponse.message || 'Failed to get remote management token');
       }
 
       const jwtToken = tokenResponse.data?.token;
@@ -250,7 +216,7 @@ export function useRemoteManagement(nodeReference) {
       
       return false;
     }
-  }, [wallet, nodeReference, ensureSignature, refreshSignature, signatureError, remainingTimeFormatted, isSignatureValid, isJwtValid]);
+  }, [wallet, nodeReference, ensureSignature, signatureError, remainingTimeFormatted, isJwtValid]);
 
   // Set up permanent handlers for terminal and command responses
   const setupPermanentHandlers = useCallback(() => {
@@ -337,7 +303,7 @@ export function useRemoteManagement(nodeReference) {
       const timeout = setTimeout(() => {
         terminalHandlersRef.current.delete(termSessionId);
         reject(new Error('Terminal initialization timeout'));
-      }, 15000); // Increased timeout to 15s
+      }, 15000); // 15s timeout
 
       // Set up handlers for this terminal session
       terminalHandlersRef.current.set(termSessionId, {
