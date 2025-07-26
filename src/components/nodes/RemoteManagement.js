@@ -19,11 +19,14 @@ import {
   AlertCircle,
   Loader2,
   Monitor,
-  HardDrive
+  HardDrive,
+  Key,
+  RefreshCw
 } from 'lucide-react';
 import clsx from 'clsx';
 import dynamic from 'next/dynamic';
 import { useRemoteManagement } from '../../hooks/useRemoteManagement';
+import FileManager from './FileManager';
 
 // Dynamically import WebTerminal to avoid SSR issues with xterm
 const WebTerminal = dynamic(
