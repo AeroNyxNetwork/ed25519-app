@@ -1,8 +1,9 @@
 /**
  * useSignature Hook
  * Manages wallet signature generation and caching for AeroNyx platform
- * Complete version with all features
- * useSignature.js
+ * Enhanced with global signature manager integration
+ * 
+ * @version 4.0.0
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -18,13 +19,15 @@ import {
   isSignatureNeeded
 } from '../lib/utils/walletSignature';
 import { STORAGE_KEYS, TIME_CONSTANTS } from '../lib/constants';
+import globalSignatureManager from '../lib/utils/globalSignatureManager';
 
 /**
  * Custom hook for managing wallet signatures
  * @param {string} purpose - Purpose of the signature (e.g., 'register', 'auth')
+ * @param {boolean} useGlobal - Whether to use global signature manager (default: true)
  * @returns {Object} Signature state and methods
  */
-export function useSignature(purpose = 'auth') {
+export function useSignature(purpose = 'auth', useGlobal = true) {
   const { wallet } = useWallet();
   const [signature, setSignature] = useState(null);
   const [message, setMessage] = useState(null);
@@ -38,16 +41,68 @@ export function useSignature(purpose = 'auth') {
 
   // Cleanup on unmount
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
   }, []);
+
+  // Listen to global signature manager events if useGlobal is true
+  useEffect(() => {
+    if (!useGlobal) return;
+
+    const handleGlobalEvent = (event, data) => {
+      if (!mountedRef.current) return;
+
+      switch (event) {
+        case 'generating':
+          setIsLoading(true);
+          setError(null);
+          break;
+        case 'generated':
+          if (globalSignatureManager.walletAddress === wallet.address?.toLowerCase()) {
+            setSignature(globalSignatureManager.signature);
+            setMessage(globalSignatureManager.message);
+            setLastSignatureTime(Date.now());
+            setIsLoading(false);
+          }
+          break;
+        case 'error':
+          setError(data?.message || 'Failed to generate signature');
+          setIsLoading(false);
+          break;
+        case 'cleared':
+          if (globalSignatureManager.walletAddress === wallet.address?.toLowerCase()) {
+            setSignature(null);
+            setMessage(null);
+            setLastSignatureTime(null);
+          }
+          break;
+      }
+    };
+
+    globalSignatureManager.addListener(handleGlobalEvent);
+    
+    return () => {
+      globalSignatureManager.removeListener(handleGlobalEvent);
+    };
+  }, [useGlobal, wallet.address]);
 
   // Check for cached signature on mount and wallet changes
   useEffect(() => {
     if (!wallet.connected || !wallet.address) {
       // Clear signature if wallet disconnected
       clearSignature();
+      return;
+    }
+
+    // If using global manager, check if it has a valid signature
+    if (useGlobal && globalSignatureManager.isValid() && 
+        globalSignatureManager.walletAddress === wallet.address.toLowerCase()) {
+      setSignature(globalSignatureManager.signature);
+      setMessage(globalSignatureManager.message);
+      setLastSignatureTime(Date.now());
+      console.log('[useSignature] Using global signature');
       return;
     }
 
@@ -76,16 +131,35 @@ export function useSignature(purpose = 'auth') {
       setMessage(cached.message);
       setLastSignatureTime(cached.timestamp);
       console.log('[useSignature] Using cached signature');
-    } else {
-      // Auto-generate signature on mount
+    } else if (!useGlobal) {
+      // Only auto-generate if not using global manager
       generateSignature();
     }
-  }, [wallet.connected, wallet.address, purpose]);
+  }, [wallet.connected, wallet.address, purpose, useGlobal]);
 
   /**
    * Generate a new signature
    */
   const generateSignature = useCallback(async () => {
+    // If using global manager, delegate to it
+    if (useGlobal) {
+      try {
+        const globalSig = await globalSignatureManager.getSignature(wallet);
+        if (mountedRef.current) {
+          setSignature(globalSig.signature);
+          setMessage(globalSig.message);
+          setLastSignatureTime(Date.now());
+        }
+        return globalSig;
+      } catch (err) {
+        if (mountedRef.current) {
+          setError(err.message);
+        }
+        throw err;
+      }
+    }
+
+    // Original implementation for non-global usage
     // Prevent duplicate generation
     if (isGeneratingRef.current) {
       console.log('[useSignature] Already generating signature, skipping...');
@@ -179,7 +253,7 @@ export function useSignature(purpose = 'auth') {
         isGeneratingRef.current = false;
       }
     }
-  }, [wallet, purpose]);
+  }, [wallet, purpose, useGlobal]);
 
   /**
    * Clear the current signature
@@ -192,17 +266,28 @@ export function useSignature(purpose = 'auth') {
     
     if (wallet.address) {
       clearCachedSignature(wallet.address, purpose);
-      clearStoredSignatureInfo();
+      if (!useGlobal) {
+        clearStoredSignatureInfo();
+      }
     }
-  }, [wallet.address, purpose]);
+
+    // Clear global signature if using global manager
+    if (useGlobal && wallet.address && 
+        globalSignatureManager.walletAddress === wallet.address.toLowerCase()) {
+      globalSignatureManager.clear();
+    }
+  }, [wallet.address, purpose, useGlobal]);
 
   /**
    * Refresh signature (force regenerate)
    */
   const refreshSignature = useCallback(async () => {
+    if (useGlobal) {
+      globalSignatureManager.clear();
+    }
     clearSignature();
     return generateSignature();
-  }, [clearSignature, generateSignature]);
+  }, [clearSignature, generateSignature, useGlobal]);
 
   /**
    * Validate current signature
@@ -213,6 +298,10 @@ export function useSignature(purpose = 'auth') {
     }
 
     // Check if signature is expired
+    if (useGlobal && globalSignatureManager.isValid()) {
+      return true;
+    }
+
     if (isSignatureNeeded(lastSignatureTime)) {
       return false;
     }
@@ -223,7 +312,7 @@ export function useSignature(purpose = 'auth') {
     }
 
     return true;
-  }, [signature, message, lastSignatureTime, wallet.type]);
+  }, [signature, message, lastSignatureTime, wallet.type, useGlobal]);
 
   /**
    * Get signature or generate if needed
@@ -235,6 +324,18 @@ export function useSignature(purpose = 'auth') {
 
     return generateSignature();
   }, [validateSignature, signature, message, generateSignature]);
+
+  // Calculate remaining time
+  const getRemainingTime = useCallback(() => {
+    if (useGlobal) {
+      return globalSignatureManager.getRemainingTime();
+    }
+    
+    if (!lastSignatureTime) return 0;
+    const elapsed = Date.now() - lastSignatureTime;
+    const validity = TIME_CONSTANTS.SIGNATURE_VALIDITY_MINUTES * 60 * 1000;
+    return Math.max(0, validity - elapsed);
+  }, [useGlobal, lastSignatureTime]);
 
   return {
     signature,
@@ -250,8 +351,26 @@ export function useSignature(purpose = 'auth') {
     isValid: Boolean(signature && message && !error && validateSignature()),
     isExpired: isSignatureNeeded(lastSignatureTime),
     walletAddress: wallet.address,
-    walletType: wallet.type
+    walletType: wallet.type,
+    remainingTime: getRemainingTime(),
+    remainingTimeFormatted: useGlobal ? 
+      globalSignatureManager.getFormattedRemainingTime() : 
+      formatRemainingTime(getRemainingTime()),
+    isGenerating: isLoading // Add alias for compatibility
   };
+}
+
+// Helper function to format remaining time
+function formatRemainingTime(ms) {
+  if (ms <= 0) return 'Expired';
+  
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
 }
 
 // Session Storage Cache utility functions (for temporary storage)
@@ -296,7 +415,8 @@ function clearCachedSignature(walletAddress, purpose) {
 }
 
 function isSignatureExpired(timestamp) {
-  const expiryTime = TIME_CONSTANTS.SIGNATURE_VALIDITY_MINUTES * 60 * 1000;
+  // Use 10 minutes for global signature
+  const expiryTime = 10 * 60 * 1000; // 10 minutes
   return Date.now() - timestamp > expiryTime;
 }
 
@@ -305,12 +425,23 @@ export default useSignature;
 
 // Export utility to check if any signature exists for a wallet
 export function hasStoredSignature(walletAddress) {
+  // First check global signature
+  if (globalSignatureManager.isValid() && 
+      globalSignatureManager.walletAddress === walletAddress.toLowerCase()) {
+    return true;
+  }
+  
+  // Then check local storage
   const info = getStoredSignatureInfo();
   return info && info.walletAddress === walletAddress.toLowerCase() && !isSignatureNeeded(info.timestamp);
 }
 
 // Export utility to clear all signatures
 export function clearAllSignatures() {
+  // Clear global signature
+  globalSignatureManager.clear();
+  
+  // Clear local storage
   clearStoredSignatureInfo();
   
   // Clear all session storage signatures
