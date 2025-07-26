@@ -1,25 +1,14 @@
 /**
- * Node Performance Chart Component for AeroNyx Dashboard
- * Enhanced version with signature prop support
+ * Node Performance Chart Component with Fixed Layout
  * 
  * File Path: src/components/dashboard/NodePerformanceChart.js
  * 
- * This component renders real-time performance charts for individual nodes
- * using the new performance history API. It supports multiple time ranges
- * and chart types with intelligent caching and error handling.
+ * Fixed issues:
+ * - Time range buttons overflowing container
+ * - Added responsive layout for mobile
+ * - Better handling of loading states
  * 
- * Features:
- * - Real-time performance data visualization
- * - Multiple time range support (1h, 6h, 24h, 3d, 7d)
- * - Multiple chart types (CPU, Memory, Bandwidth, Storage)
- * - Uses provided signature to avoid repeated auth requests
- * - Intelligent caching for performance optimization
- * - Graceful fallback to mock data during development
- * - Responsive SVG-based charts
- * - Comprehensive error handling
- * 
- * @version 1.1.0
- * @author AeroNyx Development Team
+ * @version 1.2.0
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -78,7 +67,7 @@ export default function NodePerformanceChart({
   const { 
     signature: generatedSignature, 
     message: generatedMessage,
-    isGenerating: isGeneratingSignature
+    isLoading: isGeneratingSignature
   } = useSignature('performanceChart');
   
   const signature = providedSignature || generatedSignature;
@@ -267,15 +256,15 @@ export default function NodePerformanceChart({
   // ==================== RENDER COMPONENTS ====================
   
   /**
-   * Render time range selector
+   * Render time range selector with responsive layout
    */
   const TimeRangeSelector = () => (
-    <div className="flex gap-1">
+    <div className="flex gap-1 flex-shrink-0 overflow-x-auto no-scrollbar">
       {TIME_RANGES.map(range => (
         <button
           key={range.value}
           onClick={() => handleTimeRangeChange(range.value)}
-          className={`px-3 py-1 text-xs rounded transition-colors ${
+          className={`px-2 sm:px-3 py-1 text-xs rounded transition-colors whitespace-nowrap flex-shrink-0 ${
             timeRange === range.value 
               ? 'bg-primary text-white' 
               : 'bg-background-100 text-gray-300 hover:bg-background-200'
@@ -291,12 +280,12 @@ export default function NodePerformanceChart({
    * Render chart type selector
    */
   const ChartTypeSelector = () => (
-    <div className="flex gap-1">
+    <div className="flex gap-1 flex-shrink-0 overflow-x-auto no-scrollbar">
       {CHART_TYPES.map(type => (
         <button
           key={type.key}
           onClick={() => handleChartTypeChange(type.key)}
-          className={`px-3 py-1 text-xs rounded transition-colors ${
+          className={`px-2 sm:px-3 py-1 text-xs rounded transition-colors whitespace-nowrap flex-shrink-0 ${
             chartType === type.key 
               ? 'bg-secondary text-white' 
               : 'bg-background-100 text-gray-300 hover:bg-background-200'
@@ -453,8 +442,9 @@ export default function NodePerformanceChart({
   return (
     <div className="bg-background-100 rounded-lg p-4">
       {/* Chart Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-4 mb-4">
+        {/* Title and refresh button */}
+        <div className="flex items-center justify-between">
           <h5 className="font-medium">
             {currentChartType?.label || 'Performance'} Usage
           </h5>
@@ -468,22 +458,27 @@ export default function NodePerformanceChart({
             </svg>
           </button>
         </div>
-        
-        <div className="flex flex-col sm:flex-row gap-2">
-          <ChartTypeSelector />
-          <TimeRangeSelector />
+
+        {/* Selectors with responsive layout */}
+        <div className="flex flex-col sm:flex-row gap-2 overflow-hidden">
+          <div className="flex-1 min-w-0">
+            <ChartTypeSelector />
+          </div>
+          <div className="flex-1 min-w-0">
+            <TimeRangeSelector />
+          </div>
         </div>
       </div>
       
       {/* Chart Metadata */}
       {performanceData && (
-        <div className="mb-4 text-xs text-gray-400 flex justify-between">
-          <span>
+        <div className="mb-4 text-xs text-gray-400 flex flex-col sm:flex-row sm:justify-between gap-1">
+          <span className="truncate">
             Last updated: {performanceData.performance_history?.length > 0 && 
               new Date(performanceData.performance_history[performanceData.performance_history.length - 1]?.timestamp).toLocaleString()
             }
           </span>
-          <span>
+          <span className="flex-shrink-0">
             {performanceData.data_points} data points over {timeRange}h
             {performanceData.cache_info?.is_mock_data && (
               <span className="ml-2 text-yellow-400">(Demo Data)</span>
@@ -504,3 +499,16 @@ export default function NodePerformanceChart({
     </div>
   );
 }
+
+/* Add custom CSS for hiding scrollbar */
+const style = document.createElement('style');
+style.textContent = `
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+`;
+document.head.appendChild(style);
