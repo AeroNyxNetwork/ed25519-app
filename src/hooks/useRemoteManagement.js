@@ -1,17 +1,17 @@
 /**
- * Remote Management Hook with Terminal Support
+ * Remote Management Hook with Cached Signature Support
  * 
  * File Path: src/hooks/useRemoteManagement.js
  * 
- * Uses the existing WebSocket connection from useAeroNyxWebSocket
- * to enable remote management and terminal functionality
+ * Updated to use cached signatures for reducing signing frequency
  * 
- * @version 3.0.0
+ * @version 4.0.0
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
+import { useCachedSignature } from './useCachedSignature';
 
 // Get the WebSocket instance from the global context
 let globalWebSocket = null;
@@ -29,6 +29,17 @@ export function setGlobalWsState(state) {
 
 export function useRemoteManagement(nodeReference) {
   const { wallet } = useWallet();
+  
+  // Use cached signature for remote management
+  const {
+    signature,
+    message,
+    ensureSignature,
+    isLoading: isSignatureLoading,
+    error: signatureError,
+    remainingTimeFormatted
+  } = useCachedSignature('remote-management');
+  
   const [isEnabled, setIsEnabled] = useState(false);
   const [isEnabling, setIsEnabling] = useState(false);
   const [error, setError] = useState(null);
@@ -38,6 +49,7 @@ export function useRemoteManagement(nodeReference) {
   const pendingRequests = useRef(new Map());
   const messageHandlerRef = useRef(null);
   const terminalHandlersRef = useRef(new Map());
+  const jwtTokenRef = useRef(null);
 
   // Enable remote management
   const enableRemoteManagement = useCallback(async () => {
@@ -45,7 +57,9 @@ export function useRemoteManagement(nodeReference) {
       walletConnected: wallet.connected,
       nodeReference,
       hasGlobalWebSocket: !!globalWebSocket,
-      wsState: globalWsState
+      wsState: globalWsState,
+      hasCachedSignature: !!signature,
+      signatureRemainingTime: remainingTimeFormatted
     });
 
     if (!wallet.connected || !nodeReference) {
@@ -63,29 +77,22 @@ export function useRemoteManagement(nodeReference) {
     setError(null);
 
     try {
-      // Step 1: Generate signature message for remote management
-      console.log('[useRemoteManagement] Step 1: Generating signature message');
-      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-      if (!messageResponse.success) {
-        throw new Error(messageResponse.message || 'Failed to generate signature message');
+      // Step 1: Ensure we have a valid signature (from cache or new)
+      console.log('[useRemoteManagement] Step 1: Ensuring valid signature');
+      const signatureData = await ensureSignature();
+      
+      if (!signatureData || !signatureData.signature || !signatureData.message) {
+        throw new Error('Failed to obtain signature');
       }
-      const signatureMessage = messageResponse.data.message;
-      console.log('[useRemoteManagement] Signature message received');
 
-      // Step 2: Sign message with wallet
-      console.log('[useRemoteManagement] Step 2: Signing message with wallet');
-      const signature = await wallet.provider.request({
-        method: 'personal_sign',
-        params: [signatureMessage, wallet.address]
-      });
-      console.log('[useRemoteManagement] Message signed successfully');
+      console.log('[useRemoteManagement] Using signature (cached or new)');
 
-      // Step 3: Get JWT Token for remote management
-      console.log('[useRemoteManagement] Step 3: Getting JWT token');
+      // Step 2: Get JWT Token for remote management
+      console.log('[useRemoteManagement] Step 2: Getting JWT token');
       const tokenResponse = await nodeRegistrationService.generateRemoteManagementToken(
         wallet.address,
-        signature,
-        signatureMessage,
+        signatureData.signature,
+        signatureData.message,
         'okx',
         nodeReference
       );
@@ -99,10 +106,12 @@ export function useRemoteManagement(nodeReference) {
         throw new Error('No JWT token received from server');
       }
 
-      console.log('[useRemoteManagement] JWT token received, length:', jwtToken.length);
+      // Store JWT token for later use
+      jwtTokenRef.current = jwtToken;
+      console.log('[useRemoteManagement] JWT token received and stored');
 
-      // Step 4: Send remote_auth message
-      console.log('[useRemoteManagement] Step 4: Sending remote_auth message');
+      // Step 3: Send remote_auth message
+      console.log('[useRemoteManagement] Step 3: Sending remote_auth message');
       
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -168,9 +177,15 @@ export function useRemoteManagement(nodeReference) {
       console.error('[useRemoteManagement] Failed to enable remote management:', err);
       setError(err.message);
       setIsEnabling(false);
+      
+      // If signature error, show it
+      if (signatureError) {
+        setError(`Signature error: ${signatureError}`);
+      }
+      
       return false;
     }
-  }, [wallet, nodeReference]);
+  }, [wallet, nodeReference, ensureSignature, signatureError, remainingTimeFormatted]);
 
   // Set up permanent handlers for terminal and command responses
   const setupPermanentHandlers = useCallback(() => {
@@ -347,7 +362,7 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [isEnabled]);
 
-  // Execute command (legacy support)
+  // Execute command (with JWT token if needed)
   const executeCommand = useCallback(async (command, args = [], cwd = null) => {
     if (!isEnabled || !globalWebSocket) {
       throw new Error('Remote management not enabled');
@@ -379,11 +394,16 @@ export function useRemoteManagement(nodeReference) {
         }
       };
       
+      // Include JWT token if available
+      if (jwtTokenRef.current) {
+        commandMessage.jwt_token = jwtTokenRef.current;
+      }
+      
       globalWebSocket.send(JSON.stringify(commandMessage));
     });
   }, [isEnabled, nodeReference]);
 
-  // Upload file (legacy support)
+  // Upload file
   const uploadFile = useCallback(async (path, content, base64 = false) => {
     if (!isEnabled || !globalWebSocket) {
       throw new Error('Remote management not enabled');
@@ -419,6 +439,11 @@ export function useRemoteManagement(nodeReference) {
         }
       };
       
+      // Include JWT token if available
+      if (jwtTokenRef.current) {
+        uploadMessage.jwt_token = jwtTokenRef.current;
+      }
+      
       globalWebSocket.send(JSON.stringify(uploadMessage));
     });
   }, [isEnabled, nodeReference]);
@@ -445,15 +470,20 @@ export function useRemoteManagement(nodeReference) {
       
       // Clear terminal handlers
       terminalHandlersRef.current.clear();
+      
+      // Clear JWT token
+      jwtTokenRef.current = null;
     };
   }, []);
 
   return {
     isEnabled,
     isEnabling,
-    error,
+    error: error || signatureError,
     sessionId,
     terminalSessions: Array.from(terminalSessions.values()),
+    signatureRemainingTime: remainingTimeFormatted,
+    isSignatureLoading,
     enableRemoteManagement,
     
     // Terminal methods
