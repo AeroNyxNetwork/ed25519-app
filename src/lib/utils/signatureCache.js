@@ -1,9 +1,16 @@
 /**
- * Signature Cache Manager
- * Manages signature caching to reduce signing frequency
+ * Enhanced Signature Cache Manager
+ * Integrates with existing signature utilities
  * 
  * File Path: src/lib/utils/signatureCache.js
  */
+
+import { 
+  isValidSignatureFormat,
+  storeSignatureInfo,
+  getStoredSignatureInfo,
+  clearStoredSignatureInfo
+} from './walletSignature';
 
 const SIGNATURE_CACHE_KEY = 'aeronyx_signature_cache';
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
@@ -11,22 +18,43 @@ const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 class SignatureCacheManager {
   constructor() {
     this.memoryCache = new Map();
+    this.listeners = new Map(); // For real-time updates
   }
 
   /**
-   * Get cached signature for a wallet address
+   * Get cached signature with purpose-based isolation
    */
   getCachedSignature(walletAddress, purpose = 'default') {
-    const cacheKey = `${walletAddress}_${purpose}`;
+    if (!walletAddress) return null;
+    
+    const cacheKey = `${walletAddress.toLowerCase()}_${purpose}`;
     
     // Check memory cache first
     const memoryEntry = this.memoryCache.get(cacheKey);
     if (memoryEntry && this.isValid(memoryEntry)) {
-      console.log('[SignatureCache] Found valid signature in memory cache');
+      console.log('[SignatureCache] Found valid signature in memory cache for', purpose);
       return memoryEntry;
     }
 
-    // Check localStorage
+    // Check localStorage via existing utilities
+    const storedInfo = getStoredSignatureInfo();
+    if (storedInfo && 
+        storedInfo.walletAddress === walletAddress.toLowerCase() &&
+        storedInfo.purpose === purpose &&
+        this.isValid({ expiresAt: storedInfo.timestamp + CACHE_DURATION })) {
+      
+      const entry = {
+        ...storedInfo,
+        expiresAt: storedInfo.timestamp + CACHE_DURATION
+      };
+      
+      // Update memory cache
+      this.memoryCache.set(cacheKey, entry);
+      console.log('[SignatureCache] Found valid signature in localStorage for', purpose);
+      return entry;
+    }
+
+    // Also check the new cache storage
     try {
       const stored = localStorage.getItem(SIGNATURE_CACHE_KEY);
       if (stored) {
@@ -34,49 +62,63 @@ class SignatureCacheManager {
         const entry = cache[cacheKey];
         
         if (entry && this.isValid(entry)) {
-          console.log('[SignatureCache] Found valid signature in localStorage');
+          console.log('[SignatureCache] Found valid signature in cache storage for', purpose);
           // Update memory cache
           this.memoryCache.set(cacheKey, entry);
           return entry;
         }
       }
     } catch (err) {
-      console.error('[SignatureCache] Error reading from localStorage:', err);
+      console.error('[SignatureCache] Error reading cache:', err);
     }
 
     return null;
   }
 
   /**
-   * Store signature in cache
+   * Store signature with automatic expiry
    */
-  cacheSignature(walletAddress, signature, message, purpose = 'default') {
-    const cacheKey = `${walletAddress}_${purpose}`;
+  cacheSignature(walletAddress, signature, message, purpose = 'default', walletType = 'okx') {
+    if (!walletAddress || !signature || !message) {
+      console.warn('[SignatureCache] Invalid parameters for caching');
+      return null;
+    }
+
+    const cacheKey = `${walletAddress.toLowerCase()}_${purpose}`;
+    const now = Date.now();
+    
     const entry = {
       signature,
       message,
-      walletAddress,
+      walletAddress: walletAddress.toLowerCase(),
+      walletType,
       purpose,
-      timestamp: Date.now(),
-      expiresAt: Date.now() + CACHE_DURATION
+      timestamp: now,
+      expiresAt: now + CACHE_DURATION
     };
 
     // Update memory cache
     this.memoryCache.set(cacheKey, entry);
 
-    // Update localStorage
+    // Store using existing utility
+    storeSignatureInfo(entry);
+
+    // Also store in our cache storage
     try {
-      const stored = localStorage.getItem(SIGNATURE_CACHE_KEY);
-      const cache = stored ? JSON.parse(stored) : {};
+      const stored = localStorage.getItem(SIGNATURE_CACHE_KEY) || '{}';
+      const cache = JSON.parse(stored);
       cache[cacheKey] = entry;
       
       // Clean expired entries
       this.cleanExpiredEntries(cache);
       
       localStorage.setItem(SIGNATURE_CACHE_KEY, JSON.stringify(cache));
-      console.log('[SignatureCache] Signature cached successfully');
+      console.log('[SignatureCache] Signature cached successfully for', purpose);
+      
+      // Notify listeners
+      this.notifyListeners(walletAddress, purpose);
     } catch (err) {
-      console.error('[SignatureCache] Error writing to localStorage:', err);
+      console.error('[SignatureCache] Error caching signature:', err);
     }
 
     return entry;
@@ -86,68 +128,32 @@ class SignatureCacheManager {
    * Check if cache entry is still valid
    */
   isValid(entry) {
-    if (!entry || !entry.expiresAt) return false;
-    return Date.now() < entry.expiresAt;
-  }
-
-  /**
-   * Clean expired entries from cache object
-   */
-  cleanExpiredEntries(cache) {
-    const now = Date.now();
-    Object.keys(cache).forEach(key => {
-      if (!cache[key].expiresAt || cache[key].expiresAt < now) {
-        delete cache[key];
-      }
-    });
-  }
-
-  /**
-   * Clear all cached signatures
-   */
-  clearCache() {
-    this.memoryCache.clear();
-    try {
-      localStorage.removeItem(SIGNATURE_CACHE_KEY);
-    } catch (err) {
-      console.error('[SignatureCache] Error clearing cache:', err);
+    if (!entry) return false;
+    
+    // Check expiry
+    if (entry.expiresAt && Date.now() >= entry.expiresAt) {
+      return false;
     }
-  }
-
-  /**
-   * Clear cache for specific wallet
-   */
-  clearWalletCache(walletAddress) {
-    // Clear from memory
-    Array.from(this.memoryCache.keys()).forEach(key => {
-      if (key.startsWith(walletAddress)) {
-        this.memoryCache.delete(key);
-      }
-    });
-
-    // Clear from localStorage
-    try {
-      const stored = localStorage.getItem(SIGNATURE_CACHE_KEY);
-      if (stored) {
-        const cache = JSON.parse(stored);
-        Object.keys(cache).forEach(key => {
-          if (key.startsWith(walletAddress)) {
-            delete cache[key];
-          }
-        });
-        localStorage.setItem(SIGNATURE_CACHE_KEY, JSON.stringify(cache));
-      }
-    } catch (err) {
-      console.error('[SignatureCache] Error clearing wallet cache:', err);
+    
+    // Check if it has required fields
+    if (!entry.signature || !entry.message) {
+      return false;
     }
+    
+    // Validate signature format if wallet type is provided
+    if (entry.walletType && entry.signature) {
+      return isValidSignatureFormat(entry.signature, entry.walletType);
+    }
+    
+    return true;
   }
 
   /**
-   * Get time until expiration
+   * Get remaining time in milliseconds
    */
   getTimeUntilExpiration(walletAddress, purpose = 'default') {
     const entry = this.getCachedSignature(walletAddress, purpose);
-    if (!entry) return 0;
+    if (!entry || !entry.expiresAt) return 0;
     
     const remaining = entry.expiresAt - Date.now();
     return Math.max(0, remaining);
@@ -168,128 +174,143 @@ class SignatureCacheManager {
     }
     return `${seconds}s`;
   }
+
+  /**
+   * Clean expired entries from cache object
+   */
+  cleanExpiredEntries(cache) {
+    const now = Date.now();
+    Object.keys(cache).forEach(key => {
+      const entry = cache[key];
+      if (!entry || (entry.expiresAt && entry.expiresAt < now)) {
+        delete cache[key];
+      }
+    });
+  }
+
+  /**
+   * Clear cache for specific purpose
+   */
+  clearCacheForPurpose(walletAddress, purpose) {
+    const cacheKey = `${walletAddress.toLowerCase()}_${purpose}`;
+    
+    // Clear from memory
+    this.memoryCache.delete(cacheKey);
+    
+    // Clear from storage
+    try {
+      const stored = localStorage.getItem(SIGNATURE_CACHE_KEY);
+      if (stored) {
+        const cache = JSON.parse(stored);
+        delete cache[cacheKey];
+        localStorage.setItem(SIGNATURE_CACHE_KEY, JSON.stringify(cache));
+      }
+    } catch (err) {
+      console.error('[SignatureCache] Error clearing cache:', err);
+    }
+  }
+
+  /**
+   * Clear all cached signatures for a wallet
+   */
+  clearWalletCache(walletAddress) {
+    if (!walletAddress) return;
+    
+    const prefix = walletAddress.toLowerCase() + '_';
+    
+    // Clear from memory
+    Array.from(this.memoryCache.keys()).forEach(key => {
+      if (key.startsWith(prefix)) {
+        this.memoryCache.delete(key);
+      }
+    });
+
+    // Clear from existing storage
+    clearStoredSignatureInfo();
+
+    // Clear from cache storage
+    try {
+      const stored = localStorage.getItem(SIGNATURE_CACHE_KEY);
+      if (stored) {
+        const cache = JSON.parse(stored);
+        Object.keys(cache).forEach(key => {
+          if (key.startsWith(prefix)) {
+            delete cache[key];
+          }
+        });
+        localStorage.setItem(SIGNATURE_CACHE_KEY, JSON.stringify(cache));
+      }
+    } catch (err) {
+      console.error('[SignatureCache] Error clearing wallet cache:', err);
+    }
+  }
+
+  /**
+   * Add listener for cache updates
+   */
+  addListener(walletAddress, purpose, callback) {
+    const key = `${walletAddress.toLowerCase()}_${purpose}`;
+    if (!this.listeners.has(key)) {
+      this.listeners.set(key, new Set());
+    }
+    this.listeners.get(key).add(callback);
+  }
+
+  /**
+   * Remove listener
+   */
+  removeListener(walletAddress, purpose, callback) {
+    const key = `${walletAddress.toLowerCase()}_${purpose}`;
+    const listeners = this.listeners.get(key);
+    if (listeners) {
+      listeners.delete(callback);
+    }
+  }
+
+  /**
+   * Notify listeners of cache updates
+   */
+  notifyListeners(walletAddress, purpose) {
+    const key = `${walletAddress.toLowerCase()}_${purpose}`;
+    const listeners = this.listeners.get(key);
+    if (listeners) {
+      listeners.forEach(callback => callback());
+    }
+  }
+
+  /**
+   * Get all cached entries for debugging
+   */
+  getAllCachedEntries() {
+    const entries = [];
+    
+    // From memory cache
+    this.memoryCache.forEach((value, key) => {
+      entries.push({ source: 'memory', key, ...value });
+    });
+    
+    // From localStorage
+    try {
+      const stored = localStorage.getItem(SIGNATURE_CACHE_KEY);
+      if (stored) {
+        const cache = JSON.parse(stored);
+        Object.entries(cache).forEach(([key, value]) => {
+          entries.push({ source: 'storage', key, ...value });
+        });
+      }
+    } catch (err) {
+      console.error('[SignatureCache] Error reading all entries:', err);
+    }
+    
+    return entries;
+  }
 }
 
 // Create singleton instance
 const signatureCache = new SignatureCacheManager();
 
-// Enhanced useSignature hook with caching
-export function useCachedSignature(purpose = 'default') {
-  const { wallet } = useWallet();
-  const [signature, setSignature] = useState(null);
-  const [message, setMessage] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [remainingTime, setRemainingTime] = useState(0);
-
-  // Check cache on mount and wallet change
-  useEffect(() => {
-    if (!wallet.connected || !wallet.address) {
-      setSignature(null);
-      setMessage(null);
-      return;
-    }
-
-    const cached = signatureCache.getCachedSignature(wallet.address, purpose);
-    if (cached) {
-      setSignature(cached.signature);
-      setMessage(cached.message);
-      setRemainingTime(signatureCache.getTimeUntilExpiration(wallet.address, purpose));
-    }
-  }, [wallet.connected, wallet.address, purpose]);
-
-  // Update remaining time
-  useEffect(() => {
-    if (!signature) return;
-
-    const interval = setInterval(() => {
-      const remaining = signatureCache.getTimeUntilExpiration(wallet.address, purpose);
-      setRemainingTime(remaining);
-      
-      if (remaining <= 0) {
-        setSignature(null);
-        setMessage(null);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [signature, wallet.address, purpose]);
-
-  // Generate new signature
-  const generateSignature = useCallback(async (forceNew = false) => {
-    if (!wallet.connected || !wallet.address) {
-      setError('Wallet not connected');
-      return null;
-    }
-
-    // Check cache first unless forced
-    if (!forceNew) {
-      const cached = signatureCache.getCachedSignature(wallet.address, purpose);
-      if (cached) {
-        setSignature(cached.signature);
-        setMessage(cached.message);
-        return cached;
-      }
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      // Get signature message from API
-      const messageResponse = await nodeRegistrationService.generateSignatureMessage(wallet.address);
-      if (!messageResponse.success) {
-        throw new Error(messageResponse.message || 'Failed to generate signature message');
-      }
-
-      const signatureMessage = messageResponse.data.message;
-
-      // Sign the message
-      const signedData = await signMessage(signatureMessage, wallet);
-
-      // Cache the signature
-      const cached = signatureCache.cacheSignature(
-        wallet.address,
-        signedData.signature,
-        signedData.message,
-        purpose
-      );
-
-      setSignature(signedData.signature);
-      setMessage(signedData.message);
-      setRemainingTime(CACHE_DURATION);
-
-      return cached;
-    } catch (err) {
-      console.error('[useCachedSignature] Error:', err);
-      setError(err.message);
-      throw err;
-    } finally {
-      setIsLoading(false);
-    }
-  }, [wallet, purpose]);
-
-  // Ensure valid signature (get from cache or generate new)
-  const ensureSignature = useCallback(async () => {
-    if (signature && message && remainingTime > 0) {
-      return { signature, message };
-    }
-
-    return generateSignature();
-  }, [signature, message, remainingTime, generateSignature]);
-
-  return {
-    signature,
-    message,
-    isLoading,
-    error,
-    remainingTime,
-    remainingTimeFormatted: signatureCache.formatRemainingTime(wallet.address, purpose),
-    generateSignature,
-    ensureSignature,
-    clearCache: () => signatureCache.clearWalletCache(wallet.address),
-    isValid: remainingTime > 0
-  };
-}
-
+// Export instance
 export default signatureCache;
+
+// Export utility functions
+export { SignatureCacheManager };
