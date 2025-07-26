@@ -1,18 +1,10 @@
 /**
- * Advanced File Manager Component for Remote Node Management
+ * Fixed File Manager Component
+ * Prevents circular loading and duplicate requests
  * 
  * File Path: src/components/nodes/FileManager.js
  * 
- * Features:
- * - File browsing with tree view
- * - Upload/Download files
- * - Edit text files inline
- * - Create/Delete files and folders
- * - Search functionality
- * - Multiple view modes (grid/list)
- * - File preview
- * 
- * @version 1.1.0
+ * @version 1.2.0
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -61,13 +53,26 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [clipboard, setClipboard] = useState({ action: null, files: [] });
   
-  // File operations
+  // Refs to prevent duplicate operations
+  const loadingRef = useRef(false);
+  const lastLoadedPath = useRef(null);
+  const hasInitialLoad = useRef(false);
+  
+  // File operations with duplicate prevention
   const loadDirectory = useCallback(async (path) => {
     if (!executeCommand) {
       setError('Execute command function not available');
       return;
     }
 
+    // Prevent duplicate loads
+    if (loadingRef.current || lastLoadedPath.current === path) {
+      console.log('[FileManager] Skipping duplicate load for path:', path);
+      return;
+    }
+
+    loadingRef.current = true;
+    lastLoadedPath.current = path;
     setIsLoading(true);
     setError(null);
     
@@ -114,17 +119,30 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       setCurrentPath(path);
     } catch (err) {
       setError(`Failed to load directory: ${err.message}`);
+      // Reset last loaded path on error
+      lastLoadedPath.current = null;
     } finally {
       setIsLoading(false);
+      loadingRef.current = false;
     }
   }, [executeCommand]);
 
-  // Initial load
+  // Initial load - only once
   useEffect(() => {
-    if (executeCommand) {
+    if (executeCommand && !hasInitialLoad.current) {
+      console.log('[FileManager] Initial load');
+      hasInitialLoad.current = true;
       loadDirectory(currentPath);
     }
-  }, [loadDirectory, currentPath, executeCommand]);
+  }, [executeCommand]); // Remove other dependencies
+
+  // Handle path changes after initial load
+  useEffect(() => {
+    if (hasInitialLoad.current && currentPath !== lastLoadedPath.current) {
+      console.log('[FileManager] Path changed to:', currentPath);
+      loadDirectory(currentPath);
+    }
+  }, [currentPath, loadDirectory]);
 
   // File type icon
   const getFileIcon = (file) => {
@@ -149,8 +167,8 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
   // Handle file click
   const handleFileClick = async (file) => {
     if (file.type === 'directory') {
+      // Update path, which will trigger loadDirectory via useEffect
       setCurrentPath(file.path);
-      loadDirectory(file.path);
     } else {
       // Preview or download based on file type
       if (isTextFile(file)) {
@@ -191,6 +209,8 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       await uploadFile(editingFile.path, fileContent, false);
       
       setEditingFile(null);
+      // Force reload of current directory
+      lastLoadedPath.current = null;
       loadDirectory(currentPath);
     } catch (err) {
       setError(`Failed to save file: ${err.message}`);
@@ -233,6 +253,8 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     
     try {
       await executeCommand('mkdir', [`${currentPath}/${name}`]);
+      // Force reload
+      lastLoadedPath.current = null;
       loadDirectory(currentPath);
     } catch (err) {
       setError(`Failed to create folder: ${err.message}`);
@@ -255,6 +277,8 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
         }
       }
       setSelectedFiles(new Set());
+      // Force reload
+      lastLoadedPath.current = null;
       loadDirectory(currentPath);
     } catch (err) {
       setError(`Failed to delete files: ${err.message}`);
@@ -284,11 +308,20 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       }
       
       setClipboard({ action: null, files: [] });
+      // Force reload
+      lastLoadedPath.current = null;
       loadDirectory(currentPath);
     } catch (err) {
       setError(`Failed to paste files: ${err.message}`);
     }
   };
+
+  // Manual refresh
+  const handleRefresh = useCallback(() => {
+    console.log('[FileManager] Manual refresh');
+    lastLoadedPath.current = null;
+    loadDirectory(currentPath);
+  }, [currentPath, loadDirectory]);
 
   // Breadcrumb navigation
   const breadcrumbs = currentPath.split('/').filter(Boolean);
@@ -303,6 +336,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
             <button
               onClick={() => setCurrentPath('/')}
               className="p-1 hover:bg-white/10 rounded transition-colors"
+              disabled={isLoading}
             >
               <Home className="w-4 h-4 text-gray-400" />
             </button>
@@ -315,6 +349,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
                     setCurrentPath(newPath);
                   }}
                   className="text-gray-400 hover:text-white transition-colors"
+                  disabled={isLoading}
                 >
                   {part}
                 </button>
@@ -328,7 +363,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
         
         <div className="flex items-center gap-2">
           <button
-            onClick={() => loadDirectory(currentPath)}
+            onClick={handleRefresh}
             className="p-2 hover:bg-white/10 rounded-lg transition-colors"
             disabled={isLoading}
           >
@@ -355,6 +390,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
             if (name) createFolder(name);
           }}
           className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-sm transition-colors"
+          disabled={isLoading}
         >
           <FolderPlus className="w-4 h-4" />
           New Folder
@@ -366,18 +402,21 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
             <button
               onClick={() => copyFiles(false)}
               className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+              disabled={isLoading}
             >
               <Copy className="w-4 h-4 text-gray-400" />
             </button>
             <button
               onClick={() => copyFiles(true)}
               className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+              disabled={isLoading}
             >
               <Scissors className="w-4 h-4 text-gray-400" />
             </button>
             <button
               onClick={deleteFiles}
               className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+              disabled={isLoading}
             >
               <Trash2 className="w-4 h-4 text-red-400" />
             </button>
@@ -388,6 +427,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
           <button
             onClick={pasteFiles}
             className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+            disabled={isLoading}
           >
             <Clipboard className="w-4 h-4 text-green-400" />
           </button>
@@ -414,7 +454,11 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
           </div>
         )}
         
-        {viewMode === 'list' ? (
+        {isLoading ? (
+          <div className="flex items-center justify-center h-full">
+            <RefreshCw className="w-8 h-8 text-gray-400 animate-spin" />
+          </div>
+        ) : viewMode === 'list' ? (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-400 border-b border-white/10">
@@ -467,6 +511,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
                         <button
                           onClick={() => handleFileClick(file)}
                           className="flex items-center gap-2 text-gray-300 hover:text-white transition-colors"
+                          disabled={isLoading}
                         >
                           <Icon className="w-4 h-4 text-gray-500" />
                           {file.name}
@@ -486,6 +531,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
                                 <button
                                   onClick={() => openFileEditor(file)}
                                   className="p-1 hover:bg-white/10 rounded transition-colors"
+                                  disabled={isLoading}
                                 >
                                   <Edit className="w-3 h-3 text-gray-400" />
                                 </button>
@@ -493,6 +539,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
                               <button
                                 onClick={() => downloadFile(file)}
                                 className="p-1 hover:bg-white/10 rounded transition-colors"
+                                disabled={isLoading}
                               >
                                 <Download className="w-3 h-3 text-gray-400" />
                               </button>
@@ -556,6 +603,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
                   <button
                     onClick={saveFile}
                     className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm transition-colors"
+                    disabled={isLoading}
                   >
                     <Save className="w-4 h-4" />
                     Save
