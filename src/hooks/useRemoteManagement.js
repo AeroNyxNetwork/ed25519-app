@@ -291,10 +291,35 @@ export function useRemoteManagement(nodeReference) {
           if (pending) {
             clearTimeout(pending.timeout);
             pendingRequests.current.delete(data.request_id);
+            
+            console.log('[useRemoteManagement] Command response:', {
+              request_id: data.request_id,
+              success: data.success,
+              result: data.result,
+              error: data.error
+            });
+            
             if (data.success) {
-              pending.resolve(data.result);
+              // For file operations, format the response to match ApiResponse format
+              const response = {
+                success: true,
+                message: 'Operation completed successfully',
+                data: data.result,
+                error: null
+              };
+              pending.resolve(response);
             } else {
-              pending.reject(new Error(data.error || 'Command failed'));
+              // Format error response to match ApiResponse format
+              const errorResponse = {
+                success: false,
+                message: data.error || 'Operation failed',
+                data: null,
+                error: {
+                  message: data.error || 'Operation failed',
+                  code: 400
+                }
+              };
+              pending.reject(errorResponse);
             }
           }
         }
@@ -482,7 +507,16 @@ export function useRemoteManagement(nodeReference) {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         pendingRequests.current.delete(requestId);
-        reject(new Error('Command timeout'));
+        const errorResponse = {
+          success: false,
+          message: 'Command timeout',
+          data: null,
+          error: {
+            message: 'Command timeout',
+            code: 408
+          }
+        };
+        reject(errorResponse);
       }, 30000);
 
       pendingRequests.current.set(requestId, {
@@ -531,7 +565,16 @@ export function useRemoteManagement(nodeReference) {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         pendingRequests.current.delete(requestId);
-        reject(new Error('Upload timeout'));
+        const errorResponse = {
+          success: false,
+          message: 'Upload timeout',
+          data: null,
+          error: {
+            message: 'Upload timeout',
+            code: 408
+          }
+        };
+        reject(errorResponse);
       }, 60000);
 
       pendingRequests.current.set(requestId, {
