@@ -1,9 +1,20 @@
 /**
- * Fixed Unified WebSocket Hook with Global Signature Support
+ * Corrected Unified WebSocket Hook following exact documentation flow
  * 
  * File Path: src/hooks/useAeroNyxWebSocket.js
  * 
- * @version 2.2.0
+ * Flow:
+ * 1. Connect to wss://api.aeronyx.network/ws/aeronyx/user-monitor/
+ * 2. Receive 'connected' message
+ * 3. Send 'get_message' request
+ * 4. Receive 'signature_message' with message to sign
+ * 5. Sign message with wallet
+ * 6. Send 'auth' with signature
+ * 7. Receive 'auth_success' with nodes
+ * 8. Send 'start_monitor' to begin monitoring
+ * 9. Receive periodic 'status_update' messages
+ * 
+ * @version 3.0.0
  */
 
 'use client';
@@ -11,7 +22,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
 import { setGlobalWebSocket, setGlobalWsState } from './useRemoteManagement';
-import globalSignatureManager from '../lib/utils/globalSignatureManager';
 
 /**
  * WebSocket connection states
@@ -69,7 +79,6 @@ export function useAeroNyxWebSocket(options = {}) {
   const mountedRef = useRef(true);
   const isConnectingRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
-  const hasInitializedSignatureRef = useRef(false);
 
   // Update global WebSocket state whenever it changes
   useEffect(() => {
@@ -137,21 +146,63 @@ export function useAeroNyxWebSocket(options = {}) {
   }, []);
 
   /**
-   * Sign message using global signature manager
+   * Sign message with wallet
+   * CRITICAL: Must extract wallet address from message to ensure consistency
    */
   const signMessage = useCallback(async (message) => {
-    console.log('[useAeroNyxWebSocket] Getting signature from global manager');
+    console.log('[useAeroNyxWebSocket] signMessage called');
+    console.log('[useAeroNyxWebSocket] Message to sign (first 100 chars):', message.substring(0, 100) + '...');
     
-    try {
-      // Use global signature manager
-      const signatureData = await globalSignatureManager.waitForSignature(wallet);
-      
-      console.log('[useAeroNyxWebSocket] Got signature from global manager');
-      return signatureData.signature;
-    } catch (error) {
-      console.error('[useAeroNyxWebSocket] Failed to get signature:', error);
-      throw error;
+    // Extract wallet address from message to ensure exact match
+    const walletMatch = message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
+    if (!walletMatch || !walletMatch[1]) {
+      console.error('[useAeroNyxWebSocket] Could not extract wallet address from message');
+      console.error('[useAeroNyxWebSocket] Message:', message);
+      throw new Error('Could not extract wallet address from message');
     }
+    
+    const messageWallet = walletMatch[1];
+    console.log('[useAeroNyxWebSocket] Wallet address from message:', messageWallet);
+    console.log('[useAeroNyxWebSocket] Current wallet address:', wallet.address);
+    console.log('[useAeroNyxWebSocket] Addresses match:', messageWallet.toLowerCase() === wallet.address.toLowerCase());
+    
+    // For OKX wallet, ensure we use the correct account
+    if (window.okxwallet && wallet.provider === window.okxwallet) {
+      console.log('[useAeroNyxWebSocket] Using OKX wallet for signing');
+      
+      const accounts = await wallet.provider.request({ method: 'eth_accounts' });
+      console.log('[useAeroNyxWebSocket] OKX accounts:', accounts);
+      
+      const accountToUse = accounts.find(acc => acc.toLowerCase() === messageWallet.toLowerCase()) || accounts[0];
+      console.log('[useAeroNyxWebSocket] Account to use for signing:', accountToUse);
+      
+      try {
+        const signature = await wallet.provider.request({
+          method: 'personal_sign',
+          params: [message, accountToUse]
+        });
+        
+        console.log('[useAeroNyxWebSocket] Raw signature from OKX:', signature);
+        const finalSignature = signature.startsWith('0x') ? signature : `0x${signature}`;
+        console.log('[useAeroNyxWebSocket] Final signature:', finalSignature);
+        
+        return finalSignature;
+      } catch (error) {
+        console.error('[useAeroNyxWebSocket] OKX signing error:', error);
+        throw error;
+      }
+    }
+    
+    console.log('[useAeroNyxWebSocket] Using standard wallet signing');
+    const signature = await wallet.provider.request({
+      method: 'personal_sign',
+      params: [message, messageWallet]
+    });
+    
+    const finalSignature = signature.startsWith('0x') ? signature : `0x${signature}`;
+    console.log('[useAeroNyxWebSocket] Final signature:', finalSignature);
+    
+    return finalSignature;
   }, [wallet]);
 
   /**
@@ -169,49 +220,66 @@ export function useAeroNyxWebSocket(options = {}) {
       
       switch (messageData.type) {
         case 'connected':
-          // Step 1: WebSocket connected, use global signature
-          console.log('[useAeroNyxWebSocket] WebSocket connected, using global signature');
-          setWsState(prev => ({ ...prev, connected: true, authState: 'authenticating', error: null }));
+          // Step 1: WebSocket connected, request signature message
+          console.log('[useAeroNyxWebSocket] WebSocket connected, requesting signature message');
+          setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message', error: null }));
           
-          // Get signature from global manager
+          // Send get_message request
+          const getMessageRequest = {
+            type: 'get_message',
+            wallet_address: wallet.address.toLowerCase()
+          };
+          console.log('[useAeroNyxWebSocket] Sending get_message request:', getMessageRequest);
+          sendMessage(getMessageRequest);
+          break;
+          
+        case 'signature_message':
+          // Step 2: Received message to sign
+          console.log('[useAeroNyxWebSocket] Received signature message');
+          console.log('[useAeroNyxWebSocket] Message to sign:', messageData.message);
+          console.log('[useAeroNyxWebSocket] Nonce:', messageData.nonce);
+          console.log('[useAeroNyxWebSocket] Expires in:', messageData.expires_in);
+          
+          setWsState(prev => ({ ...prev, authState: 'signing' }));
+          
           try {
-            const signatureData = await globalSignatureManager.waitForSignature(wallet);
+            // Sign the message
+            const signature = await signMessage(messageData.message);
+            console.log('[useAeroNyxWebSocket] Signature obtained:', signature);
+            
+            setWsState(prev => ({ ...prev, authState: 'authenticating' }));
             
             // Extract wallet address from message for consistency
-            const walletMatch = signatureData.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
+            const walletMatch = messageData.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
             const messageWallet = walletMatch ? walletMatch[1] : wallet.address;
             
-            // Send auth directly with global signature
+            // Build auth message according to documentation
             const authMessage = {
               type: 'auth',
               wallet_address: messageWallet.toLowerCase(),
-              signature: signatureData.signature,
-              message: signatureData.message,
-              wallet_type: 'okx'
+              signature: signature,
+              message: messageData.message,
+              wallet_type: 'okx' // or detect wallet type
             };
             
-            console.log('[useAeroNyxWebSocket] Sending auth with global signature');
+            console.log('[useAeroNyxWebSocket] Sending auth message');
             sendMessage(authMessage);
             
           } catch (error) {
-            console.error('[useAeroNyxWebSocket] Failed to get global signature:', error);
+            console.error('[useAeroNyxWebSocket] Signing error:', error);
             setWsState(prev => ({ 
               ...prev, 
               authState: 'error', 
-              error: 'Failed to get signature: ' + error.message 
+              error: 'Failed to sign message: ' + error.message 
             }));
             if (onError) onError(error);
           }
           break;
           
-        case 'signature_message':
-          // We shouldn't receive this anymore when using global signature
-          console.log('[useAeroNyxWebSocket] Received signature_message but using global signature');
-          break;
-          
         case 'auth_success':
           // Step 3: Authentication successful
           console.log('[useAeroNyxWebSocket] Authentication successful');
+          console.log('[useAeroNyxWebSocket] Session token:', messageData.session_token);
           console.log('[useAeroNyxWebSocket] Nodes received:', messageData.nodes ? messageData.nodes.length : 0);
           
           setWsState(prev => ({ 
@@ -225,16 +293,17 @@ export function useAeroNyxWebSocket(options = {}) {
           
           // Process initial nodes if provided
           if (messageData.nodes) {
-            console.log('[useAeroNyxWebSocket] Processing nodes data');
+            console.log('[useAeroNyxWebSocket] Processing initial nodes data');
+            // Map nodes to expected format
             const initialNodes = messageData.nodes.map((node) => ({
               code: node.code,
               name: node.name,
               id: node.id,
-              status: 'unknown',
-              type: 'unknown',
-              performance: { cpu: 0, memory: 0, disk: 0, network: 0 },
-              earnings: 0,
-              last_seen: null
+              status: node.status || 'unknown',
+              type: node.type || 'unknown',
+              performance: node.performance || { cpu: 0, memory: 0, disk: 0, network: 0 },
+              earnings: node.earnings || 0,
+              last_seen: node.last_seen || null
             }));
             
             setData(prev => ({
@@ -257,18 +326,23 @@ export function useAeroNyxWebSocket(options = {}) {
         case 'monitor_started':
           // Step 4: Monitoring started
           console.log('[useAeroNyxWebSocket] Monitoring started successfully');
+          console.log('[useAeroNyxWebSocket] Update interval:', messageData.interval);
           setWsState(prev => ({ ...prev, monitoring: true }));
           break;
           
         case 'status_update':
           // Step 5: Periodic status updates
           console.log('[useAeroNyxWebSocket] Received status update');
+          console.log('[useAeroNyxWebSocket] Update number:', messageData.update_number);
           setWsState(prev => ({ ...prev, monitoring: true }));
           processNodesData(messageData);
           break;
           
         case 'error':
           console.error('[useAeroNyxWebSocket] Server error:', messageData.message);
+          console.error('[useAeroNyxWebSocket] Error code:', messageData.code);
+          console.error('[useAeroNyxWebSocket] Error details:', messageData.details);
+          
           setWsState(prev => ({ 
             ...prev, 
             error: messageData.message || 'Server error'
@@ -277,39 +351,21 @@ export function useAeroNyxWebSocket(options = {}) {
           if (onError) onError(new Error(messageData.message || 'Server error'));
           
           // Handle authentication errors
-          if (messageData.error_code === 'authentication_required' || messageData.error_code === 'invalid_signature') {
-            console.log('[useAeroNyxWebSocket] Authentication required, getting new signature');
-            setWsState(prev => ({ ...prev, authenticated: false, authState: 'authenticating' }));
-            
-            // Get new signature from global manager
-            try {
-              const signatureData = await globalSignatureManager.waitForSignature(wallet);
-              
-              const walletMatch = signatureData.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
-              const messageWallet = walletMatch ? walletMatch[1] : wallet.address;
-              
-              const authMessage = {
-                type: 'auth',
-                wallet_address: messageWallet.toLowerCase(),
-                signature: signatureData.signature,
-                message: signatureData.message,
-                wallet_type: 'okx'
-              };
-              
-              sendMessage(authMessage);
-            } catch (error) {
-              console.error('[useAeroNyxWebSocket] Failed to re-authenticate:', error);
-              setWsState(prev => ({ 
-                ...prev, 
-                authState: 'error', 
-                error: 'Failed to re-authenticate: ' + error.message 
-              }));
-            }
+          if (messageData.code === 'AUTHENTICATION_REQUIRED' || 
+              messageData.code === 'INVALID_SIGNATURE' ||
+              messageData.error_code === 'authentication_required' || 
+              messageData.error_code === 'invalid_signature') {
+            console.log('[useAeroNyxWebSocket] Authentication required, restarting auth flow');
+            setWsState(prev => ({ ...prev, authenticated: false, authState: 'requesting_message' }));
+            sendMessage({
+              type: 'get_message',
+              wallet_address: wallet.address.toLowerCase()
+            });
           }
           break;
           
         case 'pong':
-          console.log('[useAeroNyxWebSocket] Pong received at', new Date().toISOString());
+          console.log('[useAeroNyxWebSocket] Pong received, echo:', messageData.echo);
           break;
           
         default:
@@ -319,7 +375,7 @@ export function useAeroNyxWebSocket(options = {}) {
       console.error('[useAeroNyxWebSocket] Message handling error:', error);
       if (onError) onError(error);
     }
-  }, [wallet, sendMessage, processNodesData, autoMonitor, onStatusChange, onError]);
+  }, [wallet.address, sendMessage, processNodesData, signMessage, autoMonitor, onStatusChange, onError]);
 
   /**
    * Connect to WebSocket
@@ -419,7 +475,11 @@ export function useAeroNyxWebSocket(options = {}) {
       // Set up ping interval to keep connection alive
       const pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }));
+          console.log('[useAeroNyxWebSocket] Sending ping');
+          ws.send(JSON.stringify({ 
+            type: 'ping',
+            echo: Date.now()
+          }));
         }
       }, 30000);
       
@@ -440,39 +500,28 @@ export function useAeroNyxWebSocket(options = {}) {
   }, [wallet.connected, handleMessage, onError]);
 
   /**
-   * Initialize WebSocket when wallet is connected and signature is ready
+   * Initialize WebSocket when wallet is connected
    */
   useEffect(() => {
     mountedRef.current = true;
     reconnectAttemptsRef.current = 0;
     
     if (autoConnect && wallet.connected && wallet.address) {
-      // First ensure global signature is ready
-      if (!hasInitializedSignatureRef.current) {
-        hasInitializedSignatureRef.current = true;
-        console.log('[useAeroNyxWebSocket] Initializing global signature manager');
-        
-        globalSignatureManager.initialize(wallet).then(() => {
-          console.log('[useAeroNyxWebSocket] Global signature ready, connecting WebSocket');
-          if (mountedRef.current && !wsRef.current && !isConnectingRef.current) {
-            connectWebSocket();
-          }
-        }).catch((error) => {
-          console.error('[useAeroNyxWebSocket] Failed to initialize global signature:', error);
-          setWsState(prev => ({ 
-            ...prev, 
-            authState: 'error', 
-            error: 'Failed to initialize signature: ' + error.message 
-          }));
-          if (onError) onError(error);
-        });
-      }
+      // Add a small delay to ensure wallet is fully ready
+      const initTimeout = setTimeout(() => {
+        if (mountedRef.current && !wsRef.current && !isConnectingRef.current) {
+          connectWebSocket();
+        }
+      }, 500);
+      
+      return () => {
+        clearTimeout(initTimeout);
+      };
     }
     
     return () => {
       mountedRef.current = false;
       isConnectingRef.current = false;
-      hasInitializedSignatureRef.current = false;
       
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -496,7 +545,7 @@ export function useAeroNyxWebSocket(options = {}) {
         wsRef.current = null;
       }
     };
-  }, [wallet.connected, wallet.address, autoConnect, onError]); // Do NOT add connectWebSocket here
+  }, [wallet.connected, wallet.address, autoConnect]); // Do NOT add connectWebSocket here
 
   /**
    * Handle refresh - reconnect WebSocket
@@ -505,7 +554,6 @@ export function useAeroNyxWebSocket(options = {}) {
     console.log('[useAeroNyxWebSocket] Refreshing connection');
     reconnectAttemptsRef.current = 0;
     isConnectingRef.current = false;
-    hasInitializedSignatureRef.current = false;
     
     // Close existing connection
     if (wsRef.current) {
@@ -527,23 +575,13 @@ export function useAeroNyxWebSocket(options = {}) {
       error: null
     });
     
-    // Re-initialize with global signature
-    if (wallet.connected && wallet.address) {
-      globalSignatureManager.initialize(wallet).then(() => {
-        console.log('[useAeroNyxWebSocket] Global signature ready for refresh');
-        if (mountedRef.current && wallet.connected) {
-          connectWebSocket();
-        }
-      }).catch((error) => {
-        console.error('[useAeroNyxWebSocket] Failed to refresh signature:', error);
-        setWsState(prev => ({ 
-          ...prev, 
-          authState: 'error', 
-          error: 'Failed to refresh signature: ' + error.message 
-        }));
-      });
-    }
-  }, [wallet.connected, wallet.address, connectWebSocket]);
+    // Reconnect after a short delay
+    setTimeout(() => {
+      if (mountedRef.current && wallet.connected) {
+        connectWebSocket();
+      }
+    }, 500);
+  }, [wallet.connected, connectWebSocket]);
 
   /**
    * Start monitoring manually (if autoMonitor is false)
