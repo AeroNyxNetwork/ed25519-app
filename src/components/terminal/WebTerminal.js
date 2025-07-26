@@ -5,7 +5,7 @@
  * 
  * Full-featured terminal emulator for remote node access
  * 
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -102,6 +102,7 @@ export default function WebTerminal({
   const [status, setStatus] = useState('connecting'); // connecting, ready, error, closed
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [actualSessionId, setActualSessionId] = useState(null);
 
   // Initialize terminal
   useEffect(() => {
@@ -146,15 +147,16 @@ export default function WebTerminal({
 
     // Set up event handlers
     term.onData(data => {
-      if (onInput) {
-        onInput(sessionId, data);
+      if (onInput && actualSessionId) {
+        // Send raw data directly - backend expects raw terminal input
+        onInput(actualSessionId, data);
       }
     });
 
     term.onResize(({ cols, rows }) => {
       console.log('[WebTerminal] Terminal resized:', cols, rows);
-      if (onResize) {
-        onResize(sessionId, rows, cols);
+      if (onResize && actualSessionId) {
+        onResize(actualSessionId, rows, cols);
       }
     });
 
@@ -164,8 +166,8 @@ export default function WebTerminal({
         // Ctrl+V or Cmd+V
         if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
           navigator.clipboard.readText().then(text => {
-            if (text && onInput) {
-              onInput(sessionId, text);
+            if (text && onInput && actualSessionId) {
+              onInput(actualSessionId, text);
             }
           }).catch(err => {
             console.error('[WebTerminal] Failed to read clipboard:', err);
@@ -192,13 +194,21 @@ export default function WebTerminal({
         rows: term.rows,
         cols: term.cols,
         onOutput: (data) => {
-          // Decode base64 data
-          try {
-            const decoded = atob(data);
-            term.write(decoded);
-          } catch (err) {
-            console.error('[WebTerminal] Failed to decode output:', err);
-            term.write(data); // Write raw data as fallback
+          // Handle output data - it might be base64 encoded or raw
+          if (data) {
+            // Check if it's base64 encoded (only alphanumeric, +, /, and = padding)
+            if (/^[A-Za-z0-9+/]+=*$/.test(data) && data.length % 4 === 0) {
+              try {
+                const decoded = atob(data);
+                term.write(decoded);
+              } catch (err) {
+                // If base64 decode fails, write raw data
+                term.write(data);
+              }
+            } else {
+              // Write raw data directly
+              term.write(data);
+            }
           }
         },
         onError: (error) => {
@@ -209,9 +219,15 @@ export default function WebTerminal({
         onClose: () => {
           console.log('[WebTerminal] Terminal closed');
           setStatus('closed');
+        },
+        onReady: (data) => {
+          // Store the actual session ID returned by server
+          console.log('[WebTerminal] Terminal ready with session ID:', data.session_id);
+          setActualSessionId(data.session_id);
         }
-      }).then(() => {
+      }).then((serverSessionId) => {
         setStatus('ready');
+        setActualSessionId(serverSessionId);
         term.focus();
       }).catch(err => {
         console.error('[WebTerminal] Failed to initialize terminal:', err);
@@ -225,7 +241,7 @@ export default function WebTerminal({
       console.log('[WebTerminal] Cleaning up terminal');
       term.dispose();
     };
-  }, [isEnabled, sessionId, nodeReference, theme, fontSize, fontFamily, onInit, onInput, onResize]);
+  }, [isEnabled, nodeReference, theme, fontSize, fontFamily, onInit, onInput, onResize]);
 
   // Handle resize
   useEffect(() => {
@@ -458,7 +474,7 @@ export default function WebTerminal({
 
       {/* Status bar */}
       <div className="px-4 py-1 bg-white/5 border-t border-white/10 text-xs text-gray-400 flex items-center justify-between">
-        <span>Session: {sessionId}</span>
+        <span>Session: {actualSessionId || 'Connecting...'}</span>
         <span>{xtermRef.current ? `${xtermRef.current.cols}×${xtermRef.current.rows}` : ''}</span>
       </div>
     </motion.div>
