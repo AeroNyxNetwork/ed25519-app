@@ -1,12 +1,10 @@
 /**
- * Global Signature Manager
+ * Enhanced Global Signature Manager
+ * Prevents multiple signature requests
  * 
  * File Path: src/lib/utils/globalSignatureManager.js
  * 
- * Manages a single signature across the entire application
- * with 10-minute validity period
- * 
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import nodeRegistrationService from '../api/nodeRegistration';
@@ -25,9 +23,44 @@ class GlobalSignatureManager {
     this.isGenerating = false;
     this.listeners = new Set();
     this.generationPromise = null;
+    this.initPromise = null;
     
     // Load from storage on initialization
     this.loadFromStorage();
+  }
+
+  /**
+   * Initialize with wallet (ensures only one signature generation)
+   */
+  async initialize(wallet) {
+    // If already initializing, return the promise
+    if (this.initPromise) {
+      console.log('[GlobalSignatureManager] Already initializing, waiting...');
+      return this.initPromise;
+    }
+
+    // If already initialized for this wallet, return existing
+    if (this.isValid() && this.walletAddress === wallet.address?.toLowerCase()) {
+      console.log('[GlobalSignatureManager] Already initialized with valid signature');
+      return {
+        signature: this.signature,
+        message: this.message,
+        walletAddress: this.walletAddress,
+        walletType: this.walletType,
+        expiresAt: this.expiresAt
+      };
+    }
+
+    // Start initialization
+    console.log('[GlobalSignatureManager] Starting initialization');
+    this.initPromise = this.getSignature(wallet);
+    
+    try {
+      const result = await this.initPromise;
+      return result;
+    } finally {
+      this.initPromise = null;
+    }
   }
 
   /**
@@ -70,6 +103,26 @@ class GlobalSignatureManager {
   }
 
   /**
+   * Wait for valid signature (useful for components that need to wait)
+   */
+  async waitForSignature(wallet) {
+    // If initializing, wait for it
+    if (this.initPromise) {
+      console.log('[GlobalSignatureManager] Waiting for initialization');
+      return this.initPromise;
+    }
+
+    // If generating, wait for it
+    if (this.isGenerating && this.generationPromise) {
+      console.log('[GlobalSignatureManager] Waiting for generation');
+      return this.generationPromise;
+    }
+
+    // Otherwise get signature normally
+    return this.getSignature(wallet);
+  }
+
+  /**
    * Generate new signature
    */
   async generateSignature(wallet) {
@@ -79,6 +132,7 @@ class GlobalSignatureManager {
 
     // Prevent concurrent generation
     if (this.isGenerating) {
+      console.log('[GlobalSignatureManager] Already generating, returning existing promise');
       return this.generationPromise;
     }
 
@@ -178,6 +232,7 @@ class GlobalSignatureManager {
    * Clear signature (e.g., on wallet disconnect)
    */
   clear() {
+    console.log('[GlobalSignatureManager] Clearing signature');
     this.signature = null;
     this.message = null;
     this.expiresAt = null;
@@ -185,6 +240,7 @@ class GlobalSignatureManager {
     this.walletType = null;
     this.isGenerating = false;
     this.generationPromise = null;
+    this.initPromise = null;
     
     try {
       localStorage.removeItem(STORAGE_KEY);
@@ -208,6 +264,7 @@ class GlobalSignatureManager {
         expiresAt: this.expiresAt
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      console.log('[GlobalSignatureManager] Saved to storage');
     } catch (err) {
       console.error('[GlobalSignatureManager] Failed to save to storage:', err);
     }
@@ -225,6 +282,7 @@ class GlobalSignatureManager {
       
       // Check if expired
       if (data.expiresAt && Date.now() >= data.expiresAt) {
+        console.log('[GlobalSignatureManager] Stored signature expired, clearing');
         localStorage.removeItem(STORAGE_KEY);
         return;
       }
@@ -235,7 +293,7 @@ class GlobalSignatureManager {
       this.walletType = data.walletType;
       this.expiresAt = data.expiresAt;
 
-      console.log('[GlobalSignatureManager] Loaded valid signature from storage');
+      console.log('[GlobalSignatureManager] Loaded valid signature from storage, expires in', this.getFormattedRemainingTime());
     } catch (err) {
       console.error('[GlobalSignatureManager] Failed to load from storage:', err);
     }
