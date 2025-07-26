@@ -1,3 +1,4 @@
+//src/components/wallet/WalletProvider.js
 'use client';
 
 import React, { createContext, useState, useEffect, useCallback } from 'react';
