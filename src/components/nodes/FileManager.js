@@ -12,7 +12,7 @@
  * - Multiple view modes (grid/list)
  * - File preview
  * 
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -46,13 +46,8 @@ import {
   Terminal,
   AlertCircle
 } from 'lucide-react';
-import { useRemoteManagement } from '../../hooks/useRemoteManagement';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
-export default function FileManager({ nodeReference, sessionId }) {
-  const { executeCommand } = useRemoteManagement(nodeReference);
-  
+export default function FileManager({ nodeReference, sessionId, executeCommand, uploadFile }) {
   // State
   const [currentPath, setCurrentPath] = useState('/home');
   const [files, setFiles] = useState([]);
@@ -68,6 +63,11 @@ export default function FileManager({ nodeReference, sessionId }) {
   
   // File operations
   const loadDirectory = useCallback(async (path) => {
+    if (!executeCommand) {
+      setError('Execute command function not available');
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     
@@ -97,7 +97,7 @@ export default function FileManager({ nodeReference, sessionId }) {
           permissions,
           owner: parts[2],
           group: parts[3],
-          size: parseInt(parts[4]),
+          size: parseInt(parts[4]) || 0,
           modified: `${parts[5]} ${parts[6]} ${parts[7]}`,
           isSymlink,
           extension: isDirectory ? null : name.split('.').pop().toLowerCase()
@@ -121,8 +121,10 @@ export default function FileManager({ nodeReference, sessionId }) {
 
   // Initial load
   useEffect(() => {
-    loadDirectory(currentPath);
-  }, [loadDirectory, currentPath]);
+    if (executeCommand) {
+      loadDirectory(currentPath);
+    }
+  }, [loadDirectory, currentPath, executeCommand]);
 
   // File type icon
   const getFileIcon = (file) => {
@@ -181,14 +183,12 @@ export default function FileManager({ nodeReference, sessionId }) {
 
   // Save file
   const saveFile = async () => {
-    if (!editingFile) return;
+    if (!editingFile || !uploadFile) return;
     
     setIsLoading(true);
     try {
-      // Create temp file and move it
-      const tempPath = `/tmp/edit_${Date.now()}`;
-      await executeCommand('sh', ['-c', `echo '${fileContent.replace(/'/g, "'\"'\"'")}' > ${tempPath}`]);
-      await executeCommand('mv', [tempPath, editingFile.path]);
+      // Upload the file content
+      await uploadFile(editingFile.path, fileContent, false);
       
       setEditingFile(null);
       loadDirectory(currentPath);
@@ -203,7 +203,7 @@ export default function FileManager({ nodeReference, sessionId }) {
   const downloadFile = async (file) => {
     try {
       const result = await executeCommand('base64', [file.path]);
-      const base64Data = result.stdout;
+      const base64Data = result.stdout.trim();
       
       // Create download link
       const byteCharacters = atob(base64Data);
@@ -349,14 +349,6 @@ export default function FileManager({ nodeReference, sessionId }) {
 
       {/* Toolbar */}
       <div className="flex items-center gap-2 p-3 border-b border-white/10">
-        <button
-          onClick={() => setShowUploadModal(true)}
-          className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm transition-colors"
-        >
-          <Upload className="w-4 h-4" />
-          Upload
-        </button>
-        
         <button
           onClick={() => {
             const name = prompt('Folder name:');
@@ -577,26 +569,13 @@ export default function FileManager({ nodeReference, sessionId }) {
                 </div>
               </div>
               
-              <div className="flex-1 overflow-hidden">
-                {['js', 'jsx', 'ts', 'tsx', 'json', 'py', 'html', 'css'].includes(editingFile.extension) ? (
-                  <SyntaxHighlighter
-                    language={editingFile.extension}
-                    style={vscDarkPlus}
-                    customStyle={{
-                      margin: 0,
-                      height: '100%',
-                      fontSize: '14px'
-                    }}
-                  >
-                    {fileContent}
-                  </SyntaxHighlighter>
-                ) : (
-                  <textarea
-                    value={fileContent}
-                    onChange={(e) => setFileContent(e.target.value)}
-                    className="w-full h-full p-4 bg-black text-white font-mono text-sm resize-none focus:outline-none"
-                  />
-                )}
+              <div className="flex-1 overflow-hidden p-4">
+                <textarea
+                  value={fileContent}
+                  onChange={(e) => setFileContent(e.target.value)}
+                  className="w-full h-full p-4 bg-black text-white font-mono text-sm resize-none focus:outline-none rounded-lg border border-white/10"
+                  spellCheck={false}
+                />
               </div>
             </motion.div>
           </motion.div>
