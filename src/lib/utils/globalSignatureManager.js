@@ -42,7 +42,7 @@ class GlobalSignatureManager {
 
     // Check if we have a valid signature for current wallet
     if (this.isValid() && this.walletAddress === walletAddress) {
-      console.log('[GlobalSignatureManager] Using existing valid signature');
+      console.log('[GlobalSignatureManager] Using existing valid signature, expires in', this.getFormattedRemainingTime());
       return {
         signature: this.signature,
         message: this.message,
@@ -52,6 +52,12 @@ class GlobalSignatureManager {
       };
     }
 
+    // Check if wallet changed
+    if (this.walletAddress && this.walletAddress !== walletAddress) {
+      console.log('[GlobalSignatureManager] Wallet changed, clearing old signature');
+      this.clear();
+    }
+
     // If already generating, wait for it
     if (this.isGenerating && this.generationPromise) {
       console.log('[GlobalSignatureManager] Waiting for ongoing signature generation');
@@ -59,6 +65,7 @@ class GlobalSignatureManager {
     }
 
     // Generate new signature
+    console.log('[GlobalSignatureManager] No valid signature found, generating new one');
     return this.generateSignature(wallet);
   }
 
