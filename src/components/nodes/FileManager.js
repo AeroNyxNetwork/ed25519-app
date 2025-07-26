@@ -1,199 +1,285 @@
 /**
- * Fixed File Manager Component
- * Prevents circular loading and duplicate requests
+ * File Manager Component
+ * Complete implementation with all fixes
  * 
  * File Path: src/components/nodes/FileManager.js
- * 
- * @version 1.2.0
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Folder,
   File,
   FileText,
   FileCode,
-  FileImage,
-  FileArchive,
-  Download,
-  Upload,
-  Edit,
-  Trash2,
-  Save,
-  X,
-  Search,
-  Grid,
-  List,
+  Image,
+  Film,
+  Music,
+  Archive,
   ChevronRight,
-  ChevronDown,
   Home,
   RefreshCw,
-  FolderPlus,
-  FilePlus,
-  Copy,
-  Scissors,
-  Clipboard,
-  Eye,
-  Terminal,
-  AlertCircle
+  Upload,
+  Download,
+  Edit,
+  Trash2,
+  X,
+  Save,
+  Loader2,
+  AlertCircle,
+  CheckCircle,
+  Link
 } from 'lucide-react';
+import clsx from 'clsx';
+
+// File type icon mapping
+const FILE_ICONS = {
+  // Folders
+  directory: Folder,
+  
+  // Code files
+  js: FileCode,
+  jsx: FileCode,
+  ts: FileCode,
+  tsx: FileCode,
+  py: FileCode,
+  java: FileCode,
+  cpp: FileCode,
+  c: FileCode,
+  h: FileCode,
+  hpp: FileCode,
+  go: FileCode,
+  rs: FileCode,
+  php: FileCode,
+  rb: FileCode,
+  
+  // Text files
+  txt: FileText,
+  md: FileText,
+  log: FileText,
+  csv: FileText,
+  json: FileCode,
+  xml: FileCode,
+  yaml: FileCode,
+  yml: FileCode,
+  toml: FileCode,
+  ini: FileCode,
+  conf: FileCode,
+  config: FileCode,
+  
+  // Images
+  jpg: Image,
+  jpeg: Image,
+  png: Image,
+  gif: Image,
+  svg: Image,
+  webp: Image,
+  ico: Image,
+  bmp: Image,
+  
+  // Videos
+  mp4: Film,
+  avi: Film,
+  mov: Film,
+  wmv: Film,
+  flv: Film,
+  mkv: Film,
+  webm: Film,
+  
+  // Audio
+  mp3: Music,
+  wav: Music,
+  flac: Music,
+  aac: Music,
+  ogg: Music,
+  m4a: Music,
+  
+  // Archives
+  zip: Archive,
+  tar: Archive,
+  gz: Archive,
+  rar: Archive,
+  '7z': Archive,
+  bz2: Archive,
+  xz: Archive
+};
+
+// Editable file types
+const EDITABLE_EXTENSIONS = [
+  'txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 
+  'toml', 'ini', 'conf', 'config', 'js', 'jsx', 'ts', 'tsx', 
+  'py', 'java', 'cpp', 'c', 'h', 'hpp', 'go', 'rs', 'php', 
+  'rb', 'html', 'htm', 'css', 'scss', 'sass', 'less', 'sh', 
+  'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd', 'env', 'gitignore',
+  'dockerfile', 'makefile', 'readme', 'license'
+];
 
 export default function FileManager({ nodeReference, sessionId, executeCommand, uploadFile }) {
-  // State
-  const [currentPath, setCurrentPath] = useState('/home');
+  const [currentPath, setCurrentPath] = useState('/');
   const [files, setFiles] = useState([]);
-  const [selectedFiles, setSelectedFiles] = useState(new Set());
-  const [viewMode, setViewMode] = useState('list'); // list or grid
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedFiles, setSelectedFiles] = useState(new Set());
   const [editingFile, setEditingFile] = useState(null);
-  const [fileContent, setFileContent] = useState('');
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [clipboard, setClipboard] = useState({ action: null, files: [] });
-  
-  // Refs to prevent duplicate operations
-  const loadingRef = useRef(false);
-  const lastLoadedPath = useRef(null);
-  const hasInitialLoad = useRef(false);
-  
-  // File operations with duplicate prevention
-  const loadDirectory = useCallback(async (path) => {
-    if (!executeCommand) {
-      setError('Execute command function not available');
-      return;
-    }
+  const [editingContent, setEditingContent] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
 
-    // Prevent duplicate loads
-    if (loadingRef.current || lastLoadedPath.current === path) {
-      console.log('[FileManager] Skipping duplicate load for path:', path);
-      return;
-    }
-
-    loadingRef.current = true;
-    lastLoadedPath.current = path;
+  // Load directory contents
+  const loadDirectory = useCallback(async (path = '/') => {
     setIsLoading(true);
     setError(null);
     
     try {
-      // Get directory listing with detailed info
-      const result = await executeCommand('ls', ['-la', '--color=never', path]);
-      const lines = result.stdout.split('\n').filter(line => line.trim());
+      console.log('[FileManager] Loading directory:', path);
       
-      // Parse ls output
-      const parsedFiles = [];
-      for (let i = 1; i < lines.length; i++) { // Skip 'total' line
-        const line = lines[i];
-        const parts = line.split(/\s+/);
-        if (parts.length < 9) continue;
-        
-        const name = parts.slice(8).join(' ');
-        if (name === '.' || name === '..') continue;
-        
-        const permissions = parts[0];
-        const isDirectory = permissions.startsWith('d');
-        const isSymlink = permissions.startsWith('l');
-        
-        parsedFiles.push({
-          name,
-          path: `${path}/${name}`.replace(/\/+/g, '/'),
-          type: isDirectory ? 'directory' : 'file',
-          permissions,
-          owner: parts[2],
-          group: parts[3],
-          size: parseInt(parts[4]) || 0,
-          modified: `${parts[5]} ${parts[6]} ${parts[7]}`,
-          isSymlink,
-          extension: isDirectory ? null : name.split('.').pop().toLowerCase()
-        });
+      const result = await executeCommand('ls', ['-la', path]);
+      console.log('[FileManager] Directory listing result:', result);
+      
+      // Check if result is in ApiResponse format
+      if (result && result.success === false) {
+        throw new Error(result.message || 'Failed to load directory');
       }
       
-      setFiles(parsedFiles.sort((a, b) => {
-        // Directories first, then alphabetical
-        if (a.type === 'directory' && b.type !== 'directory') return -1;
-        if (a.type !== 'directory' && b.type === 'directory') return 1;
-        return a.name.localeCompare(b.name);
-      }));
+      // Extract the actual result data
+      const output = result.data?.stdout || result.stdout || '';
       
+      if (!output) {
+        setFiles([]);
+        setCurrentPath(path);
+        return;
+      }
+      
+      // Parse ls output
+      const lines = output.split('\n').filter(line => line.trim());
+      const items = [];
+      
+      // Skip the first line (total) and process file entries
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        const parts = line.split(/\s+/);
+        
+        if (parts.length >= 9) {
+          const permissions = parts[0];
+          const size = parts[4];
+          const name = parts.slice(8).join(' ');
+          
+          // Skip . and .. entries
+          if (name === '.' || name === '..') continue;
+          
+          const isDirectory = permissions.startsWith('d');
+          const isSymlink = permissions.startsWith('l');
+          
+          items.push({
+            name,
+            type: isDirectory ? 'directory' : 'file',
+            size: parseInt(size) || 0,
+            permissions,
+            isSymlink,
+            path: path === '/' ? `/${name}` : `${path}/${name}`
+          });
+        }
+      }
+      
+      // Sort: directories first, then files
+      items.sort((a, b) => {
+        if (a.type === b.type) return a.name.localeCompare(b.name);
+        return a.type === 'directory' ? -1 : 1;
+      });
+      
+      setFiles(items);
       setCurrentPath(path);
+      
     } catch (err) {
-      setError(`Failed to load directory: ${err.message}`);
-      // Reset last loaded path on error
-      lastLoadedPath.current = null;
+      console.error('[FileManager] Failed to load directory:', err);
+      
+      let errorMessage = 'Failed to load directory';
+      
+      // Handle ApiResponse error format
+      if (err && typeof err === 'object' && err.message) {
+        errorMessage = err.message;
+      } else if (err instanceof Error) {
+        errorMessage = err.message;
+      }
+      
+      setError(errorMessage);
+      setFiles([]);
     } finally {
       setIsLoading(false);
-      loadingRef.current = false;
     }
   }, [executeCommand]);
 
-  // Initial load - only once
-  useEffect(() => {
-    if (executeCommand && !hasInitialLoad.current) {
-      console.log('[FileManager] Initial load');
-      hasInitialLoad.current = true;
-      loadDirectory(currentPath);
-    }
-  }, [executeCommand]); // Remove other dependencies
+  // Navigate to directory
+  const navigateToDirectory = useCallback((path) => {
+    setSelectedFiles(new Set());
+    loadDirectory(path);
+  }, [loadDirectory]);
 
-  // Handle path changes after initial load
-  useEffect(() => {
-    if (hasInitialLoad.current && currentPath !== lastLoadedPath.current) {
-      console.log('[FileManager] Path changed to:', currentPath);
-      loadDirectory(currentPath);
-    }
-  }, [currentPath, loadDirectory]);
+  // Navigate to parent directory
+  const navigateUp = useCallback(() => {
+    const parentPath = currentPath.split('/').slice(0, -1).join('/') || '/';
+    navigateToDirectory(parentPath);
+  }, [currentPath, navigateToDirectory]);
 
-  // File type icon
+  // Get file icon
   const getFileIcon = (file) => {
     if (file.type === 'directory') return Folder;
     
-    const ext = file.extension;
-    if (['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'cpp', 'go', 'rs'].includes(ext)) {
-      return FileCode;
-    }
-    if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(ext)) {
-      return FileImage;
-    }
-    if (['zip', 'tar', 'gz', 'rar', '7z'].includes(ext)) {
-      return FileArchive;
-    }
-    if (['txt', 'md', 'doc', 'docx', 'pdf'].includes(ext)) {
-      return FileText;
-    }
-    return File;
+    const extension = file.name.split('.').pop().toLowerCase();
+    return FILE_ICONS[extension] || File;
+  };
+
+  // Format file size
+  const formatSize = (bytes) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
   // Handle file click
-  const handleFileClick = async (file) => {
+  const handleFileClick = (file) => {
     if (file.type === 'directory') {
-      // Update path, which will trigger loadDirectory via useEffect
-      setCurrentPath(file.path);
+      navigateToDirectory(file.path);
     } else {
-      // Preview or download based on file type
-      if (isTextFile(file)) {
-        await openFileEditor(file);
-      } else {
-        await downloadFile(file);
+      // Check if file is editable
+      const extension = file.name.split('.').pop().toLowerCase();
+      if (EDITABLE_EXTENSIONS.includes(extension) || !extension) {
+        editFile(file);
       }
     }
   };
 
-  // Check if file is editable text
-  const isTextFile = (file) => {
-    const textExtensions = ['txt', 'md', 'js', 'jsx', 'ts', 'tsx', 'json', 'xml', 'html', 'css', 'py', 'yml', 'yaml', 'conf', 'sh', 'env'];
-    return textExtensions.includes(file.extension) || file.size < 1024 * 1024; // < 1MB
-  };
-
-  // Open file editor
-  const openFileEditor = async (file) => {
+  // Edit file
+  const editFile = async (file) => {
     setIsLoading(true);
+    setError(null);
+    
     try {
       const result = await executeCommand('cat', [file.path]);
-      setFileContent(result.stdout);
+      
+      // Check if result is in ApiResponse format
+      if (result && result.success === false) {
+        throw new Error(result.message || 'Failed to read file');
+      }
+      
+      const content = result.data?.stdout || result.stdout || '';
+      
       setEditingFile(file);
+      setEditingContent(content);
     } catch (err) {
-      setError(`Failed to open file: ${err.message}`);
+      console.error('[FileManager] Failed to read file:', err);
+      
+      let errorMessage = 'Failed to read file';
+      if (err && typeof err === 'object' && err.message) {
+        errorMessage = err.message;
+      } else if (err instanceof Error) {
+        errorMessage = err.message;
+      }
+      
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -201,386 +287,267 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
 
   // Save file
   const saveFile = async () => {
-    if (!editingFile || !uploadFile) return;
+    if (!editingFile || editingContent === null) return;
+    
+    setIsSaving(true);
+    setError(null);
+    
+    try {
+      console.log('[FileManager] Saving file:', editingFile.path);
+      
+      // Call uploadFile from useRemoteManagement
+      const response = await uploadFile(editingFile.path, editingContent, false);
+      
+      console.log('[FileManager] Upload response:', response);
+      
+      // Check if response indicates success
+      if (response && response.success === true) {
+        // Success - close editor and show success message
+        setEditingFile(null);
+        setEditingContent(null);
+        setSuccessMessage(response.message || 'File saved successfully');
+        setShowSuccessMessage(true);
+        
+        // Refresh current directory
+        await loadDirectory(currentPath);
+        
+        // Hide success message after 3 seconds
+        setTimeout(() => {
+          setShowSuccessMessage(false);
+          setSuccessMessage('');
+        }, 3000);
+      } else {
+        // This shouldn't happen if uploadFile is working correctly
+        throw new Error('Unexpected response format');
+      }
+    } catch (err) {
+      console.error('[FileManager] Failed to save file:', err);
+      
+      // Extract error message properly
+      let errorMessage = 'Failed to save file';
+      
+      // Check if it's an ApiResponse error format
+      if (err && typeof err === 'object' && err.message) {
+        errorMessage = err.message;
+      } else if (err && typeof err === 'object' && err.error && err.error.message) {
+        errorMessage = err.error.message;
+      } else if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      }
+      
+      setError(errorMessage);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Delete file
+  const deleteFile = async (file) => {
+    if (!confirm(`Are you sure you want to delete ${file.name}?`)) return;
     
     setIsLoading(true);
+    setError(null);
+    
     try {
-      // Upload the file content
-      await uploadFile(editingFile.path, fileContent, false);
+      const command = file.type === 'directory' ? 'rmdir' : 'rm';
+      const args = file.type === 'directory' ? [file.path] : ['-f', file.path];
       
-      setEditingFile(null);
-      // Force reload of current directory
-      lastLoadedPath.current = null;
-      loadDirectory(currentPath);
+      const result = await executeCommand(command, args);
+      
+      if (result && result.success === false) {
+        throw new Error(result.message || 'Failed to delete file');
+      }
+      
+      // Refresh directory
+      await loadDirectory(currentPath);
+      
+      setSuccessMessage(`${file.name} deleted successfully`);
+      setShowSuccessMessage(true);
+      setTimeout(() => {
+        setShowSuccessMessage(false);
+        setSuccessMessage('');
+      }, 3000);
+      
     } catch (err) {
-      setError(`Failed to save file: ${err.message}`);
+      console.error('[FileManager] Failed to delete file:', err);
+      
+      let errorMessage = `Failed to delete ${file.name}`;
+      if (err && typeof err === 'object' && err.message) {
+        errorMessage = err.message;
+      } else if (err instanceof Error) {
+        errorMessage = err.message;
+      }
+      
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Download file
-  const downloadFile = async (file) => {
-    try {
-      const result = await executeCommand('base64', [file.path]);
-      const base64Data = result.stdout.trim();
-      
-      // Create download link
-      const byteCharacters = atob(base64Data);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray]);
-      
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(`Failed to download file: ${err.message}`);
-    }
-  };
-
-  // Create new folder
-  const createFolder = async (name) => {
-    if (!name) return;
-    
-    try {
-      await executeCommand('mkdir', [`${currentPath}/${name}`]);
-      // Force reload
-      lastLoadedPath.current = null;
-      loadDirectory(currentPath);
-    } catch (err) {
-      setError(`Failed to create folder: ${err.message}`);
-    }
-  };
-
-  // Delete files
-  const deleteFiles = async () => {
-    if (selectedFiles.size === 0) return;
-    
-    if (!confirm(`Delete ${selectedFiles.size} item(s)?`)) return;
-    
-    try {
-      for (const filePath of selectedFiles) {
-        const file = files.find(f => f.path === filePath);
-        if (file.type === 'directory') {
-          await executeCommand('rm', ['-rf', filePath]);
-        } else {
-          await executeCommand('rm', ['-f', filePath]);
-        }
-      }
-      setSelectedFiles(new Set());
-      // Force reload
-      lastLoadedPath.current = null;
-      loadDirectory(currentPath);
-    } catch (err) {
-      setError(`Failed to delete files: ${err.message}`);
-    }
-  };
-
-  // Copy/Cut files
-  const copyFiles = (cut = false) => {
-    setClipboard({
-      action: cut ? 'cut' : 'copy',
-      files: Array.from(selectedFiles).map(path => files.find(f => f.path === path))
-    });
-  };
-
-  // Paste files
-  const pasteFiles = async () => {
-    if (!clipboard.files.length) return;
-    
-    try {
-      for (const file of clipboard.files) {
-        const destPath = `${currentPath}/${file.name}`;
-        if (clipboard.action === 'copy') {
-          await executeCommand('cp', ['-r', file.path, destPath]);
-        } else {
-          await executeCommand('mv', [file.path, destPath]);
-        }
-      }
-      
-      setClipboard({ action: null, files: [] });
-      // Force reload
-      lastLoadedPath.current = null;
-      loadDirectory(currentPath);
-    } catch (err) {
-      setError(`Failed to paste files: ${err.message}`);
-    }
-  };
-
-  // Manual refresh
-  const handleRefresh = useCallback(() => {
-    console.log('[FileManager] Manual refresh');
-    lastLoadedPath.current = null;
-    loadDirectory(currentPath);
-  }, [currentPath, loadDirectory]);
+  // Initial load
+  useEffect(() => {
+    loadDirectory('/');
+  }, [loadDirectory]);
 
   // Breadcrumb navigation
-  const breadcrumbs = currentPath.split('/').filter(Boolean);
+  const breadcrumbParts = currentPath.split('/').filter(Boolean);
+  const breadcrumbs = [
+    { name: 'Home', path: '/' },
+    ...breadcrumbParts.map((part, index) => ({
+      name: part,
+      path: '/' + breadcrumbParts.slice(0, index + 1).join('/')
+    }))
+  ];
 
   return (
-    <div className="h-full flex flex-col bg-black/50 rounded-xl border border-white/10">
+    <div className="h-full flex flex-col p-6">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-white/10">
-        <div className="flex items-center gap-4">
-          <h3 className="text-lg font-semibold text-white">File Manager</h3>
-          <div className="flex items-center gap-2 text-sm">
-            <button
-              onClick={() => setCurrentPath('/')}
-              className="p-1 hover:bg-white/10 rounded transition-colors"
-              disabled={isLoading}
-            >
-              <Home className="w-4 h-4 text-gray-400" />
-            </button>
-            <span className="text-gray-500">/</span>
-            {breadcrumbs.map((part, index) => (
-              <React.Fragment key={index}>
-                <button
-                  onClick={() => {
-                    const newPath = '/' + breadcrumbs.slice(0, index + 1).join('/');
-                    setCurrentPath(newPath);
-                  }}
-                  className="text-gray-400 hover:text-white transition-colors"
-                  disabled={isLoading}
-                >
-                  {part}
-                </button>
-                {index < breadcrumbs.length - 1 && (
-                  <span className="text-gray-500">/</span>
-                )}
-              </React.Fragment>
-            ))}
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleRefresh}
-            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-            disabled={isLoading}
-          >
-            <RefreshCw className={`w-4 h-4 text-gray-400 ${isLoading ? 'animate-spin' : ''}`} />
-          </button>
-          <button
-            onClick={() => setViewMode(viewMode === 'list' ? 'grid' : 'list')}
-            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-          >
-            {viewMode === 'list' ? (
-              <Grid className="w-4 h-4 text-gray-400" />
-            ) : (
-              <List className="w-4 h-4 text-gray-400" />
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 p-3 border-b border-white/10">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-xl font-semibold text-white">File Manager</h3>
         <button
-          onClick={() => {
-            const name = prompt('Folder name:');
-            if (name) createFolder(name);
-          }}
-          className="flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-sm transition-colors"
+          onClick={() => loadDirectory(currentPath)}
           disabled={isLoading}
+          className="p-2 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
         >
-          <FolderPlus className="w-4 h-4" />
-          New Folder
+          <RefreshCw className={clsx("w-4 h-4 text-gray-400", isLoading && "animate-spin")} />
         </button>
-        
-        {selectedFiles.size > 0 && (
-          <>
-            <div className="h-6 w-px bg-white/10 mx-2" />
-            <button
-              onClick={() => copyFiles(false)}
-              className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-              disabled={isLoading}
-            >
-              <Copy className="w-4 h-4 text-gray-400" />
-            </button>
-            <button
-              onClick={() => copyFiles(true)}
-              className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-              disabled={isLoading}
-            >
-              <Scissors className="w-4 h-4 text-gray-400" />
-            </button>
-            <button
-              onClick={deleteFiles}
-              className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-              disabled={isLoading}
-            >
-              <Trash2 className="w-4 h-4 text-red-400" />
-            </button>
-          </>
-        )}
-        
-        {clipboard.files.length > 0 && (
-          <button
-            onClick={pasteFiles}
-            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-            disabled={isLoading}
-          >
-            <Clipboard className="w-4 h-4 text-green-400" />
-          </button>
-        )}
-        
-        <div className="ml-auto flex items-center gap-2">
-          <Search className="w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search files..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="px-3 py-1.5 bg-white/10 border border-white/20 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
-          />
-        </div>
       </div>
 
-      {/* File list/grid */}
-      <div className="flex-1 overflow-auto p-4">
-        {error && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 text-red-400" />
-            <span className="text-sm text-red-300">{error}</span>
-          </div>
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2 mb-4 text-sm">
+        {breadcrumbs.map((crumb, index) => (
+          <React.Fragment key={crumb.path}>
+            {index > 0 && <ChevronRight className="w-4 h-4 text-gray-500" />}
+            <button
+              onClick={() => navigateToDirectory(crumb.path)}
+              className="text-gray-400 hover:text-white transition-colors"
+            >
+              {crumb.name}
+            </button>
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* Success Message */}
+      <AnimatePresence>
+        {showSuccessMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="mb-4 p-3 bg-green-500/20 border border-green-500/50 rounded-lg flex items-center gap-2"
+          >
+            <CheckCircle className="w-5 h-5 text-green-400" />
+            <p className="text-green-400 text-sm">{successMessage}</p>
+          </motion.div>
         )}
-        
+      </AnimatePresence>
+
+      {/* Error Message */}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg flex items-center gap-2"
+          >
+            <AlertCircle className="w-5 h-5 text-red-400" />
+            <p className="text-red-400 text-sm">{error}</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* File list */}
+      <div className="flex-1 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
-            <RefreshCw className="w-8 h-8 text-gray-400 animate-spin" />
+            <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
           </div>
-        ) : viewMode === 'list' ? (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-400 border-b border-white/10">
-                <th className="pb-2 w-8">
-                  <input
-                    type="checkbox"
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedFiles(new Set(files.map(f => f.path)));
-                      } else {
-                        setSelectedFiles(new Set());
-                      }
-                    }}
-                    className="rounded border-gray-600"
-                  />
-                </th>
-                <th className="pb-2">Name</th>
-                <th className="pb-2 w-24">Size</th>
-                <th className="pb-2 w-32">Modified</th>
-                <th className="pb-2 w-24">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {files
-                .filter(file => file.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                .map(file => {
-                  const Icon = getFileIcon(file);
-                  return (
-                    <tr
-                      key={file.path}
-                      className="border-b border-white/5 hover:bg-white/5 transition-colors"
-                    >
-                      <td className="py-2">
-                        <input
-                          type="checkbox"
-                          checked={selectedFiles.has(file.path)}
-                          onChange={(e) => {
-                            const newSelected = new Set(selectedFiles);
-                            if (e.target.checked) {
-                              newSelected.add(file.path);
-                            } else {
-                              newSelected.delete(file.path);
-                            }
-                            setSelectedFiles(newSelected);
-                          }}
-                          className="rounded border-gray-600"
-                        />
-                      </td>
-                      <td className="py-2">
-                        <button
-                          onClick={() => handleFileClick(file)}
-                          className="flex items-center gap-2 text-gray-300 hover:text-white transition-colors"
-                          disabled={isLoading}
-                        >
-                          <Icon className="w-4 h-4 text-gray-500" />
-                          {file.name}
-                        </button>
-                      </td>
-                      <td className="py-2 text-gray-400">
-                        {file.type === 'directory' ? '-' : formatFileSize(file.size)}
-                      </td>
-                      <td className="py-2 text-gray-400 text-xs">
-                        {file.modified}
-                      </td>
-                      <td className="py-2">
-                        <div className="flex items-center gap-1">
-                          {file.type === 'file' && (
-                            <>
-                              {isTextFile(file) && (
-                                <button
-                                  onClick={() => openFileEditor(file)}
-                                  className="p-1 hover:bg-white/10 rounded transition-colors"
-                                  disabled={isLoading}
-                                >
-                                  <Edit className="w-3 h-3 text-gray-400" />
-                                </button>
-                              )}
-                              <button
-                                onClick={() => downloadFile(file)}
-                                className="p-1 hover:bg-white/10 rounded transition-colors"
-                                disabled={isLoading}
-                              >
-                                <Download className="w-3 h-3 text-gray-400" />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
+        ) : files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-gray-400">
+            <Folder className="w-12 h-12 mb-2" />
+            <p>Empty directory</p>
+          </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-            {files
-              .filter(file => file.name.toLowerCase().includes(searchQuery.toLowerCase()))
-              .map(file => {
-                const Icon = getFileIcon(file);
-                return (
-                  <motion.div
-                    key={file.path}
-                    whileHover={{ scale: 1.05 }}
-                    className={`p-4 rounded-lg border ${
-                      selectedFiles.has(file.path)
-                        ? 'bg-purple-500/20 border-purple-500/40'
-                        : 'bg-white/5 border-white/10 hover:border-white/20'
-                    } cursor-pointer transition-all`}
-                    onClick={() => handleFileClick(file)}
-                  >
-                    <Icon className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                    <p className="text-xs text-center text-gray-300 truncate">
-                      {file.name}
-                    </p>
-                  </motion.div>
-                );
-              })}
+          <div className="space-y-1">
+            {/* Parent directory link */}
+            {currentPath !== '/' && (
+              <button
+                onClick={navigateUp}
+                className="w-full flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg transition-colors"
+              >
+                <Folder className="w-5 h-5 text-blue-400" />
+                <span className="text-gray-400">..</span>
+              </button>
+            )}
+            
+            {/* Files */}
+            {files.map((file) => {
+              const Icon = getFileIcon(file);
+              const isSelected = selectedFiles.has(file.path);
+              
+              return (
+                <div
+                  key={file.path}
+                  className={clsx(
+                    "flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg transition-colors cursor-pointer",
+                    isSelected && "bg-white/10"
+                  )}
+                  onClick={() => handleFileClick(file)}
+                >
+                  <Icon className={clsx(
+                    "w-5 h-5 flex-shrink-0",
+                    file.type === 'directory' ? "text-blue-400" : "text-gray-400"
+                  )} />
+                  
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white truncate">{file.name}</span>
+                      {file.isSymlink && <Link className="w-3 h-3 text-gray-500" />}
+                    </div>
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                      <span>{file.permissions}</span>
+                      {file.type === 'file' && <span>{formatSize(file.size)}</span>}
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    {file.type === 'file' && (
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            editFile(file);
+                          }}
+                          className="p-1.5 hover:bg-white/10 rounded transition-colors"
+                          title="Edit"
+                        >
+                          <Edit className="w-4 h-4 text-gray-400" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteFile(file);
+                          }}
+                          className="p-1.5 hover:bg-white/10 rounded transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4 text-gray-400" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
 
-      {/* File Editor Modal */}
+      {/* File editor modal */}
       <AnimatePresence>
         {editingFile && (
           <motion.div
@@ -588,40 +555,61 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => {
+              if (!isSaving) {
+                setEditingFile(null);
+                setEditingContent(null);
+              }
+            }}
           >
             <motion.div
-              initial={{ scale: 0.9 }}
-              animate={{ scale: 1 }}
-              exit={{ scale: 0.9 }}
-              className="bg-gray-900 rounded-xl w-full max-w-4xl h-[80vh] flex flex-col"
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-black/90 border border-white/10 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col"
+              onClick={(e) => e.stopPropagation()}
             >
+              {/* Editor header */}
               <div className="flex items-center justify-between p-4 border-b border-white/10">
-                <h3 className="text-lg font-semibold text-white">
-                  Editing: {editingFile.name}
-                </h3>
+                <div className="flex items-center gap-3">
+                  <FileText className="w-5 h-5 text-purple-400" />
+                  <span className="text-white font-medium">{editingFile.name}</span>
+                  <span className="text-xs text-gray-500">{editingFile.path}</span>
+                </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={saveFile}
-                    className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm transition-colors"
-                    disabled={isLoading}
+                    disabled={isSaving}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-2"
                   >
-                    <Save className="w-4 h-4" />
+                    {isSaving ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Save className="w-4 h-4" />
+                    )}
                     Save
                   </button>
                   <button
-                    onClick={() => setEditingFile(null)}
-                    className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                    onClick={() => {
+                      if (!isSaving) {
+                        setEditingFile(null);
+                        setEditingContent(null);
+                      }
+                    }}
+                    disabled={isSaving}
+                    className="p-2 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
                   >
                     <X className="w-5 h-5 text-gray-400" />
                   </button>
                 </div>
               </div>
               
-              <div className="flex-1 overflow-hidden p-4">
+              {/* Editor content */}
+              <div className="flex-1 p-4 overflow-hidden">
                 <textarea
-                  value={fileContent}
-                  onChange={(e) => setFileContent(e.target.value)}
-                  className="w-full h-full p-4 bg-black text-white font-mono text-sm resize-none focus:outline-none rounded-lg border border-white/10"
+                  value={editingContent || ''}
+                  onChange={(e) => setEditingContent(e.target.value)}
+                  className="w-full h-full bg-black/50 border border-white/10 rounded-lg p-4 text-sm text-white font-mono resize-none focus:outline-none focus:border-purple-500"
                   spellCheck={false}
                 />
               </div>
@@ -631,13 +619,4 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       </AnimatePresence>
     </div>
   );
-}
-
-// Helper function to format file size
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
