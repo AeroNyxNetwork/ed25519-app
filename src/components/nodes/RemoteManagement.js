@@ -1,12 +1,11 @@
 /**
- * Remote Management Component with Integrated Terminal
+ * Remote Management Component with Integrated Terminal and File Manager
  * 
  * File Path: src/components/nodes/RemoteManagement.js
  * 
- * Provides terminal access and file management capabilities
- * for individual nodes using the remote management API
+ * Complete version with cached signatures and all features
  * 
- * @version 4.0.0
+ * @version 5.0.0
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -21,7 +20,8 @@ import {
   Monitor,
   HardDrive,
   Key,
-  RefreshCw
+  RefreshCw,
+  Clock
 } from 'lucide-react';
 import clsx from 'clsx';
 import dynamic from 'next/dynamic';
@@ -48,11 +48,15 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     error: remoteError,
     sessionId,
     terminalSessions,
+    signatureRemainingTime,
+    isSignatureLoading,
     enableRemoteManagement,
     initTerminal,
     sendTerminalInput,
     resizeTerminal,
-    closeTerminal
+    closeTerminal,
+    executeCommand,
+    uploadFile
   } = useRemoteManagement(nodeReference);
   
   const [error, setError] = useState(null);
@@ -124,7 +128,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         initial={{ scale: 0.9, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.9, opacity: 0 }}
-        className="bg-black/90 border border-white/10 rounded-2xl w-full max-w-6xl h-[80vh] flex flex-col overflow-hidden"
+        className="bg-black/90 border border-white/10 rounded-2xl w-full max-w-6xl h-[85vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -138,6 +142,12 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                 Connected
               </span>
             )}
+            {signatureRemainingTime && !isSignatureLoading && (
+              <div className="flex items-center gap-2 text-xs text-gray-400">
+                <Key className="w-3 h-3" />
+                <span>Signature valid for: {signatureRemainingTime}</span>
+              </div>
+            )}
           </div>
           <button
             onClick={handleClose}
@@ -150,11 +160,15 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         {/* Content */}
         {!isEnabled ? (
           <div className="flex-1 flex items-center justify-center">
-            {isEnabling ? (
+            {isEnabling || isSignatureLoading ? (
               <div className="text-center">
                 <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-4" />
-                <p className="text-gray-400">Enabling remote management...</p>
-                <p className="text-xs text-gray-500 mt-2">This may take a few seconds</p>
+                <p className="text-gray-400">
+                  {isSignatureLoading ? 'Preparing signature...' : 'Enabling remote management...'}
+                </p>
+                <p className="text-xs text-gray-500 mt-2">
+                  {isSignatureLoading ? 'Please approve the signature request' : 'This may take a few seconds'}
+                </p>
               </div>
             ) : displayError ? (
               <div className="text-center max-w-md">
@@ -202,6 +216,18 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                 Terminal
               </button>
               <button
+                onClick={() => setActiveTab('files')}
+                className={clsx(
+                  "px-6 py-3 flex items-center gap-2 transition-all",
+                  activeTab === 'files'
+                    ? "bg-white/10 text-white border-b-2 border-purple-500"
+                    : "text-gray-400 hover:text-white hover:bg-white/5"
+                )}
+              >
+                <Folder className="w-4 h-4" />
+                File Manager
+              </button>
+              <button
                 onClick={() => setActiveTab('system')}
                 className={clsx(
                   "px-6 py-3 flex items-center gap-2 transition-all",
@@ -212,18 +238,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
               >
                 <Monitor className="w-4 h-4" />
                 System Info
-              </button>
-              <button
-                onClick={() => setActiveTab('files')}
-                className={clsx(
-                  "px-6 py-3 flex items-center gap-2 transition-all",
-                  activeTab === 'files'
-                    ? "bg-white/10 text-white border-b-2 border-purple-500"
-                    : "text-gray-400 hover:text-white hover:bg-white/5"
-                )}
-              >
-                <Folder className="w-4 h-4" />
-                Files (Coming Soon)
               </button>
             </div>
 
@@ -258,16 +272,20 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                     </div>
                   )}
                 </div>
+              ) : activeTab === 'files' ? (
+                <FileManager 
+                  nodeReference={nodeReference} 
+                  sessionId={sessionId}
+                  executeCommand={executeCommand}
+                  uploadFile={uploadFile}
+                />
               ) : activeTab === 'system' ? (
-                <SystemInfo nodeReference={nodeReference} sessionId={sessionId} />
-              ) : (
-                <div className="h-full flex items-center justify-center text-gray-400">
-                  <div className="text-center">
-                    <HardDrive className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                    <p>File manager coming soon</p>
-                  </div>
-                </div>
-              )}
+                <SystemInfo 
+                  nodeReference={nodeReference} 
+                  sessionId={sessionId}
+                  executeCommand={executeCommand}
+                />
+              ) : null}
             </div>
           </>
         )}
@@ -277,42 +295,83 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 }
 
 // System Information Component
-function SystemInfo({ nodeReference, sessionId }) {
+function SystemInfo({ nodeReference, sessionId, executeCommand }) {
   const [systemInfo, setSystemInfo] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // In a real implementation, this would fetch system info via the remote management API
-    setTimeout(() => {
-      setSystemInfo({
-        hostname: nodeReference,
-        os: 'Linux 5.15.0-91-generic',
-        uptime: '15 days, 4:23:15',
-        cpu: {
-          model: 'Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz',
-          cores: 8,
-          usage: 23.5
-        },
-        memory: {
-          total: '16GB',
-          used: '6.2GB',
-          free: '9.8GB',
-          usage: 38.8
-        },
-        disk: {
-          total: '500GB',
-          used: '123GB',
-          free: '377GB',
-          usage: 24.6
-        },
-        network: {
-          interfaces: ['eth0', 'docker0'],
-          ip: '192.168.1.100'
+    const fetchSystemInfo = async () => {
+      try {
+        // Get system information using commands
+        const [hostname, uname, uptime, df, free] = await Promise.all([
+          executeCommand('hostname', []),
+          executeCommand('uname', ['-a']),
+          executeCommand('uptime', []),
+          executeCommand('df', ['-h', '/']),
+          executeCommand('free', ['-h'])
+        ]);
+
+        // Parse the results
+        const dfLines = df.stdout.split('\n');
+        const diskInfo = dfLines[1] ? dfLines[1].split(/\s+/) : [];
+        
+        const freeLines = free.stdout.split('\n');
+        const memInfo = freeLines[1] ? freeLines[1].split(/\s+/) : [];
+
+        setSystemInfo({
+          hostname: hostname.stdout.trim(),
+          os: uname.stdout.trim(),
+          uptime: uptime.stdout.trim(),
+          cpu: {
+            model: 'Loading...',
+            cores: 'Loading...',
+            usage: 0
+          },
+          memory: {
+            total: memInfo[1] || 'N/A',
+            used: memInfo[2] || 'N/A',
+            free: memInfo[3] || 'N/A',
+            usage: memInfo[1] && memInfo[2] ? 
+              Math.round((parseFloat(memInfo[2]) / parseFloat(memInfo[1])) * 100) : 0
+          },
+          disk: {
+            total: diskInfo[1] || 'N/A',
+            used: diskInfo[2] || 'N/A',
+            free: diskInfo[3] || 'N/A',
+            usage: parseInt(diskInfo[4]) || 0
+          }
+        });
+
+        // Try to get CPU info
+        try {
+          const cpuInfo = await executeCommand('cat', ['/proc/cpuinfo']);
+          const cpuLines = cpuInfo.stdout.split('\n');
+          const modelLine = cpuLines.find(line => line.startsWith('model name'));
+          const cores = cpuLines.filter(line => line.startsWith('processor')).length;
+          
+          setSystemInfo(prev => ({
+            ...prev,
+            cpu: {
+              ...prev.cpu,
+              model: modelLine ? modelLine.split(':')[1].trim() : 'Unknown',
+              cores: cores || 1
+            }
+          }));
+        } catch (err) {
+          console.error('Failed to get CPU info:', err);
         }
-      });
-      setLoading(false);
-    }, 1000);
-  }, [nodeReference]);
+
+      } catch (err) {
+        console.error('Failed to fetch system info:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (executeCommand) {
+      fetchSystemInfo();
+    }
+  }, [executeCommand]);
 
   if (loading) {
     return (
@@ -322,15 +381,23 @@ function SystemInfo({ nodeReference, sessionId }) {
     );
   }
 
+  if (!systemInfo) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <p className="text-gray-400">Failed to load system information</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6 overflow-auto">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* System Overview */}
         <div className="bg-white/5 rounded-xl p-6 space-y-4">
           <h3 className="text-lg font-semibold text-white mb-4">System Overview</h3>
           <InfoRow label="Hostname" value={systemInfo.hostname} />
-          <InfoRow label="Operating System" value={systemInfo.os} />
-          <InfoRow label="Uptime" value={systemInfo.uptime} />
+          <InfoRow label="Operating System" value={systemInfo.os.split(' ')[0] + ' ' + systemInfo.os.split(' ')[2]} />
+          <InfoRow label="Uptime" value={systemInfo.uptime.split('up')[1]?.split(',')[0]?.trim() || 'N/A'} />
           <InfoRow label="Session ID" value={sessionId} />
         </div>
 
@@ -339,18 +406,6 @@ function SystemInfo({ nodeReference, sessionId }) {
           <h3 className="text-lg font-semibold text-white mb-4">CPU</h3>
           <InfoRow label="Model" value={systemInfo.cpu.model} />
           <InfoRow label="Cores" value={systemInfo.cpu.cores} />
-          <div>
-            <div className="flex justify-between text-sm mb-1">
-              <span className="text-gray-400">Usage</span>
-              <span className="text-white">{systemInfo.cpu.usage}%</span>
-            </div>
-            <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-gradient-to-r from-purple-500 to-blue-500"
-                style={{ width: `${systemInfo.cpu.usage}%` }}
-              />
-            </div>
-          </div>
         </div>
 
         {/* Memory Info */}
@@ -392,22 +447,6 @@ function SystemInfo({ nodeReference, sessionId }) {
             </div>
           </div>
         </div>
-
-        {/* Network Info */}
-        <div className="bg-white/5 rounded-xl p-6 space-y-4">
-          <h3 className="text-lg font-semibold text-white mb-4">Network</h3>
-          <InfoRow label="IP Address" value={systemInfo.network.ip} />
-          <div>
-            <span className="text-sm text-gray-400">Interfaces</span>
-            <div className="mt-1 space-y-1">
-              {systemInfo.network.interfaces.map(iface => (
-                <div key={iface} className="text-sm text-white bg-white/10 px-2 py-1 rounded">
-                  {iface}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -417,6 +456,9 @@ function InfoRow({ label, value }) {
   return (
     <div className="flex items-center justify-between text-sm">
       <span className="text-gray-400">{label}</span>
-      <span className="text-white font-medium truncate ml-2">{value}</span>
+      <span className="text-white font-medium truncate ml-2" title={value}>
+        {value}
+      </span>
     </div>
-  }
+  );
+}
