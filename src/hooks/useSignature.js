@@ -2,6 +2,7 @@
  * useSignature Hook
  * Manages wallet signature generation and caching for AeroNyx platform
  * Complete version with all features
+ * useSignature.js
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
