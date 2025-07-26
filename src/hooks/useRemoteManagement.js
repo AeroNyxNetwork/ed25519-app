@@ -1,11 +1,14 @@
 /**
- * Remote Management Hook with Cached Signature Support
+ * Remote Management Hook with Fixed Signature Handling
  * 
  * File Path: src/hooks/useRemoteManagement.js
  * 
- * Updated to use cached signatures for reducing signing frequency
+ * Fixed issues:
+ * - Signature cache not being refreshed when expired
+ * - JWT token not being regenerated after expiry
+ * - Message handler conflicts
  * 
- * @version 4.0.0
+ * @version 4.1.0
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -35,9 +38,11 @@ export function useRemoteManagement(nodeReference) {
     signature,
     message,
     ensureSignature,
+    refreshSignature,
     isLoading: isSignatureLoading,
     error: signatureError,
-    remainingTimeFormatted
+    remainingTimeFormatted,
+    isValid: isSignatureValid
   } = useCachedSignature('remote-management');
   
   const [isEnabled, setIsEnabled] = useState(false);
@@ -50,6 +55,13 @@ export function useRemoteManagement(nodeReference) {
   const messageHandlerRef = useRef(null);
   const terminalHandlersRef = useRef(new Map());
   const jwtTokenRef = useRef(null);
+  const jwtExpiryRef = useRef(null);
+
+  // Check if JWT token is still valid
+  const isJwtValid = useCallback(() => {
+    if (!jwtTokenRef.current || !jwtExpiryRef.current) return false;
+    return Date.now() < jwtExpiryRef.current;
+  }, []);
 
   // Enable remote management
   const enableRemoteManagement = useCallback(async () => {
@@ -59,7 +71,9 @@ export function useRemoteManagement(nodeReference) {
       hasGlobalWebSocket: !!globalWebSocket,
       wsState: globalWsState,
       hasCachedSignature: !!signature,
-      signatureRemainingTime: remainingTimeFormatted
+      isSignatureValid,
+      signatureRemainingTime: remainingTimeFormatted,
+      hasValidJWT: isJwtValid()
     });
 
     if (!wallet.connected || !nodeReference) {
@@ -73,19 +87,33 @@ export function useRemoteManagement(nodeReference) {
       return false;
     }
 
+    // If already enabled and JWT is still valid, return success
+    if (isEnabled && isJwtValid()) {
+      console.log('[useRemoteManagement] Already enabled with valid JWT');
+      return true;
+    }
+
     setIsEnabling(true);
     setError(null);
 
     try {
-      // Step 1: Ensure we have a valid signature (from cache or new)
+      // Step 1: Ensure we have a valid signature
       console.log('[useRemoteManagement] Step 1: Ensuring valid signature');
-      const signatureData = await ensureSignature();
+      
+      // Force refresh if signature is about to expire (less than 1 minute remaining)
+      let signatureData;
+      if (!isSignatureValid || (signature && remainingTimeFormatted && remainingTimeFormatted.includes('s'))) {
+        console.log('[useRemoteManagement] Signature expired or expiring soon, refreshing...');
+        signatureData = await refreshSignature();
+      } else {
+        signatureData = await ensureSignature();
+      }
       
       if (!signatureData || !signatureData.signature || !signatureData.message) {
         throw new Error('Failed to obtain signature');
       }
 
-      console.log('[useRemoteManagement] Using signature (cached or new)');
+      console.log('[useRemoteManagement] Using signature (valid for:', remainingTimeFormatted, ')');
 
       // Step 2: Get JWT Token for remote management
       console.log('[useRemoteManagement] Step 2: Getting JWT token');
@@ -98,7 +126,27 @@ export function useRemoteManagement(nodeReference) {
       );
 
       if (!tokenResponse.success) {
-        throw new Error(tokenResponse.message || 'Failed to get remote management token');
+        // If signature invalid, try refreshing
+        if (tokenResponse.message?.includes('signature') || tokenResponse.message?.includes('expired')) {
+          console.log('[useRemoteManagement] Signature rejected, refreshing and retrying...');
+          const newSignatureData = await refreshSignature();
+          
+          const retryResponse = await nodeRegistrationService.generateRemoteManagementToken(
+            wallet.address,
+            newSignatureData.signature,
+            newSignatureData.message,
+            'okx',
+            nodeReference
+          );
+          
+          if (!retryResponse.success) {
+            throw new Error(retryResponse.message || 'Failed to get remote management token after retry');
+          }
+          
+          tokenResponse.data = retryResponse.data;
+        } else {
+          throw new Error(tokenResponse.message || 'Failed to get remote management token');
+        }
       }
 
       const jwtToken = tokenResponse.data?.token;
@@ -106,12 +154,19 @@ export function useRemoteManagement(nodeReference) {
         throw new Error('No JWT token received from server');
       }
 
-      // Store JWT token for later use
+      // Store JWT token and expiry (59 minutes from now)
       jwtTokenRef.current = jwtToken;
+      jwtExpiryRef.current = Date.now() + (59 * 60 * 1000);
       console.log('[useRemoteManagement] JWT token received and stored');
 
       // Step 3: Send remote_auth message
       console.log('[useRemoteManagement] Step 3: Sending remote_auth message');
+      
+      // Remove any existing message handler
+      if (messageHandlerRef.current) {
+        globalWebSocket.removeEventListener('message', messageHandlerRef.current);
+        messageHandlerRef.current = null;
+      }
       
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -153,6 +208,11 @@ export function useRemoteManagement(nodeReference) {
               globalWebSocket.removeEventListener('message', handleMessage);
               messageHandlerRef.current = null;
               setIsEnabling(false);
+              
+              // Clear JWT if auth failed
+              jwtTokenRef.current = null;
+              jwtExpiryRef.current = null;
+              
               reject(new Error(data.message || 'Remote authentication failed'));
             }
           } catch (err) {
@@ -177,6 +237,11 @@ export function useRemoteManagement(nodeReference) {
       console.error('[useRemoteManagement] Failed to enable remote management:', err);
       setError(err.message);
       setIsEnabling(false);
+      setIsEnabled(false);
+      
+      // Clear JWT on error
+      jwtTokenRef.current = null;
+      jwtExpiryRef.current = null;
       
       // If signature error, show it
       if (signatureError) {
@@ -185,7 +250,7 @@ export function useRemoteManagement(nodeReference) {
       
       return false;
     }
-  }, [wallet, nodeReference, ensureSignature, signatureError, remainingTimeFormatted]);
+  }, [wallet, nodeReference, ensureSignature, refreshSignature, signatureError, remainingTimeFormatted, isSignatureValid, isJwtValid]);
 
   // Set up permanent handlers for terminal and command responses
   const setupPermanentHandlers = useCallback(() => {
@@ -195,6 +260,7 @@ export function useRemoteManagement(nodeReference) {
         
         // Handle terminal messages
         if (data.type === 'term_ready') {
+          console.log('[useRemoteManagement] Terminal ready:', data.session_id);
           const handler = terminalHandlersRef.current.get(data.session_id);
           if (handler?.onReady) {
             handler.onReady(data);
@@ -205,11 +271,13 @@ export function useRemoteManagement(nodeReference) {
             handler.onOutput(data.data);
           }
         } else if (data.type === 'term_error') {
+          console.error('[useRemoteManagement] Terminal error:', data.session_id, data.error);
           const handler = terminalHandlersRef.current.get(data.session_id);
           if (handler?.onError) {
             handler.onError(data.error);
           }
         } else if (data.type === 'term_closed') {
+          console.log('[useRemoteManagement] Terminal closed:', data.session_id);
           const handler = terminalHandlersRef.current.get(data.session_id);
           if (handler?.onClose) {
             handler.onClose();
@@ -252,17 +320,29 @@ export function useRemoteManagement(nodeReference) {
       throw new Error('Remote management not enabled');
     }
 
-    const termSessionId = sessionId || `term-${Date.now()}`;
+    // Check if JWT is still valid
+    if (!isJwtValid()) {
+      console.log('[useRemoteManagement] JWT expired, re-enabling remote management');
+      const success = await enableRemoteManagement();
+      if (!success) {
+        throw new Error('Failed to re-enable remote management');
+      }
+    }
+
+    const termSessionId = `term-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    console.log('[useRemoteManagement] Initializing terminal session:', termSessionId);
     
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         terminalHandlersRef.current.delete(termSessionId);
         reject(new Error('Terminal initialization timeout'));
-      }, 10000);
+      }, 15000); // Increased timeout to 15s
 
       // Set up handlers for this terminal session
       terminalHandlersRef.current.set(termSessionId, {
         onReady: (data) => {
+          console.log('[useRemoteManagement] Terminal ready handler called');
           clearTimeout(timeout);
           setTerminalSessions(prev => {
             const next = new Map(prev);
@@ -278,7 +358,13 @@ export function useRemoteManagement(nodeReference) {
           resolve(data.session_id);
         },
         onOutput: options.onOutput || null,
-        onError: options.onError || null,
+        onError: (error) => {
+          clearTimeout(timeout);
+          if (options.onError) {
+            options.onError(error);
+          }
+          reject(new Error(error));
+        },
         onClose: options.onClose || null
       });
 
@@ -293,10 +379,10 @@ export function useRemoteManagement(nodeReference) {
         env: options.env
       };
 
-      console.log('[useRemoteManagement] Initializing terminal:', initMessage);
+      console.log('[useRemoteManagement] Sending term_init message:', initMessage);
       globalWebSocket.send(JSON.stringify(initMessage));
     });
-  }, [isEnabled, nodeReference, sessionId]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement]);
 
   // Send terminal input
   const sendTerminalInput = useCallback((termSessionId, data) => {
@@ -362,10 +448,19 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [isEnabled]);
 
-  // Execute command (with JWT token if needed)
+  // Execute command
   const executeCommand = useCallback(async (command, args = [], cwd = null) => {
     if (!isEnabled || !globalWebSocket) {
       throw new Error('Remote management not enabled');
+    }
+
+    // Check if JWT is still valid
+    if (!isJwtValid()) {
+      console.log('[useRemoteManagement] JWT expired, re-enabling remote management');
+      const success = await enableRemoteManagement();
+      if (!success) {
+        throw new Error('Failed to re-enable remote management');
+      }
     }
 
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -401,12 +496,21 @@ export function useRemoteManagement(nodeReference) {
       
       globalWebSocket.send(JSON.stringify(commandMessage));
     });
-  }, [isEnabled, nodeReference]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement]);
 
   // Upload file
   const uploadFile = useCallback(async (path, content, base64 = false) => {
     if (!isEnabled || !globalWebSocket) {
       throw new Error('Remote management not enabled');
+    }
+
+    // Check if JWT is still valid
+    if (!isJwtValid()) {
+      console.log('[useRemoteManagement] JWT expired, re-enabling remote management');
+      const success = await enableRemoteManagement();
+      if (!success) {
+        throw new Error('Failed to re-enable remote management');
+      }
     }
 
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -446,7 +550,7 @@ export function useRemoteManagement(nodeReference) {
       
       globalWebSocket.send(JSON.stringify(uploadMessage));
     });
-  }, [isEnabled, nodeReference]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -473,6 +577,7 @@ export function useRemoteManagement(nodeReference) {
       
       // Clear JWT token
       jwtTokenRef.current = null;
+      jwtExpiryRef.current = null;
     };
   }, []);
 
