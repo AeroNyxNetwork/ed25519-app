@@ -1,9 +1,9 @@
 /**
- * Fixed Remote Management Hook with JWT in all messages
+ * Fixed Remote Management Hook with proper message format
  * 
  * File Path: src/hooks/useRemoteManagement.js
  * 
- * @version 5.1.0
+ * @version 5.2.0
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -56,20 +56,14 @@ export function useRemoteManagement(nodeReference) {
     return Date.now() < jwtExpiryRef.current;
   }, []);
 
-  // Helper to send authenticated message
-  const sendAuthenticatedMessage = useCallback((message) => {
+  // Helper to send message through WebSocket (NO JWT in messages after remote_auth)
+  const sendMessage = useCallback((message) => {
     if (!globalWebSocket || globalWebSocket.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket not connected');
     }
     
-    // Always include JWT if available
-    const messageWithAuth = { ...message };
-    if (jwtTokenRef.current) {
-      messageWithAuth.jwt_token = jwtTokenRef.current;
-    }
-    
-    console.log('[useRemoteManagement] Sending authenticated message:', messageWithAuth.type);
-    globalWebSocket.send(JSON.stringify(messageWithAuth));
+    console.log('[useRemoteManagement] Sending message:', message.type, message);
+    globalWebSocket.send(JSON.stringify(message));
   }, []);
 
   // Enable remote management
@@ -181,7 +175,9 @@ export function useRemoteManagement(nodeReference) {
               data.message?.includes('remote') || 
               data.message?.includes('JWT') || 
               data.code === 'AUTH_FAILED' ||
-              data.code === 'MISSING_JWT'
+              data.code === 'MISSING_JWT' ||
+              data.code === 'INVALID_TOKEN' ||
+              data.code === 'TOKEN_EXPIRED'
             )) {
               console.error('[useRemoteManagement] Remote auth error:', data);
               clearTimeout(timeout);
@@ -203,7 +199,7 @@ export function useRemoteManagement(nodeReference) {
         messageHandlerRef.current = handleMessage;
         globalWebSocket.addEventListener('message', handleMessage);
 
-        // Send remote_auth message
+        // Send remote_auth message with JWT token ONLY
         const authMessage = {
           type: 'remote_auth',
           jwt_token: jwtToken
@@ -241,26 +237,30 @@ export function useRemoteManagement(nodeReference) {
         // Handle terminal messages
         if (data.type === 'term_ready') {
           console.log('[useRemoteManagement] Terminal ready:', data.session_id);
-          const handler = terminalHandlersRef.current.get(data.session_id);
-          if (handler?.onReady) {
-            handler.onReady(data);
+          const sessionHandler = terminalHandlersRef.current.get(data.session_id);
+          if (sessionHandler?.onReady) {
+            sessionHandler.onReady(data);
           }
         } else if (data.type === 'term_output') {
-          const handler = terminalHandlersRef.current.get(data.session_id);
-          if (handler?.onOutput) {
-            handler.onOutput(data.data);
+          const sessionHandler = terminalHandlersRef.current.get(data.session_id);
+          if (sessionHandler?.onOutput) {
+            sessionHandler.onOutput(data.data);
           }
         } else if (data.type === 'term_error') {
           console.error('[useRemoteManagement] Terminal error:', data.session_id, data.error);
-          const handler = terminalHandlersRef.current.get(data.session_id);
-          if (handler?.onError) {
-            handler.onError(data.error);
+          const sessionHandler = terminalHandlersRef.current.get(data.session_id);
+          if (sessionHandler?.onError) {
+            sessionHandler.onError(data.error);
+          }
+          // Clean up failed session
+          if (data.session_id) {
+            terminalHandlersRef.current.delete(data.session_id);
           }
         } else if (data.type === 'term_closed') {
           console.log('[useRemoteManagement] Terminal closed:', data.session_id);
-          const handler = terminalHandlersRef.current.get(data.session_id);
-          if (handler?.onClose) {
-            handler.onClose();
+          const sessionHandler = terminalHandlersRef.current.get(data.session_id);
+          if (sessionHandler?.onClose) {
+            sessionHandler.onClose();
           }
           terminalHandlersRef.current.delete(data.session_id);
           setTerminalSessions(prev => {
@@ -268,6 +268,21 @@ export function useRemoteManagement(nodeReference) {
             next.delete(data.session_id);
             return next;
           });
+        } else if (data.type === 'error') {
+          // Handle specific terminal errors
+          if (data.code === 'NODE_MISMATCH' || 
+              data.code === 'NODE_OFFLINE' || 
+              data.code === 'NODE_NOT_FOUND' ||
+              data.code === 'SESSION_LIMIT_EXCEEDED' ||
+              data.code === 'REMOTE_NOT_ENABLED') {
+            console.error('[useRemoteManagement] Terminal operation error:', data);
+            // Notify all pending terminal handlers
+            for (const [sessionId, sessionHandler] of terminalHandlersRef.current.entries()) {
+              if (sessionHandler?.onError) {
+                sessionHandler.onError(data.message || 'Terminal operation failed');
+              }
+            }
+          }
         }
         
         // Handle command responses
@@ -309,21 +324,27 @@ export function useRemoteManagement(nodeReference) {
       }
     }
 
-    const termSessionId = `term-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
-    console.log('[useRemoteManagement] Initializing terminal session:', termSessionId);
+    // Let the server generate session_id
+    console.log('[useRemoteManagement] Initializing terminal session for node:', nodeReference);
     
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        terminalHandlersRef.current.delete(termSessionId);
         reject(new Error('Terminal initialization timeout'));
-      }, 15000); // 15s timeout
+      }, 15000);
+
+      // Generate a temporary tracking ID for this request
+      const trackingId = `pending_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
       // Set up handlers for this terminal session
-      terminalHandlersRef.current.set(termSessionId, {
+      const handlers = {
         onReady: (data) => {
-          console.log('[useRemoteManagement] Terminal ready handler called');
+          console.log('[useRemoteManagement] Terminal ready handler called', data.session_id);
           clearTimeout(timeout);
+          
+          // Move handlers from tracking ID to actual session ID
+          terminalHandlersRef.current.delete(trackingId);
+          terminalHandlersRef.current.set(data.session_id, handlers);
+          
           setTerminalSessions(prev => {
             const next = new Map(prev);
             next.set(data.session_id, {
@@ -340,29 +361,38 @@ export function useRemoteManagement(nodeReference) {
         onOutput: options.onOutput || null,
         onError: (error) => {
           clearTimeout(timeout);
+          terminalHandlersRef.current.delete(trackingId);
           if (options.onError) {
             options.onError(error);
           }
           reject(new Error(error));
         },
         onClose: options.onClose || null
-      });
+      };
+      
+      // Store handlers with tracking ID temporarily
+      terminalHandlersRef.current.set(trackingId, handlers);
 
-      // Send term_init message with JWT
+      // Send term_init message according to documentation
       const initMessage = {
         type: 'term_init',
         node_reference: nodeReference,
-        session_id: termSessionId,
         rows: options.rows || 24,
-        cols: options.cols || 80,
-        cwd: options.cwd,
-        env: options.env
+        cols: options.cols || 80
       };
 
+      // Add optional parameters only if provided
+      if (options.cwd) {
+        initMessage.cwd = options.cwd;
+      }
+      if (options.env) {
+        initMessage.env = options.env;
+      }
+
       console.log('[useRemoteManagement] Sending term_init message:', initMessage);
-      sendAuthenticatedMessage(initMessage);
+      sendMessage(initMessage);
     });
-  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendAuthenticatedMessage]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendMessage]);
 
   // Send terminal input
   const sendTerminalInput = useCallback((termSessionId, data) => {
@@ -373,11 +403,11 @@ export function useRemoteManagement(nodeReference) {
     const message = {
       type: 'term_input',
       session_id: termSessionId,
-      data: btoa(data) // Base64 encode
+      data: data // Send raw data, WebTerminal handles encoding
     };
 
-    sendAuthenticatedMessage(message);
-  }, [isEnabled, sendAuthenticatedMessage]);
+    sendMessage(message);
+  }, [isEnabled, sendMessage]);
 
   // Resize terminal
   const resizeTerminal = useCallback((termSessionId, rows, cols) => {
@@ -385,26 +415,30 @@ export function useRemoteManagement(nodeReference) {
       throw new Error('Remote management not enabled');
     }
 
+    // Validate ranges according to documentation
+    const validRows = Math.max(10, Math.min(200, rows));
+    const validCols = Math.max(40, Math.min(400, cols));
+
     const message = {
       type: 'term_resize',
       session_id: termSessionId,
-      rows,
-      cols
+      rows: validRows,
+      cols: validCols
     };
 
-    sendAuthenticatedMessage(message);
+    sendMessage(message);
     
     // Update local state
     setTerminalSessions(prev => {
       const next = new Map(prev);
       const session = next.get(termSessionId);
       if (session) {
-        session.rows = rows;
-        session.cols = cols;
+        session.rows = validRows;
+        session.cols = validCols;
       }
       return next;
     });
-  }, [isEnabled, sendAuthenticatedMessage]);
+  }, [isEnabled, sendMessage]);
 
   // Close terminal
   const closeTerminal = useCallback((termSessionId) => {
@@ -417,7 +451,7 @@ export function useRemoteManagement(nodeReference) {
       session_id: termSessionId
     };
 
-    sendAuthenticatedMessage(message);
+    sendMessage(message);
     
     // Clean up local state
     terminalHandlersRef.current.delete(termSessionId);
@@ -426,9 +460,9 @@ export function useRemoteManagement(nodeReference) {
       next.delete(termSessionId);
       return next;
     });
-  }, [isEnabled, sendAuthenticatedMessage]);
+  }, [isEnabled, sendMessage]);
 
-  // Execute command
+  // Execute command (legacy support for file manager)
   const executeCommand = useCallback(async (command, args = [], cwd = null) => {
     if (!isEnabled || !globalWebSocket) {
       throw new Error('Remote management not enabled');
@@ -469,11 +503,11 @@ export function useRemoteManagement(nodeReference) {
         }
       };
       
-      sendAuthenticatedMessage(commandMessage);
+      sendMessage(commandMessage);
     });
-  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendAuthenticatedMessage]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendMessage]);
 
-  // Upload file
+  // Upload file (legacy support for file manager)
   const uploadFile = useCallback(async (path, content, base64 = false) => {
     if (!isEnabled || !globalWebSocket) {
       throw new Error('Remote management not enabled');
@@ -518,9 +552,9 @@ export function useRemoteManagement(nodeReference) {
         }
       };
       
-      sendAuthenticatedMessage(uploadMessage);
+      sendMessage(uploadMessage);
     });
-  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendAuthenticatedMessage]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendMessage]);
 
   // Cleanup on unmount
   useEffect(() => {
