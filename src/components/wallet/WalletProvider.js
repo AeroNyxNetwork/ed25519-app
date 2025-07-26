@@ -13,7 +13,8 @@ export function WalletProvider({ children }) {
     provider: null,
     chainId: null,
     isConnecting: false,
-    error: null
+    error: null,
+    type: null // Add wallet type
   });
 
   // Initialize wallet connection when browser loads
@@ -32,7 +33,8 @@ export function WalletProvider({ children }) {
               provider: window.okxwallet,
               chainId,
               isConnecting: false,
-              error: null
+              error: null,
+              type: 'okx' // Set wallet type
             });
           }
         } catch (error) {
@@ -66,7 +68,8 @@ export function WalletProvider({ children }) {
         provider: window.okxwallet,
         chainId,
         isConnecting: false,
-        error: null
+        error: null,
+        type: 'okx' // Set wallet type
       });
 
       // Setup listener for account changes
@@ -112,7 +115,8 @@ export function WalletProvider({ children }) {
       provider: null,
       chainId: null,
       isConnecting: false,
-      error: null
+      error: null,
+      type: null
     });
   }, []);
 
