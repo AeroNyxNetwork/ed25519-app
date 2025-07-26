@@ -1,14 +1,13 @@
 /**
- * Remote Management Component with Integrated Terminal and File Manager
+ * Remote Management Component with Caching
+ * Fixed to prevent repeated requests
  * 
  * File Path: src/components/nodes/RemoteManagement.js
  * 
- * Complete version with cached signatures and all features
- * 
- * @version 5.0.0
+ * @version 5.1.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Terminal,
@@ -41,6 +40,10 @@ const WebTerminal = dynamic(
   }
 );
 
+// Cache for system info
+const systemInfoCache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
 export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const {
     isEnabled,
@@ -62,10 +65,17 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('terminal');
   const [activeTerminalId, setActiveTerminalId] = useState(null);
+  const [systemInfo, setSystemInfo] = useState(null);
+  const [isLoadingSystemInfo, setIsLoadingSystemInfo] = useState(false);
+  
+  // Refs to prevent duplicate operations
+  const isInitializingRef = useRef(false);
+  const hasLoadedSystemInfoRef = useRef(false);
 
   // Initialize remote management when modal opens
   useEffect(() => {
-    if (isOpen && !isEnabled && !isEnabling && nodeReference) {
+    if (isOpen && !isEnabled && !isEnabling && nodeReference && !isInitializingRef.current) {
+      isInitializingRef.current = true;
       enableRemoteManagement()
         .then((success) => {
           if (success) {
@@ -75,9 +85,112 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         .catch((err) => {
           console.error('[RemoteManagement] Failed to enable remote management:', err);
           setError(err.message);
+        })
+        .finally(() => {
+          isInitializingRef.current = false;
         });
     }
   }, [isOpen, isEnabled, isEnabling, nodeReference, enableRemoteManagement]);
+
+  // Load system info when tab is activated and remote management is enabled
+  useEffect(() => {
+    if (activeTab === 'system' && isEnabled && !hasLoadedSystemInfoRef.current && !isLoadingSystemInfo) {
+      loadSystemInfo();
+    }
+  }, [activeTab, isEnabled]);
+
+  // Load system info with caching
+  const loadSystemInfo = useCallback(async () => {
+    if (!executeCommand || isLoadingSystemInfo) return;
+    
+    // Check cache first
+    const cacheKey = `${nodeReference}_systemInfo`;
+    const cached = systemInfoCache.get(cacheKey);
+    
+    if (cached && (Date.now() - cached.timestamp < CACHE_DURATION)) {
+      console.log('[RemoteManagement] Using cached system info');
+      setSystemInfo(cached.data);
+      hasLoadedSystemInfoRef.current = true;
+      return;
+    }
+    
+    setIsLoadingSystemInfo(true);
+    hasLoadedSystemInfoRef.current = true;
+    
+    try {
+      console.log('[RemoteManagement] Fetching system info...');
+      
+      // Get system information using commands
+      const [hostname, uname, uptime, df, free] = await Promise.all([
+        executeCommand('hostname', []),
+        executeCommand('uname', ['-a']),
+        executeCommand('uptime', []),
+        executeCommand('df', ['-h', '/']),
+        executeCommand('free', ['-h'])
+      ]);
+
+      // Parse the results
+      const dfLines = df.stdout.split('\n');
+      const diskInfo = dfLines[1] ? dfLines[1].split(/\s+/) : [];
+      
+      const freeLines = free.stdout.split('\n');
+      const memInfo = freeLines[1] ? freeLines[1].split(/\s+/) : [];
+
+      const info = {
+        hostname: hostname.stdout.trim(),
+        os: uname.stdout.trim(),
+        uptime: uptime.stdout.trim(),
+        cpu: {
+          model: 'Loading...',
+          cores: 'Loading...',
+          usage: 0
+        },
+        memory: {
+          total: memInfo[1] || 'N/A',
+          used: memInfo[2] || 'N/A',
+          free: memInfo[3] || 'N/A',
+          usage: memInfo[1] && memInfo[2] ? 
+            Math.round((parseFloat(memInfo[2]) / parseFloat(memInfo[1])) * 100) : 0
+        },
+        disk: {
+          total: diskInfo[1] || 'N/A',
+          used: diskInfo[2] || 'N/A',
+          free: diskInfo[3] || 'N/A',
+          usage: parseInt(diskInfo[4]) || 0
+        }
+      };
+
+      // Try to get CPU info
+      try {
+        const cpuInfo = await executeCommand('cat', ['/proc/cpuinfo']);
+        const cpuLines = cpuInfo.stdout.split('\n');
+        const modelLine = cpuLines.find(line => line.startsWith('model name'));
+        const cores = cpuLines.filter(line => line.startsWith('processor')).length;
+        
+        info.cpu = {
+          model: modelLine ? modelLine.split(':')[1].trim() : 'Unknown',
+          cores: cores || 1,
+          usage: 0
+        };
+      } catch (err) {
+        console.error('[RemoteManagement] Failed to get CPU info:', err);
+      }
+
+      setSystemInfo(info);
+      
+      // Cache the result
+      systemInfoCache.set(cacheKey, {
+        data: info,
+        timestamp: Date.now()
+      });
+      
+    } catch (err) {
+      console.error('[RemoteManagement] Failed to fetch system info:', err);
+      setError(`Failed to load system info: ${err.message}`);
+    } finally {
+      setIsLoadingSystemInfo(false);
+    }
+  }, [executeCommand, nodeReference]);
 
   // Handle terminal initialization
   const handleTerminalInit = useCallback(async (options) => {
@@ -101,6 +214,11 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // Close modal handler
   const handleClose = useCallback(() => {
+    // Reset state
+    hasLoadedSystemInfoRef.current = false;
+    setActiveTab('terminal');
+    setSystemInfo(null);
+    
     // Close all terminal sessions
     terminalSessions.forEach(session => {
       closeTerminal(session.sessionId);
@@ -177,6 +295,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                 <button
                   onClick={() => {
                     setError(null);
+                    isInitializingRef.current = true;
                     enableRemoteManagement()
                       .then((success) => {
                         if (success) {
@@ -185,6 +304,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                       })
                       .catch((err) => {
                         setError(err.message);
+                      })
+                      .finally(() => {
+                        isInitializingRef.current = false;
                       });
                   }}
                   className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors"
@@ -281,9 +403,13 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                 />
               ) : activeTab === 'system' ? (
                 <SystemInfo 
-                  nodeReference={nodeReference} 
-                  sessionId={sessionId}
-                  executeCommand={executeCommand}
+                  systemInfo={systemInfo}
+                  isLoading={isLoadingSystemInfo}
+                  onRefresh={() => {
+                    hasLoadedSystemInfoRef.current = false;
+                    systemInfoCache.delete(`${nodeReference}_systemInfo`);
+                    loadSystemInfo();
+                  }}
                 />
               ) : null}
             </div>
@@ -295,85 +421,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 }
 
 // System Information Component
-function SystemInfo({ nodeReference, sessionId, executeCommand }) {
-  const [systemInfo, setSystemInfo] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchSystemInfo = async () => {
-      try {
-        // Get system information using commands
-        const [hostname, uname, uptime, df, free] = await Promise.all([
-          executeCommand('hostname', []),
-          executeCommand('uname', ['-a']),
-          executeCommand('uptime', []),
-          executeCommand('df', ['-h', '/']),
-          executeCommand('free', ['-h'])
-        ]);
-
-        // Parse the results
-        const dfLines = df.stdout.split('\n');
-        const diskInfo = dfLines[1] ? dfLines[1].split(/\s+/) : [];
-        
-        const freeLines = free.stdout.split('\n');
-        const memInfo = freeLines[1] ? freeLines[1].split(/\s+/) : [];
-
-        setSystemInfo({
-          hostname: hostname.stdout.trim(),
-          os: uname.stdout.trim(),
-          uptime: uptime.stdout.trim(),
-          cpu: {
-            model: 'Loading...',
-            cores: 'Loading...',
-            usage: 0
-          },
-          memory: {
-            total: memInfo[1] || 'N/A',
-            used: memInfo[2] || 'N/A',
-            free: memInfo[3] || 'N/A',
-            usage: memInfo[1] && memInfo[2] ? 
-              Math.round((parseFloat(memInfo[2]) / parseFloat(memInfo[1])) * 100) : 0
-          },
-          disk: {
-            total: diskInfo[1] || 'N/A',
-            used: diskInfo[2] || 'N/A',
-            free: diskInfo[3] || 'N/A',
-            usage: parseInt(diskInfo[4]) || 0
-          }
-        });
-
-        // Try to get CPU info
-        try {
-          const cpuInfo = await executeCommand('cat', ['/proc/cpuinfo']);
-          const cpuLines = cpuInfo.stdout.split('\n');
-          const modelLine = cpuLines.find(line => line.startsWith('model name'));
-          const cores = cpuLines.filter(line => line.startsWith('processor')).length;
-          
-          setSystemInfo(prev => ({
-            ...prev,
-            cpu: {
-              ...prev.cpu,
-              model: modelLine ? modelLine.split(':')[1].trim() : 'Unknown',
-              cores: cores || 1
-            }
-          }));
-        } catch (err) {
-          console.error('Failed to get CPU info:', err);
-        }
-
-      } catch (err) {
-        console.error('Failed to fetch system info:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    if (executeCommand) {
-      fetchSystemInfo();
-    }
-  }, [executeCommand]);
-
-  if (loading) {
+function SystemInfo({ systemInfo, isLoading, onRefresh }) {
+  if (isLoading || !systemInfo) {
     return (
       <div className="h-full flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
@@ -381,16 +430,19 @@ function SystemInfo({ nodeReference, sessionId, executeCommand }) {
     );
   }
 
-  if (!systemInfo) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <p className="text-gray-400">Failed to load system information</p>
-      </div>
-    );
-  }
-
   return (
     <div className="p-6 space-y-6 overflow-auto">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-xl font-semibold text-white">System Information</h3>
+        <button
+          onClick={onRefresh}
+          className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+          title="Refresh system info"
+        >
+          <RefreshCw className="w-4 h-4 text-gray-400" />
+        </button>
+      </div>
+      
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* System Overview */}
         <div className="bg-white/5 rounded-xl p-6 space-y-4">
@@ -398,7 +450,6 @@ function SystemInfo({ nodeReference, sessionId, executeCommand }) {
           <InfoRow label="Hostname" value={systemInfo.hostname} />
           <InfoRow label="Operating System" value={systemInfo.os.split(' ')[0] + ' ' + systemInfo.os.split(' ')[2]} />
           <InfoRow label="Uptime" value={systemInfo.uptime.split('up')[1]?.split(',')[0]?.trim() || 'N/A'} />
-          <InfoRow label="Session ID" value={sessionId} />
         </div>
 
         {/* CPU Info */}
