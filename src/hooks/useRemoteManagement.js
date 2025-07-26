@@ -1,11 +1,9 @@
 /**
- * Remote Management Hook with Global Signature Support
+ * Fixed Remote Management Hook with JWT in all messages
  * 
  * File Path: src/hooks/useRemoteManagement.js
  * 
- * Updated to use global signature manager instead of per-purpose signatures
- * 
- * @version 5.0.0
+ * @version 5.1.0
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -56,6 +54,22 @@ export function useRemoteManagement(nodeReference) {
   const isJwtValid = useCallback(() => {
     if (!jwtTokenRef.current || !jwtExpiryRef.current) return false;
     return Date.now() < jwtExpiryRef.current;
+  }, []);
+
+  // Helper to send authenticated message
+  const sendAuthenticatedMessage = useCallback((message) => {
+    if (!globalWebSocket || globalWebSocket.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket not connected');
+    }
+    
+    // Always include JWT if available
+    const messageWithAuth = { ...message };
+    if (jwtTokenRef.current) {
+      messageWithAuth.jwt_token = jwtTokenRef.current;
+    }
+    
+    console.log('[useRemoteManagement] Sending authenticated message:', messageWithAuth.type);
+    globalWebSocket.send(JSON.stringify(messageWithAuth));
   }, []);
 
   // Enable remote management
@@ -334,7 +348,7 @@ export function useRemoteManagement(nodeReference) {
         onClose: options.onClose || null
       });
 
-      // Send term_init message
+      // Send term_init message with JWT
       const initMessage = {
         type: 'term_init',
         node_reference: nodeReference,
@@ -346,9 +360,9 @@ export function useRemoteManagement(nodeReference) {
       };
 
       console.log('[useRemoteManagement] Sending term_init message:', initMessage);
-      globalWebSocket.send(JSON.stringify(initMessage));
+      sendAuthenticatedMessage(initMessage);
     });
-  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendAuthenticatedMessage]);
 
   // Send terminal input
   const sendTerminalInput = useCallback((termSessionId, data) => {
@@ -362,8 +376,8 @@ export function useRemoteManagement(nodeReference) {
       data: btoa(data) // Base64 encode
     };
 
-    globalWebSocket.send(JSON.stringify(message));
-  }, [isEnabled]);
+    sendAuthenticatedMessage(message);
+  }, [isEnabled, sendAuthenticatedMessage]);
 
   // Resize terminal
   const resizeTerminal = useCallback((termSessionId, rows, cols) => {
@@ -378,7 +392,7 @@ export function useRemoteManagement(nodeReference) {
       cols
     };
 
-    globalWebSocket.send(JSON.stringify(message));
+    sendAuthenticatedMessage(message);
     
     // Update local state
     setTerminalSessions(prev => {
@@ -390,7 +404,7 @@ export function useRemoteManagement(nodeReference) {
       }
       return next;
     });
-  }, [isEnabled]);
+  }, [isEnabled, sendAuthenticatedMessage]);
 
   // Close terminal
   const closeTerminal = useCallback((termSessionId) => {
@@ -403,7 +417,7 @@ export function useRemoteManagement(nodeReference) {
       session_id: termSessionId
     };
 
-    globalWebSocket.send(JSON.stringify(message));
+    sendAuthenticatedMessage(message);
     
     // Clean up local state
     terminalHandlersRef.current.delete(termSessionId);
@@ -412,7 +426,7 @@ export function useRemoteManagement(nodeReference) {
       next.delete(termSessionId);
       return next;
     });
-  }, [isEnabled]);
+  }, [isEnabled, sendAuthenticatedMessage]);
 
   // Execute command
   const executeCommand = useCallback(async (command, args = [], cwd = null) => {
@@ -455,14 +469,9 @@ export function useRemoteManagement(nodeReference) {
         }
       };
       
-      // Include JWT token if available
-      if (jwtTokenRef.current) {
-        commandMessage.jwt_token = jwtTokenRef.current;
-      }
-      
-      globalWebSocket.send(JSON.stringify(commandMessage));
+      sendAuthenticatedMessage(commandMessage);
     });
-  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendAuthenticatedMessage]);
 
   // Upload file
   const uploadFile = useCallback(async (path, content, base64 = false) => {
@@ -509,14 +518,9 @@ export function useRemoteManagement(nodeReference) {
         }
       };
       
-      // Include JWT token if available
-      if (jwtTokenRef.current) {
-        uploadMessage.jwt_token = jwtTokenRef.current;
-      }
-      
-      globalWebSocket.send(JSON.stringify(uploadMessage));
+      sendAuthenticatedMessage(uploadMessage);
     });
-  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement]);
+  }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendAuthenticatedMessage]);
 
   // Cleanup on unmount
   useEffect(() => {
