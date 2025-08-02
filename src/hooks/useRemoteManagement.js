@@ -3,7 +3,7 @@
  * 
  * File Path: src/hooks/useRemoteManagement.js
  * 
- * @version 5.3.0
+ * @version 5.3.1
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -243,7 +243,7 @@ export function useRemoteManagement(nodeReference) {
         
         console.log('[useRemoteManagement] Permanent handler received:', data.type);
         
-        // Handle terminal-related messages
+        // Handle terminal-related messages - FIXED to handle term_init_success
         if (data.type === 'term_init_success') {
           console.log('[useRemoteManagement] Terminal init success:', data);
           const sessionId = data.session_id;
@@ -282,6 +282,41 @@ export function useRemoteManagement(nodeReference) {
               timeout.resolve(sessionId);
             }
           }
+        } else if (data.type === 'term_ready') {
+          // Handle term_ready for backwards compatibility
+          console.log('[useRemoteManagement] Terminal ready (legacy):', data);
+          const sessionId = data.session_id;
+          const timeout = terminalTimeouts.current.get('pending_' + nodeReference);
+          
+          if (timeout && timeout.resolve) {
+            clearTimeout(timeout.timeout);
+            terminalTimeouts.current.delete('pending_' + nodeReference);
+            
+            // Set up session handlers
+            terminalHandlersRef.current.set(sessionId, {
+              onOutput: timeout.options?.onOutput || null,
+              onError: timeout.options?.onError || null,
+              onClose: timeout.options?.onClose || null
+            });
+            
+            setTerminalSessions(prev => {
+              const next = new Map(prev);
+              next.set(sessionId, {
+                sessionId: sessionId,
+                nodeReference,
+                status: 'ready',
+                rows: timeout.options?.rows || 24,
+                cols: timeout.options?.cols || 80
+              });
+              return next;
+            });
+            
+            if (timeout.options?.onReady) {
+              timeout.options.onReady({ session_id: sessionId });
+            }
+            
+            timeout.resolve(sessionId);
+          }
         } else if (data.type === 'term_output' && data.session_id) {
           const sessionHandler = terminalHandlersRef.current.get(data.session_id);
           if (sessionHandler?.onOutput) {
@@ -291,7 +326,7 @@ export function useRemoteManagement(nodeReference) {
           console.error('[useRemoteManagement] Terminal error:', data);
           
           // Check if this is an init error
-          if (data.message && data.message.includes('init')) {
+          if (data.message && (data.message.includes('init') || data.code === 'INVALID_SESSION')) {
             const timeout = terminalTimeouts.current.get('pending_' + nodeReference);
             if (timeout) {
               clearTimeout(timeout.timeout);
@@ -310,6 +345,11 @@ export function useRemoteManagement(nodeReference) {
             }
             // Clean up failed session
             terminalHandlersRef.current.delete(data.session_id);
+            setTerminalSessions(prev => {
+              const next = new Map(prev);
+              next.delete(data.session_id);
+              return next;
+            });
           }
         } else if (data.type === 'term_closed' && data.session_id) {
           console.log('[useRemoteManagement] Terminal closed:', data.session_id);
@@ -335,7 +375,8 @@ export function useRemoteManagement(nodeReference) {
               data.code === 'REMOTE_NOT_ENABLED' ||
               data.code === 'NOT_AUTHENTICATED' ||
               data.code === 'INVALID_TOKEN' ||
-              data.code === 'TOKEN_EXPIRED') {
+              data.code === 'TOKEN_EXPIRED' ||
+              data.code === 'INVALID_SESSION') {
             console.error('[useRemoteManagement] Terminal operation error:', data.code, data.message);
             
             // Handle pending terminal init
