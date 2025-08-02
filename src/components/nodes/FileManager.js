@@ -5,7 +5,7 @@
  * File Path: src/components/nodes/FileManager.js
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Folder,
@@ -125,9 +125,26 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
+  
+  // Add refs to prevent multiple loads
+  const isLoadingRef = useRef(false);
+  const hasInitialLoadRef = useRef(false);
 
-  // Load directory contents
+  // Load directory contents with duplicate prevention
   const loadDirectory = useCallback(async (path = '/') => {
+    // Prevent multiple simultaneous loads
+    if (isLoadingRef.current) {
+      console.log('[FileManager] Already loading, skipping...');
+      return;
+    }
+    
+    // Check if executeCommand is available
+    if (!executeCommand) {
+      console.log('[FileManager] executeCommand not available yet');
+      return;
+    }
+    
+    isLoadingRef.current = true;
     setIsLoading(true);
     setError(null);
     
@@ -207,6 +224,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       setFiles([]);
     } finally {
       setIsLoading(false);
+      isLoadingRef.current = false;
     }
   }, [executeCommand]);
 
@@ -386,10 +404,13 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     }
   };
 
-  // Initial load
+  // Initial load - only once when executeCommand becomes available
   useEffect(() => {
-    loadDirectory('/');
-  }, [loadDirectory]);
+    if (executeCommand && !hasInitialLoadRef.current) {
+      hasInitialLoadRef.current = true;
+      loadDirectory('/');
+    }
+  }, [executeCommand, loadDirectory]);
 
   // Breadcrumb navigation
   const breadcrumbParts = currentPath.split('/').filter(Boolean);
