@@ -68,11 +68,13 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const [systemInfo, setSystemInfo] = useState(null);
   const [isLoadingSystemInfo, setIsLoadingSystemInfo] = useState(false);
   const [isInitializingTerminal, setIsInitializingTerminal] = useState(false);
+  const [terminalInitialized, setTerminalInitialized] = useState(false);
   
   // Refs to prevent duplicate operations
   const isInitializingRef = useRef(false);
   const hasLoadedSystemInfoRef = useRef(false);
   const loadSystemInfoPromiseRef = useRef(null);
+  const terminalInitRef = useRef(false);
 
   // Initialize remote management when modal opens
   useEffect(() => {
@@ -207,29 +209,33 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // Handle terminal initialization - FIXED to prevent double initialization
   const handleStartTerminal = useCallback(async () => {
-    if (isInitializingTerminal || activeTerminalId) return;
+    if (isInitializingTerminal || activeTerminalId || terminalInitialized) return;
     
     setIsInitializingTerminal(true);
-    setActiveTerminalId('initializing'); // Set a temporary ID to show terminal
-  }, [isInitializingTerminal, activeTerminalId]);
+    setTerminalInitialized(true); // Mark as initialized to show the terminal component
+  }, [isInitializingTerminal, activeTerminalId, terminalInitialized]);
 
   // Handle terminal close
   const handleTerminalClose = useCallback((termSessionId) => {
-    closeTerminal(termSessionId);
-    if (activeTerminalId === termSessionId) {
-      setActiveTerminalId(null);
+    if (termSessionId && termSessionId !== 'pending') {
+      closeTerminal(termSessionId);
     }
-  }, [closeTerminal, activeTerminalId]);
+    setActiveTerminalId(null);
+    setTerminalInitialized(false);
+    terminalInitRef.current = false;
+  }, [closeTerminal]);
 
   // Close modal handler
   const handleClose = useCallback(() => {
     // Reset state
     hasLoadedSystemInfoRef.current = false;
     loadSystemInfoPromiseRef.current = null;
+    terminalInitRef.current = false;
     setActiveTab('terminal');
     setSystemInfo(null);
     setActiveTerminalId(null);
     setIsInitializingTerminal(false);
+    setTerminalInitialized(false);
     
     // Close all terminal sessions
     terminalSessions.forEach(session => {
@@ -379,12 +385,19 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             <div className="flex-1 overflow-hidden">
               {activeTab === 'terminal' ? (
                 <div className="h-full p-4">
-                  {activeTerminalId ? (
+                  {terminalInitialized ? (
                     <WebTerminal
-                      sessionId={activeTerminalId}
+                      sessionId={activeTerminalId || 'pending'}
                       nodeReference={nodeReference}
                       isEnabled={isEnabled}
                       onInit={async (options) => {
+                        // Prevent multiple initializations
+                        if (terminalInitRef.current || activeTerminalId) {
+                          console.log('[RemoteManagement] Terminal already initialized or initializing');
+                          return activeTerminalId;
+                        }
+                        
+                        terminalInitRef.current = true;
                         try {
                           const termSessionId = await initTerminal(options);
                           setActiveTerminalId(termSessionId);
@@ -394,8 +407,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                         } catch (err) {
                           console.error('[RemoteManagement] Failed to initialize terminal:', err);
                           setError(err.message);
-                          setActiveTerminalId(null);
+                          setTerminalInitialized(false);
                           setIsInitializingTerminal(false);
+                          terminalInitRef.current = false;
                           throw err;
                         }
                       }}
