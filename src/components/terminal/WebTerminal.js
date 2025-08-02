@@ -5,7 +5,7 @@
  * 
  * Full-featured terminal emulator for remote node access
  * 
- * @version 1.1.0
+ * @version 1.2.0
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -103,12 +103,23 @@ export default function WebTerminal({
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [actualSessionId, setActualSessionId] = useState(null);
+  
+  // Add ref to track initialization
+  const initializationRef = useRef(false);
+  const terminalInstanceRef = useRef(null);
 
   // Initialize terminal
   useEffect(() => {
-    if (!terminalContainerRef.current || !isEnabled) return;
+    if (!terminalContainerRef.current || !isEnabled || !onInit) return;
+    
+    // Prevent multiple initializations
+    if (initializationRef.current) {
+      console.log('[WebTerminal] Already initialized, skipping...');
+      return;
+    }
 
     console.log('[WebTerminal] Initializing terminal');
+    initializationRef.current = true;
     
     // Create terminal instance
     const term = new Terminal({
@@ -138,6 +149,7 @@ export default function WebTerminal({
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
+    terminalInstanceRef.current = term;
 
     // Open terminal in container
     term.open(terminalContainerRef.current);
@@ -189,59 +201,71 @@ export default function WebTerminal({
     });
 
     // Initialize terminal session
-    if (onInit) {
-      onInit({
-        rows: term.rows,
-        cols: term.cols,
-        onOutput: (data) => {
-          // Handle output data - it might be base64 encoded or raw
-          if (data) {
-            // Check if it's base64 encoded (only alphanumeric, +, /, and = padding)
-            if (/^[A-Za-z0-9+/]+=*$/.test(data) && data.length % 4 === 0) {
-              try {
-                const decoded = atob(data);
-                term.write(decoded);
-              } catch (err) {
-                // If base64 decode fails, write raw data
+    const initializeSession = async () => {
+      try {
+        const serverSessionId = await onInit({
+          rows: term.rows,
+          cols: term.cols,
+          onOutput: (data) => {
+            // Handle output data - it might be base64 encoded or raw
+            if (data) {
+              // Check if it's base64 encoded (only alphanumeric, +, /, and = padding)
+              if (/^[A-Za-z0-9+/]+=*$/.test(data) && data.length % 4 === 0) {
+                try {
+                  const decoded = atob(data);
+                  term.write(decoded);
+                } catch (err) {
+                  // If base64 decode fails, write raw data
+                  term.write(data);
+                }
+              } else {
+                // Write raw data directly
                 term.write(data);
               }
-            } else {
-              // Write raw data directly
-              term.write(data);
             }
+          },
+          onError: (error) => {
+            console.error('[WebTerminal] Terminal error:', error);
+            setError(error);
+            setStatus('error');
+          },
+          onClose: () => {
+            console.log('[WebTerminal] Terminal closed');
+            setStatus('closed');
+          },
+          onReady: (data) => {
+            // Store the actual session ID returned by server
+            console.log('[WebTerminal] Terminal ready with session ID:', data.session_id);
+            setActualSessionId(data.session_id);
           }
-        },
-        onError: (error) => {
-          console.error('[WebTerminal] Terminal error:', error);
-          setError(error);
-          setStatus('error');
-        },
-        onClose: () => {
-          console.log('[WebTerminal] Terminal closed');
-          setStatus('closed');
-        },
-        onReady: (data) => {
-          // Store the actual session ID returned by server
-          console.log('[WebTerminal] Terminal ready with session ID:', data.session_id);
-          setActualSessionId(data.session_id);
-        }
-      }).then((serverSessionId) => {
+        });
+        
         setStatus('ready');
         setActualSessionId(serverSessionId);
         term.focus();
-      }).catch(err => {
+      } catch (err) {
         console.error('[WebTerminal] Failed to initialize terminal:', err);
         setError(err.message);
         setStatus('error');
-      });
-    }
+        initializationRef.current = false; // Allow retry on error
+      }
+    };
+
+    initializeSession();
 
     // Cleanup
     return () => {
       console.log('[WebTerminal] Cleaning up terminal');
-      term.dispose();
+      initializationRef.current = false;
+      if (terminalInstanceRef.current) {
+        terminalInstanceRef.current.dispose();
+        terminalInstanceRef.current = null;
+      }
+      xtermRef.current = null;
+      fitAddonRef.current = null;
+      searchAddonRef.current = null;
     };
-  }, [isEnabled, nodeReference, theme, fontSize, fontFamily, onInit, onInput, onResize]);
+  }, [isEnabled, nodeReference]); // Remove dependencies that cause re-initialization
 
   // Handle resize
   useEffect(() => {
