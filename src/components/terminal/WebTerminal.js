@@ -203,10 +203,18 @@ export default function WebTerminal({
     // Initialize terminal session
     const initializeSession = async () => {
       try {
+        let hasReceivedReady = false;
+        
         const serverSessionId = await onInit({
           rows: term.rows,
           cols: term.cols,
           onOutput: (data) => {
+            // Mark as ready when we receive first output
+            if (!hasReceivedReady) {
+              hasReceivedReady = true;
+              setStatus('ready');
+            }
+            
             // Handle output data - it might be base64 encoded or raw
             if (data) {
               // Check if it's base64 encoded (only alphanumeric, +, /, and = padding)
@@ -237,11 +245,22 @@ export default function WebTerminal({
             // Store the actual session ID returned by server
             console.log('[WebTerminal] Terminal ready with session ID:', data.session_id);
             setActualSessionId(data.session_id);
+            hasReceivedReady = true;
+            setStatus('ready');
           }
         });
         
-        setStatus('ready');
+        // Set status to ready even if onReady wasn't called
         setActualSessionId(serverSessionId);
+        
+        // If we haven't received ready status after 3 seconds, assume it's ready
+        setTimeout(() => {
+          if (!hasReceivedReady) {
+            console.log('[WebTerminal] No ready signal received, assuming terminal is ready');
+            setStatus('ready');
+          }
+        }, 3000);
+        
         term.focus();
       } catch (err) {
         console.error('[WebTerminal] Failed to initialize terminal:', err);
