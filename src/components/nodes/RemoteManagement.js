@@ -4,7 +4,7 @@
  * 
  * File Path: src/components/nodes/RemoteManagement.js
  * 
- * @version 5.1.0
+ * @version 5.2.0
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -67,10 +67,12 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const [activeTerminalId, setActiveTerminalId] = useState(null);
   const [systemInfo, setSystemInfo] = useState(null);
   const [isLoadingSystemInfo, setIsLoadingSystemInfo] = useState(false);
+  const [isInitializingTerminal, setIsInitializingTerminal] = useState(false);
   
   // Refs to prevent duplicate operations
   const isInitializingRef = useRef(false);
   const hasLoadedSystemInfoRef = useRef(false);
+  const loadSystemInfoPromiseRef = useRef(null);
 
   // Initialize remote management when modal opens
   useEffect(() => {
@@ -99,9 +101,14 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     }
   }, [activeTab, isEnabled]);
 
-  // Load system info with caching
+  // Load system info with caching and deduplication
   const loadSystemInfo = useCallback(async () => {
-    if (!executeCommand || isLoadingSystemInfo) return;
+    if (!executeCommand) return;
+    
+    // Return existing promise if already loading
+    if (loadSystemInfoPromiseRef.current) {
+      return loadSystemInfoPromiseRef.current;
+    }
     
     // Check cache first
     const cacheKey = `${nodeReference}_systemInfo`;
@@ -117,92 +124,94 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     setIsLoadingSystemInfo(true);
     hasLoadedSystemInfoRef.current = true;
     
-    try {
-      console.log('[RemoteManagement] Fetching system info...');
-      
-      // Get system information using commands
-      const [hostname, uname, uptime, df, free] = await Promise.all([
-        executeCommand('hostname', []),
-        executeCommand('uname', ['-a']),
-        executeCommand('uptime', []),
-        executeCommand('df', ['-h', '/']),
-        executeCommand('free', ['-h'])
-      ]);
-
-      // Parse the results
-      const dfLines = df.stdout.split('\n');
-      const diskInfo = dfLines[1] ? dfLines[1].split(/\s+/) : [];
-      
-      const freeLines = free.stdout.split('\n');
-      const memInfo = freeLines[1] ? freeLines[1].split(/\s+/) : [];
-
-      const info = {
-        hostname: hostname.stdout.trim(),
-        os: uname.stdout.trim(),
-        uptime: uptime.stdout.trim(),
-        cpu: {
-          model: 'Loading...',
-          cores: 'Loading...',
-          usage: 0
-        },
-        memory: {
-          total: memInfo[1] || 'N/A',
-          used: memInfo[2] || 'N/A',
-          free: memInfo[3] || 'N/A',
-          usage: memInfo[1] && memInfo[2] ? 
-            Math.round((parseFloat(memInfo[2]) / parseFloat(memInfo[1])) * 100) : 0
-        },
-        disk: {
-          total: diskInfo[1] || 'N/A',
-          used: diskInfo[2] || 'N/A',
-          free: diskInfo[3] || 'N/A',
-          usage: parseInt(diskInfo[4]) || 0
-        }
-      };
-
-      // Try to get CPU info
+    // Create and store the promise
+    loadSystemInfoPromiseRef.current = (async () => {
       try {
-        const cpuInfo = await executeCommand('cat', ['/proc/cpuinfo']);
-        const cpuLines = cpuInfo.stdout.split('\n');
-        const modelLine = cpuLines.find(line => line.startsWith('model name'));
-        const cores = cpuLines.filter(line => line.startsWith('processor')).length;
+        console.log('[RemoteManagement] Fetching system info...');
         
-        info.cpu = {
-          model: modelLine ? modelLine.split(':')[1].trim() : 'Unknown',
-          cores: cores || 1,
-          usage: 0
-        };
-      } catch (err) {
-        console.error('[RemoteManagement] Failed to get CPU info:', err);
-      }
+        // Get system information using commands
+        const [hostname, uname, uptime, df, free] = await Promise.all([
+          executeCommand('hostname', []),
+          executeCommand('uname', ['-a']),
+          executeCommand('uptime', []),
+          executeCommand('df', ['-h', '/']),
+          executeCommand('free', ['-h'])
+        ]);
 
-      setSystemInfo(info);
-      
-      // Cache the result
-      systemInfoCache.set(cacheKey, {
-        data: info,
-        timestamp: Date.now()
-      });
-      
-    } catch (err) {
-      console.error('[RemoteManagement] Failed to fetch system info:', err);
-      setError(`Failed to load system info: ${err.message}`);
-    } finally {
-      setIsLoadingSystemInfo(false);
-    }
+        // Parse the results
+        const dfLines = (df.data?.stdout || df.stdout || '').split('\n');
+        const diskInfo = dfLines[1] ? dfLines[1].split(/\s+/) : [];
+        
+        const freeLines = (free.data?.stdout || free.stdout || '').split('\n');
+        const memInfo = freeLines[1] ? freeLines[1].split(/\s+/) : [];
+
+        const info = {
+          hostname: (hostname.data?.stdout || hostname.stdout || '').trim(),
+          os: (uname.data?.stdout || uname.stdout || '').trim(),
+          uptime: (uptime.data?.stdout || uptime.stdout || '').trim(),
+          cpu: {
+            model: 'Loading...',
+            cores: 'Loading...',
+            usage: 0
+          },
+          memory: {
+            total: memInfo[1] || 'N/A',
+            used: memInfo[2] || 'N/A',
+            free: memInfo[3] || 'N/A',
+            usage: memInfo[1] && memInfo[2] ? 
+              Math.round((parseFloat(memInfo[2]) / parseFloat(memInfo[1])) * 100) : 0
+          },
+          disk: {
+            total: diskInfo[1] || 'N/A',
+            used: diskInfo[2] || 'N/A',
+            free: diskInfo[3] || 'N/A',
+            usage: parseInt(diskInfo[4]) || 0
+          }
+        };
+
+        // Try to get CPU info
+        try {
+          const cpuInfo = await executeCommand('cat', ['/proc/cpuinfo']);
+          const cpuLines = (cpuInfo.data?.stdout || cpuInfo.stdout || '').split('\n');
+          const modelLine = cpuLines.find(line => line.startsWith('model name'));
+          const cores = cpuLines.filter(line => line.startsWith('processor')).length;
+          
+          info.cpu = {
+            model: modelLine ? modelLine.split(':')[1].trim() : 'Unknown',
+            cores: cores || 1,
+            usage: 0
+          };
+        } catch (err) {
+          console.error('[RemoteManagement] Failed to get CPU info:', err);
+        }
+
+        setSystemInfo(info);
+        
+        // Cache the result
+        systemInfoCache.set(cacheKey, {
+          data: info,
+          timestamp: Date.now()
+        });
+        
+      } catch (err) {
+        console.error('[RemoteManagement] Failed to fetch system info:', err);
+        setError(`Failed to load system info: ${err.message}`);
+      } finally {
+        setIsLoadingSystemInfo(false);
+        loadSystemInfoPromiseRef.current = null;
+      }
+    })();
+    
+    return loadSystemInfoPromiseRef.current;
   }, [executeCommand, nodeReference]);
 
-  // Handle terminal initialization
-  const handleTerminalInit = useCallback(async (options) => {
-    try {
-      const termSessionId = await initTerminal(options);
-      setActiveTerminalId(termSessionId);
-      console.log('[RemoteManagement] Terminal initialized:', termSessionId);
-    } catch (err) {
-      console.error('[RemoteManagement] Failed to initialize terminal:', err);
-      setError(err.message);
-    }
-  }, [initTerminal]);
+  // Handle terminal initialization - FIXED to prevent double initialization
+  const handleStartTerminal = useCallback(async () => {
+    if (isInitializingTerminal || activeTerminalId) return;
+    
+    setIsInitializingTerminal(true);
+    setActiveTerminalId('initializing'); // Set a temporary ID to show terminal
+  }, [isInitializingTerminal, activeTerminalId]);
 
   // Handle terminal close
   const handleTerminalClose = useCallback((termSessionId) => {
@@ -216,8 +225,11 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const handleClose = useCallback(() => {
     // Reset state
     hasLoadedSystemInfoRef.current = false;
+    loadSystemInfoPromiseRef.current = null;
     setActiveTab('terminal');
     setSystemInfo(null);
+    setActiveTerminalId(null);
+    setIsInitializingTerminal(false);
     
     // Close all terminal sessions
     terminalSessions.forEach(session => {
@@ -372,7 +384,21 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                       sessionId={activeTerminalId}
                       nodeReference={nodeReference}
                       isEnabled={isEnabled}
-                      onInit={handleTerminalInit}
+                      onInit={async (options) => {
+                        try {
+                          const termSessionId = await initTerminal(options);
+                          setActiveTerminalId(termSessionId);
+                          setIsInitializingTerminal(false);
+                          console.log('[RemoteManagement] Terminal initialized:', termSessionId);
+                          return termSessionId;
+                        } catch (err) {
+                          console.error('[RemoteManagement] Failed to initialize terminal:', err);
+                          setError(err.message);
+                          setActiveTerminalId(null);
+                          setIsInitializingTerminal(false);
+                          throw err;
+                        }
+                      }}
                       onInput={sendTerminalInput}
                       onResize={resizeTerminal}
                       onClose={() => handleTerminalClose(activeTerminalId)}
@@ -381,15 +407,21 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                   ) : (
                     <div className="h-full flex items-center justify-center">
                       <button
-                        onClick={() => handleTerminalInit({
-                          onOutput: null,
-                          onError: null,
-                          onClose: null
-                        })}
-                        className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-lg transition-all flex items-center gap-2"
+                        onClick={handleStartTerminal}
+                        disabled={isInitializingTerminal}
+                        className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-all flex items-center gap-2"
                       >
-                        <Terminal className="w-5 h-5" />
-                        Start Terminal Session
+                        {isInitializingTerminal ? (
+                          <>
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            Initializing Terminal...
+                          </>
+                        ) : (
+                          <>
+                            <Terminal className="w-5 h-5" />
+                            Start Terminal Session
+                          </>
+                        )}
                       </button>
                     </div>
                   )}
@@ -407,6 +439,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                   isLoading={isLoadingSystemInfo}
                   onRefresh={() => {
                     hasLoadedSystemInfoRef.current = false;
+                    loadSystemInfoPromiseRef.current = null;
                     systemInfoCache.delete(`${nodeReference}_systemInfo`);
                     loadSystemInfo();
                   }}
