@@ -1,11 +1,35 @@
 /**
+ * ============================================
+ * File Creation/Modification Notes
+ * ============================================
+ * Creation Reason: API service for node registration and monitoring
+ * Modification Reason: Fixed checkNodeStatus endpoint URL to match backend
+ * Main Functionality: Handles all node-related API calls
+ * Dependencies: None
+ *
+ * Main Logical Flow:
+ * 1. Generic request handler with error handling
+ * 2. Individual API methods for each endpoint
+ * 3. Standardized response format
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - The checkNodeStatus URL was fixed from /nodes/check-status/ to /check-node-status/
+ * - Always check backend URL patterns when API errors occur
+ * - All responses follow standardized format with success/data/message fields
+ *
+ * Last Modified: v3.1.1 - Fixed checkNodeStatus endpoint URL
+ * ============================================
+ */
+
+/**
  * Enhanced Node Registration and Monitoring API Service for AeroNyx Platform
  * 
  * File Path: src/lib/api/nodeRegistration.js
  * 
  * Production-ready API service with WebSocket support
+ * Fixed checkNodeStatus endpoint URL
  * 
- * @version 3.1.0
+ * @version 3.1.1
  * @author AeroNyx Development Team
  */
 
@@ -68,6 +92,7 @@ async function request(endpoint, options = {}) {
     if (!response.ok) {
       const errorMessage = data?.message || 
                           data?.error || 
+                          data?.detail ||  // Django REST framework error format
                           `Request failed with status ${response.status}`;
       
       return {
@@ -362,26 +387,40 @@ const nodeRegistrationService = {
   /**
    * Check node registration status by reference code
    * Used during node registration process
+   * FIXED: Corrected endpoint URL from /nodes/check-status/ to /check-node-status/
    * 
    * @param {string} referenceCode - Node reference code
    * @param {string} walletAddress - User's wallet address
+   * @param {string} registrationCode - Registration code (optional)
    * @returns {Promise<APIResponse>} Node status response
    */
-  checkNodeStatus: async (referenceCode, walletAddress) => {
-    if (!referenceCode || !walletAddress) {
+  checkNodeStatus: async (referenceCode, walletAddress, registrationCode) => {
+    // At least one parameter must be provided
+    if (!referenceCode && !walletAddress && !registrationCode) {
       return {
         success: false,
         data: null,
-        message: 'Reference code and wallet address are required'
+        message: 'At least one of reference_code, wallet_address, or registration_code must be provided'
       };
     }
     
-    return request('/api/aeronyx/nodes/check-status/', {
+    const payload = {};
+    
+    // Add available parameters
+    if (referenceCode) {
+      payload.reference_code = referenceCode;
+    }
+    if (walletAddress) {
+      payload.wallet_address = walletAddress.toLowerCase();
+    }
+    if (registrationCode) {
+      payload.registration_code = registrationCode;
+    }
+    
+    // FIXED: Use correct endpoint URL
+    return request('/api/aeronyx/check-node-status/', {
       method: 'POST',
-      body: JSON.stringify({
-        reference_code: referenceCode,
-        wallet_address: walletAddress.toLowerCase()
-      }),
+      body: JSON.stringify(payload),
     });
   },
 
