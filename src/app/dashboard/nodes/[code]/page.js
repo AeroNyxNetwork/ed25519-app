@@ -3,39 +3,30 @@
  * File Creation/Modification Notes
  * ============================================
  * Creation Reason: Dynamic route for individual node details
- * Modification Reason: Fixed node loading and matching logic
+ * Modification Reason: Fixed data loading and error handling
  * Main Functionality: Display node details and remote management
  * Dependencies: useWallet, useAeroNyxWebSocket, RemoteManagement
  *
  * Main Logical Flow:
- * 1. Get node code from URL params
- * 2. Connect to WebSocket and load nodes
- * 3. Find matching node by code
- * 4. Display node details or redirect if not found
+ * 1. Extract node code from URL params
+ * 2. Connect to WebSocket and wait for authentication
+ * 3. Wait for monitoring to start and data to load
+ * 4. Find matching node by code with proper error handling
+ * 5. Display node details or show appropriate error state
  *
  * ⚠️ Important Note for Next Developer:
- * - Node matching is case-insensitive to handle different formats
- * - Added debug logging to help identify data structure issues
- * - Increased timeout before redirect to allow data to load
- * - WebSocket must be connected before node data is available
+ * - The issue was that the WebSocket wasn't properly authenticated/monitoring
+ * - Added proper state checks for WebSocket connection stages
+ * - Added better debugging output to help diagnose issues
+ * - Increased timeouts and added retry logic
  *
- * Last Modified: v1.0.1 - Fixed node loading and matching logic
+ * Last Modified: v2.0.0 - Fixed WebSocket data loading and error handling
  * ============================================
- */
-
-/**
- * Node Details Page
- * 
- * File Path: src/app/dashboard/nodes/[code]/page.js
- * 
- * Dynamic route for individual node details and remote management
- * 
- * @version 1.0.1
  */
 
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useWallet } from '../../../../components/wallet/WalletProvider';
 import { useAeroNyxWebSocket } from '../../../../hooks/useAeroNyxWebSocket';
@@ -55,7 +46,8 @@ import {
   XCircle,
   AlertCircle,
   DollarSign,
-  RefreshCw
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -64,50 +56,103 @@ export default function NodeDetailsPage({ params }) {
   const { wallet } = useWallet();
   const router = useRouter();
   const [showRemoteManagement, setShowRemoteManagement] = useState(false);
-  const [notFoundTimeout, setNotFoundTimeout] = useState(false);
+  const [loadingState, setLoadingState] = useState('initializing');
+  const [errorDetails, setErrorDetails] = useState(null);
   const checkTimeoutRef = useRef(null);
+  const retryCountRef = useRef(0);
+  const maxRetries = 3;
   
-  // Get node data from WebSocket
-  const { nodes, isLoading, wsState, refresh } = useAeroNyxWebSocket({
+  // Get node data from WebSocket with proper options
+  const { 
+    nodes, 
+    isLoading, 
+    wsState, 
+    refresh,
+    error: wsError 
+  } = useAeroNyxWebSocket({
     autoConnect: true,
     autoMonitor: true
   });
 
-  // Debug logging
+  // Enhanced debug logging
   useEffect(() => {
     console.log('[NodeDetails] Current state:', {
       code,
       isLoading,
       wsState,
       nodesCount: nodes.length,
-      nodes: nodes.map(n => ({ code: n.code, name: n.name }))
+      loadingState,
+      retryCount: retryCountRef.current,
+      nodes: nodes.map(n => ({ 
+        code: n.code, 
+        name: n.name,
+        status: n.status 
+      }))
     });
-  }, [code, isLoading, wsState, nodes]);
+  }, [code, isLoading, wsState, nodes, loadingState]);
 
   // Find the specific node (case-insensitive)
   const node = nodes.find(n => 
     n.code && n.code.toUpperCase() === code.toUpperCase()
   );
 
+  // Update loading state based on WebSocket state
+  useEffect(() => {
+    if (!wsState.connected) {
+      setLoadingState('connecting');
+    } else if (!wsState.authenticated) {
+      setLoadingState('authenticating');
+    } else if (!wsState.monitoring) {
+      setLoadingState('starting_monitor');
+    } else if (nodes.length === 0) {
+      setLoadingState('loading_nodes');
+    } else if (!node) {
+      setLoadingState('searching_node');
+    } else {
+      setLoadingState('ready');
+      setErrorDetails(null);
+    }
+  }, [wsState, nodes.length, node]);
+
   // Redirect if not authenticated
   useEffect(() => {
     if (!wallet.connected) {
+      console.log('[NodeDetails] Wallet not connected, redirecting to home');
       router.push('/');
     }
   }, [wallet.connected, router]);
 
-  // Set timeout for not found redirect (give time for data to load)
+  // Handle retry logic
+  const handleRetry = useCallback(() => {
+    console.log('[NodeDetails] Retrying connection...');
+    retryCountRef.current += 1;
+    setErrorDetails(null);
+    refresh();
+  }, [refresh]);
+
+  // Set timeout for not found with retry logic
   useEffect(() => {
     // Clear any existing timeout
     if (checkTimeoutRef.current) {
       clearTimeout(checkTimeoutRef.current);
     }
 
-    // Only set timeout if we're authenticated and monitoring
-    if (wsState.authenticated && wsState.monitoring && !node) {
+    // Only set timeout if we're in a state where we should be finding the node
+    if (wsState.authenticated && wsState.monitoring && nodes.length > 0 && !node) {
       checkTimeoutRef.current = setTimeout(() => {
-        setNotFoundTimeout(true);
-      }, 10000); // 10 seconds timeout
+        if (retryCountRef.current < maxRetries) {
+          console.log(`[NodeDetails] Node not found, retry ${retryCountRef.current + 1}/${maxRetries}`);
+          handleRetry();
+        } else {
+          console.log('[NodeDetails] Node not found after max retries');
+          setErrorDetails({
+            title: 'Node Not Found',
+            message: `Node ${code} could not be found in your account`,
+            canRetry: false
+          });
+          setLoadingState('error');
+        }
+      }, 15000); // 15 seconds timeout per attempt
     }
 
     // Cleanup
@@ -116,61 +161,106 @@ export default function NodeDetailsPage({ params }) {
         clearTimeout(checkTimeoutRef.current);
       }
     };
-  }, [wsState.authenticated, wsState.monitoring, node]);
+  }, [wsState.authenticated, wsState.monitoring, nodes.length, node, code, handleRetry]);
 
-  // Redirect if node not found after timeout
+  // Handle WebSocket errors
   useEffect(() => {
-    if (notFoundTimeout && !node) {
-      console.log('[NodeDetails] Node not found after timeout, redirecting...');
-      router.push('/dashboard/nodes');
+    if (wsError) {
+      console.error('[NodeDetails] WebSocket error:', wsError);
+      setErrorDetails({
+        title: 'Connection Error',
+        message: wsError,
+        canRetry: true
+      });
+      setLoadingState('error');
     }
-  }, [notFoundTimeout, node, router]);
+  }, [wsError]);
 
-  // Loading states
-  if (!wsState.authenticated) {
+  // Render loading states with detailed information
+  if (loadingState !== 'ready' && loadingState !== 'error') {
+    const loadingMessages = {
+      'initializing': 'Initializing...',
+      'connecting': 'Connecting to AeroNyx network...',
+      'authenticating': 'Authenticating wallet...',
+      'starting_monitor': 'Starting node monitoring...',
+      'loading_nodes': 'Loading your nodes...',
+      'searching_node': `Searching for node ${code}...`
+    };
+
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
-          <p className="text-gray-400 mb-2">Connecting to AeroNyx network...</p>
-          <p className="text-xs text-gray-500">Authenticating wallet...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!wsState.monitoring || (isLoading && !node)) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
-          <p className="text-gray-400 mb-2">Loading node details...</p>
-          <p className="text-xs text-gray-500">Fetching data for {code}</p>
-          {nodes.length > 0 && (
-            <div className="mt-4 text-xs text-gray-600">
-              <p>Available nodes: {nodes.map(n => n.code).join(', ')}</p>
+        <div className="text-center max-w-md">
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+            className="w-16 h-16 border-4 border-purple-500/20 border-t-purple-500 rounded-full mx-auto mb-6"
+          />
+          <h2 className="text-xl font-semibold text-white mb-2">
+            {loadingMessages[loadingState] || 'Loading...'}
+          </h2>
+          <p className="text-sm text-gray-400 mb-4">
+            {loadingState === 'searching_node' && nodes.length > 0 && (
+              <>Available nodes: {nodes.length}</>
+            )}
+          </p>
+          
+          {/* Show debug info in development */}
+          {process.env.NODE_ENV === 'development' && (
+            <div className="mt-6 p-4 bg-white/5 rounded-lg text-left">
+              <p className="text-xs text-gray-500 font-mono">
+                State: {loadingState}<br/>
+                Connected: {wsState.connected ? 'Yes' : 'No'}<br/>
+                Authenticated: {wsState.authenticated ? 'Yes' : 'No'}<br/>
+                Monitoring: {wsState.monitoring ? 'Yes' : 'No'}<br/>
+                Nodes: {nodes.length}<br/>
+                Retry: {retryCountRef.current}/{maxRetries}
+              </p>
             </div>
+          )}
+          
+          {retryCountRef.current > 0 && (
+            <p className="text-xs text-yellow-400 mt-2">
+              Retry attempt {retryCountRef.current} of {maxRetries}
+            </p>
           )}
         </div>
       </div>
     );
   }
 
-  // If no node found and timeout hasn't occurred yet
-  if (!node && !notFoundTimeout) {
+  // Render error state
+  if (loadingState === 'error' && errorDetails) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
-          <p className="text-gray-400 mb-2">Searching for node {code}...</p>
-          <p className="text-xs text-gray-500 mb-4">This may take a few moments</p>
-          <button
-            onClick={refresh}
-            className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg transition-all mx-auto"
-          >
-            <RefreshCw className="w-4 h-4" />
-            Retry Connection
-          </button>
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+            <AlertCircle className="w-8 h-8 text-red-400" />
+          </div>
+          <h2 className="text-xl font-semibold text-white mb-2">
+            {errorDetails.title}
+          </h2>
+          <p className="text-gray-400 mb-6">
+            {errorDetails.message}
+          </p>
+          
+          <div className="flex gap-4 justify-center">
+            {errorDetails.canRetry && retryCountRef.current < maxRetries && (
+              <button
+                onClick={handleRetry}
+                className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-all"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Retry
+              </button>
+            )}
+            <Link
+              href="/dashboard/nodes"
+              className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-all"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Back to Nodes
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -183,7 +273,19 @@ export default function NodeDetailsPage({ params }) {
         <div className="text-center">
           <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
           <h2 className="text-xl font-semibold text-white mb-2">Node Not Found</h2>
-          <p className="text-gray-400 mb-4">Node {code} could not be found in your account</p>
+          <p className="text-gray-400 mb-6">
+            Node {code} could not be found in your account
+          </p>
+          <p className="text-sm text-gray-500 mb-4">
+            You have {nodes.length} node{nodes.length !== 1 ? 's' : ''} in your account:
+          </p>
+          <div className="mb-6 max-h-32 overflow-y-auto">
+            {nodes.map(n => (
+              <div key={n.code} className="text-xs text-gray-400 py-1">
+                {n.code} - {n.name}
+              </div>
+            ))}
+          </div>
           <Link
             href="/dashboard/nodes"
             className="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-all"
@@ -196,6 +298,7 @@ export default function NodeDetailsPage({ params }) {
     );
   }
 
+  // Node found - render details
   const statusConfig = {
     active: { color: 'green', Icon: CheckCircle, label: 'Active' },
     online: { color: 'green', Icon: CheckCircle, label: 'Online' },
