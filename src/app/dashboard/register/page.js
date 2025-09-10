@@ -1,11 +1,36 @@
 /**
+ * ============================================
+ * File Creation/Modification Notes
+ * ============================================
+ * Creation Reason: Register Node Page for AeroNyx Platform
+ * Modification Reason: Fixed registration code extraction from nested API response
+ * Main Functionality: Node registration wizard with 3-step process
+ * Dependencies: useWallet, nodeRegistrationService, useSignature
+ *
+ * Main Logical Flow:
+ * 1. Collect node information (name, type, resources)
+ * 2. Create node and generate registration code
+ * 3. Display success and provide setup instructions
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - The API response structure has nested data fields
+ * - Registration code is at response.data.data.registration_code
+ * - Node ID extraction logic supports multiple field names
+ * - Signature management is critical for authentication
+ *
+ * Last Modified: v3.0.1 - Fixed registration code extraction from nested response
+ * ============================================
+ */
+
+/**
  * Register Node Page - Modern UI Version
  * 
  * File Path: src/app/dashboard/register/page.js
  * 
  * Modernized with glassmorphic design matching DashboardContent
+ * Fixed registration code extraction issue
  * 
- * @version 3.0.0
+ * @version 3.0.1
  */
 
 'use client';
@@ -276,11 +301,27 @@ export default function RegisterNode() {
         );
         
         console.log('[Register] Registration code response:', codeResponse);
-        console.log('[Register] Registration code data:', codeResponse.data);
+        console.log('[Register] Registration code data:', JSON.stringify(codeResponse.data, null, 2));
         
         if (codeResponse.success && codeResponse.data) {
-          // Extract registration code from response - it's in data.registration_code
-          const regCode = codeResponse.data.data.registration_code;
+          // FIXED: Extract registration code from nested response structure
+          let regCode = null;
+          
+          // Check if data.data exists (nested structure)
+          if (codeResponse.data.data && codeResponse.data.data.registration_code) {
+            regCode = codeResponse.data.data.registration_code;
+            console.log('[Register] Found registration code in nested structure:', regCode);
+          } 
+          // Fallback to direct access
+          else if (codeResponse.data.registration_code) {
+            regCode = codeResponse.data.registration_code;
+            console.log('[Register] Found registration code in direct structure:', regCode);
+          }
+          // Additional fallback for other possible structures
+          else if (codeResponse.data.code) {
+            regCode = codeResponse.data.code;
+            console.log('[Register] Found registration code as "code":', regCode);
+          }
           
           if (!regCode) {
             console.error('[Register] No registration code found in response:', codeResponse.data);
