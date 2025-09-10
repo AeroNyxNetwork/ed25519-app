@@ -303,9 +303,9 @@ export function useAeroNyxWebSocket(options = {}) {
           console.log('[useAeroNyxWebSocket] WebSocket connected');
           setWsState(prev => ({ ...prev, connected: true, error: null }));
           
-          // Check for stored session
+          // Check for stored session (currently disabled until backend supports it)
           const storedSession = getStoredSession(wallet.address);
-          if (storedSession && storedSession.session_token) {
+          if (storedSession && storedSession.session_token && false) { // Disabled for now
             console.log('[useAeroNyxWebSocket] Found stored session, attempting to use it');
             sessionTokenRef.current = storedSession.session_token;
             
@@ -317,8 +317,8 @@ export function useAeroNyxWebSocket(options = {}) {
               wallet_address: wallet.address.toLowerCase()
             });
           } else {
-            // No stored session, request signature message
-            console.log('[useAeroNyxWebSocket] No stored session, requesting signature message');
+            // Always request signature message for now
+            console.log('[useAeroNyxWebSocket] Requesting signature message');
             setWsState(prev => ({ ...prev, authState: 'requesting_message' }));
             
             const getMessageRequest = {
