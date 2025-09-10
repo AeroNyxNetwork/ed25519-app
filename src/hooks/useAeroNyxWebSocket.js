@@ -1,20 +1,43 @@
 /**
+ * ============================================
+ * File Creation/Modification Notes
+ * ============================================
+ * Creation Reason: WebSocket hook for real-time node monitoring
+ * Modification Reason: Fixed duplicate timeout issues and added session persistence
+ * Main Functionality: Handles WebSocket connection, authentication, and monitoring
+ * Dependencies: useWallet, setGlobalWebSocket, setGlobalWsState
+ *
+ * Main Logical Flow:
+ * 1. Check for existing valid session token
+ * 2. Connect to WebSocket with session token if available
+ * 3. Otherwise follow full authentication flow
+ * 4. Store session for 30 minutes after successful auth
+ * 5. Handle reconnection with session reuse
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - Fixed duplicate timeout issue by clearing timeout on successful connection
+ * - Session tokens are stored in sessionStorage for 30-minute reuse
+ * - WebSocket automatically uses stored session to skip re-authentication
+ * - Proper cleanup of all timeouts and intervals
+ *
+ * Last Modified: v3.0.2 - Fixed timeout issues and added session persistence
+ * ============================================
+ */
+
+/**
  * Corrected Unified WebSocket Hook following exact documentation flow
  * 
  * File Path: src/hooks/useAeroNyxWebSocket.js
  * 
  * Flow:
  * 1. Connect to wss://api.aeronyx.network/ws/aeronyx/user-monitor/
- * 2. Receive 'connected' message
- * 3. Send 'get_message' request
- * 4. Receive 'signature_message' with message to sign
- * 5. Sign message with wallet
- * 6. Send 'auth' with signature
- * 7. Receive 'auth_success' with nodes
- * 8. Send 'start_monitor' to begin monitoring
- * 9. Receive periodic 'status_update' messages
+ * 2. Check for existing session token
+ * 3. If no session: Request signature message -> Sign -> Authenticate
+ * 4. If session exists: Send session token directly
+ * 5. Start monitoring after successful authentication
+ * 6. Receive periodic status_update messages
  * 
- * @version 3.0.0
+ * @version 3.0.2
  */
 
 'use client';
@@ -37,6 +60,56 @@ const WsState = {
   MONITORING: 'monitoring',
   ERROR: 'error'
 };
+
+// Session storage keys
+const SESSION_STORAGE_KEY = 'aeronyx_ws_session';
+const SESSION_DURATION = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Get stored session if valid
+ */
+function getStoredSession(walletAddress) {
+  try {
+    const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (!stored) return null;
+    
+    const session = JSON.parse(stored);
+    
+    // Check if session is for current wallet
+    if (session.wallet_address !== walletAddress.toLowerCase()) {
+      return null;
+    }
+    
+    // Check if session is expired
+    if (Date.now() > session.expires_at) {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    }
+    
+    return session;
+  } catch (error) {
+    console.error('[useAeroNyxWebSocket] Error reading stored session:', error);
+    return null;
+  }
+}
+
+/**
+ * Store session for reuse
+ */
+function storeSession(walletAddress, sessionToken) {
+  try {
+    const session = {
+      wallet_address: walletAddress.toLowerCase(),
+      session_token: sessionToken,
+      created_at: Date.now(),
+      expires_at: Date.now() + SESSION_DURATION
+    };
+    
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  } catch (error) {
+    console.error('[useAeroNyxWebSocket] Error storing session:', error);
+  }
+}
 
 /**
  * Unified WebSocket Hook
@@ -76,9 +149,13 @@ export function useAeroNyxWebSocket(options = {}) {
   // Refs
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
+  const connectionTimeoutRef = useRef(null);
+  const pingIntervalRef = useRef(null);
   const mountedRef = useRef(true);
   const isConnectingRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
+  const lastPongRef = useRef(Date.now());
+  const sessionTokenRef = useRef(null);
 
   // Update global WebSocket state whenever it changes
   useEffect(() => {
@@ -134,14 +211,16 @@ export function useAeroNyxWebSocket(options = {}) {
   }, [calculateResourceUtilization, onNodesUpdate]);
 
   /**
-   * Send message through WebSocket
+   * Send message through WebSocket with connection check
    */
   const sendMessage = useCallback((messageData) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       console.log('[useAeroNyxWebSocket] Sending message:', messageData.type, messageData);
       wsRef.current.send(JSON.stringify(messageData));
+      return true;
     } else {
       console.warn('[useAeroNyxWebSocket] Cannot send message - WebSocket not open');
+      return false;
     }
   }, []);
 
@@ -220,17 +299,35 @@ export function useAeroNyxWebSocket(options = {}) {
       
       switch (messageData.type) {
         case 'connected':
-          // Step 1: WebSocket connected, request signature message
-          console.log('[useAeroNyxWebSocket] WebSocket connected, requesting signature message');
-          setWsState(prev => ({ ...prev, connected: true, authState: 'requesting_message', error: null }));
+          // Step 1: WebSocket connected
+          console.log('[useAeroNyxWebSocket] WebSocket connected');
+          setWsState(prev => ({ ...prev, connected: true, error: null }));
           
-          // Send get_message request
-          const getMessageRequest = {
-            type: 'get_message',
-            wallet_address: wallet.address.toLowerCase()
-          };
-          console.log('[useAeroNyxWebSocket] Sending get_message request:', getMessageRequest);
-          sendMessage(getMessageRequest);
+          // Check for stored session
+          const storedSession = getStoredSession(wallet.address);
+          if (storedSession && storedSession.session_token) {
+            console.log('[useAeroNyxWebSocket] Found stored session, attempting to use it');
+            sessionTokenRef.current = storedSession.session_token;
+            
+            // Try to authenticate with session token
+            setWsState(prev => ({ ...prev, authState: 'authenticating' }));
+            sendMessage({
+              type: 'auth',
+              session_token: storedSession.session_token,
+              wallet_address: wallet.address.toLowerCase()
+            });
+          } else {
+            // No stored session, request signature message
+            console.log('[useAeroNyxWebSocket] No stored session, requesting signature message');
+            setWsState(prev => ({ ...prev, authState: 'requesting_message' }));
+            
+            const getMessageRequest = {
+              type: 'get_message',
+              wallet_address: wallet.address.toLowerCase()
+            };
+            console.log('[useAeroNyxWebSocket] Sending get_message request:', getMessageRequest);
+            sendMessage(getMessageRequest);
+          }
           break;
           
         case 'signature_message':
@@ -281,6 +378,13 @@ export function useAeroNyxWebSocket(options = {}) {
           console.log('[useAeroNyxWebSocket] Authentication successful');
           console.log('[useAeroNyxWebSocket] Session token:', messageData.session_token);
           console.log('[useAeroNyxWebSocket] Nodes received:', messageData.nodes ? messageData.nodes.length : 0);
+          
+          // Store session token for reuse
+          if (messageData.session_token) {
+            sessionTokenRef.current = messageData.session_token;
+            storeSession(wallet.address, messageData.session_token);
+            console.log('[useAeroNyxWebSocket] Session stored for 30 minutes');
+          }
           
           setWsState(prev => ({ 
             ...prev, 
@@ -353,9 +457,15 @@ export function useAeroNyxWebSocket(options = {}) {
           // Handle authentication errors
           if (messageData.code === 'AUTHENTICATION_REQUIRED' || 
               messageData.code === 'INVALID_SIGNATURE' ||
+              messageData.code === 'SESSION_EXPIRED' ||
               messageData.error_code === 'authentication_required' || 
               messageData.error_code === 'invalid_signature') {
-            console.log('[useAeroNyxWebSocket] Authentication required, restarting auth flow');
+            console.log('[useAeroNyxWebSocket] Authentication required, clearing session and restarting auth flow');
+            
+            // Clear stored session
+            sessionStorage.removeItem(SESSION_STORAGE_KEY);
+            sessionTokenRef.current = null;
+            
             setWsState(prev => ({ ...prev, authenticated: false, authState: 'requesting_message' }));
             sendMessage({
               type: 'get_message',
@@ -366,6 +476,7 @@ export function useAeroNyxWebSocket(options = {}) {
           
         case 'pong':
           console.log('[useAeroNyxWebSocket] Pong received, echo:', messageData.echo);
+          lastPongRef.current = Date.now();
           break;
           
         default:
@@ -378,17 +489,61 @@ export function useAeroNyxWebSocket(options = {}) {
   }, [wallet.address, sendMessage, processNodesData, signMessage, autoMonitor, onStatusChange, onError]);
 
   /**
-   * Connect to WebSocket
+   * Setup ping interval to keep connection alive
+   */
+  const setupPingInterval = useCallback(() => {
+    // Clear existing interval
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+    }
+
+    // Set up new ping interval (45 seconds)
+    pingIntervalRef.current = setInterval(() => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        // Check if we received a pong recently
+        const timeSinceLastPong = Date.now() - lastPongRef.current;
+        if (timeSinceLastPong > 90000) { // 90 seconds without pong
+          console.warn('[useAeroNyxWebSocket] No pong received for 90 seconds, connection may be stale');
+          // Force reconnection
+          if (wsRef.current) {
+            wsRef.current.close();
+          }
+          return;
+        }
+
+        console.log('[useAeroNyxWebSocket] Sending ping');
+        sendMessage({ 
+          type: 'ping',
+          echo: Date.now()
+        });
+      }
+    }, 45000); // 45 seconds
+  }, [sendMessage]);
+
+  /**
+   * Connect to WebSocket with improved timeout handling
    */
   const connectWebSocket = useCallback(() => {
     // Prevent multiple simultaneous connections
-    if (!wallet.connected || isConnectingRef.current || wsRef.current) {
+    if (!wallet.connected || isConnectingRef.current) {
       console.log('[useAeroNyxWebSocket] Skipping connection:', {
         walletConnected: wallet.connected,
-        isConnecting: isConnectingRef.current,
-        hasWebSocket: !!wsRef.current
+        isConnecting: isConnectingRef.current
       });
       return;
+    }
+
+    // Check if we already have an open connection
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      console.log('[useAeroNyxWebSocket] WebSocket already connected');
+      return;
+    }
+
+    // Close any existing connection
+    if (wsRef.current) {
+      console.log('[useAeroNyxWebSocket] Closing existing connection');
+      wsRef.current.close();
+      wsRef.current = null;
     }
     
     isConnectingRef.current = true;
@@ -399,8 +554,8 @@ export function useAeroNyxWebSocket(options = {}) {
       const ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
       wsRef.current = ws;
       
-      // Connection timeout
-      const timeoutId = setTimeout(() => {
+      // Connection timeout - store reference so we can clear it
+      connectionTimeoutRef.current = setTimeout(() => {
         if (ws.readyState === WebSocket.CONNECTING) {
           console.error('[useAeroNyxWebSocket] Connection timeout');
           ws.close();
@@ -411,12 +566,22 @@ export function useAeroNyxWebSocket(options = {}) {
           }));
           isConnectingRef.current = false;
         }
-      }, 10000);
+      }, 30000); // 30 seconds timeout
       
       ws.onopen = () => {
         console.log('[useAeroNyxWebSocket] WebSocket opened');
-        clearTimeout(timeoutId);
-        // Wait for 'connected' message from server
+        
+        // CRITICAL: Clear the connection timeout
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current);
+          connectionTimeoutRef.current = null;
+        }
+        
+        isConnectingRef.current = false;
+        lastPongRef.current = Date.now();
+        
+        // Setup ping interval
+        setupPingInterval();
         
         // Expose WebSocket instance for remote management
         setGlobalWebSocket(ws);
@@ -426,7 +591,13 @@ export function useAeroNyxWebSocket(options = {}) {
       
       ws.onerror = (error) => {
         console.error('[useAeroNyxWebSocket] WebSocket error:', error);
-        clearTimeout(timeoutId);
+        
+        // Clear connection timeout
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current);
+          connectionTimeoutRef.current = null;
+        }
+        
         setWsState(prev => ({ 
           ...prev, 
           error: 'Connection error' 
@@ -436,9 +607,21 @@ export function useAeroNyxWebSocket(options = {}) {
       
       ws.onclose = (event) => {
         console.log('[useAeroNyxWebSocket] WebSocket closed:', event.code, event.reason);
-        clearTimeout(timeoutId);
+        
+        // Clear connection timeout if still active
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current);
+          connectionTimeoutRef.current = null;
+        }
+        
         wsRef.current = null;
         isConnectingRef.current = false;
+        
+        // Clear ping interval
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
         
         // Clear global WebSocket reference
         setGlobalWebSocket(null);
@@ -454,7 +637,8 @@ export function useAeroNyxWebSocket(options = {}) {
         // Handle reconnection for abnormal closures
         if (event.code !== 1000 && mountedRef.current && reconnectAttemptsRef.current < 5) {
           reconnectAttemptsRef.current++;
-          const delay = Math.min(3000 * reconnectAttemptsRef.current, 15000);
+          // Exponential backoff with max delay of 30 seconds
+          const delay = Math.min(3000 * Math.pow(2, reconnectAttemptsRef.current - 1), 30000);
           
           console.log(`[useAeroNyxWebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
           
@@ -472,22 +656,15 @@ export function useAeroNyxWebSocket(options = {}) {
         }
       };
       
-      // Set up ping interval to keep connection alive
-      const pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          console.log('[useAeroNyxWebSocket] Sending ping');
-          ws.send(JSON.stringify({ 
-            type: 'ping',
-            echo: Date.now()
-          }));
-        }
-      }, 30000);
-      
-      // Store interval ID for cleanup
-      ws.pingInterval = pingInterval;
-      
     } catch (error) {
       console.error('[useAeroNyxWebSocket] WebSocket setup error:', error);
+      
+      // Clear connection timeout
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+      
       wsRef.current = null;
       isConnectingRef.current = false;
       setWsState(prev => ({ 
@@ -497,7 +674,7 @@ export function useAeroNyxWebSocket(options = {}) {
       }));
       if (onError) onError(error);
     }
-  }, [wallet.connected, handleMessage, onError]);
+  }, [wallet.connected, handleMessage, onError, setupPingInterval]);
 
   /**
    * Initialize WebSocket when wallet is connected
@@ -507,12 +684,12 @@ export function useAeroNyxWebSocket(options = {}) {
     reconnectAttemptsRef.current = 0;
     
     if (autoConnect && wallet.connected && wallet.address) {
-      // Add a small delay to ensure wallet is fully ready
+      // Add a delay to ensure wallet is fully ready
       const initTimeout = setTimeout(() => {
-        if (mountedRef.current && !wsRef.current && !isConnectingRef.current) {
+        if (mountedRef.current && !isConnectingRef.current) {
           connectWebSocket();
         }
-      }, 500);
+      }, 1000);
       
       return () => {
         clearTimeout(initTimeout);
@@ -521,21 +698,24 @@ export function useAeroNyxWebSocket(options = {}) {
     
     return () => {
       mountedRef.current = false;
-      isConnectingRef.current = false;
       
+      // Clear all timeouts
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+      }
+      
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+      }
+      
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
       }
       
       if (wsRef.current) {
         // Stop monitoring before disconnect
         if (wsRef.current.readyState === WebSocket.OPEN && wsState.monitoring) {
           wsRef.current.send(JSON.stringify({ type: 'stop_monitor' }));
-        }
-        
-        // Clear ping interval
-        if (wsRef.current.pingInterval) {
-          clearInterval(wsRef.current.pingInterval);
         }
         
         // Clear global WebSocket reference
@@ -561,9 +741,18 @@ export function useAeroNyxWebSocket(options = {}) {
       wsRef.current = null;
     }
     
-    // Clear any pending reconnect
+    // Clear any pending timeouts
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
+    }
+    
+    if (connectionTimeoutRef.current) {
+      clearTimeout(connectionTimeoutRef.current);
+    }
+    
+    // Clear ping interval
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
     }
     
     // Reset state
@@ -580,7 +769,7 @@ export function useAeroNyxWebSocket(options = {}) {
       if (mountedRef.current && wallet.connected) {
         connectWebSocket();
       }
-    }, 500);
+    }, 1000);
   }, [wallet.connected, connectWebSocket]);
 
   /**
@@ -604,6 +793,15 @@ export function useAeroNyxWebSocket(options = {}) {
     }
   }, [wsState.monitoring, sendMessage]);
 
+  /**
+   * Clear stored session (for logout)
+   */
+  const clearSession = useCallback(() => {
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    sessionTokenRef.current = null;
+    console.log('[useAeroNyxWebSocket] Session cleared');
+  }, []);
+
   // Return hook state and methods
   return {
     // WebSocket state
@@ -618,10 +816,14 @@ export function useAeroNyxWebSocket(options = {}) {
     refresh: handleRefresh,
     startMonitoring,
     stopMonitoring,
+    clearSession,
     
     // Loading and error states
     isLoading: wsState.authState === 'connecting' || wsState.authState === 'signing' || wsState.authState === 'authenticating',
-    error: wsState.error
+    error: wsState.error,
+    
+    // Session info
+    hasStoredSession: !!sessionTokenRef.current
   };
 }
 
