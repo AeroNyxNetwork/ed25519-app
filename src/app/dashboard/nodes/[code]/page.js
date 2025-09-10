@@ -1,16 +1,41 @@
 /**
+ * ============================================
+ * File Creation/Modification Notes
+ * ============================================
+ * Creation Reason: Dynamic route for individual node details
+ * Modification Reason: Fixed node loading and matching logic
+ * Main Functionality: Display node details and remote management
+ * Dependencies: useWallet, useAeroNyxWebSocket, RemoteManagement
+ *
+ * Main Logical Flow:
+ * 1. Get node code from URL params
+ * 2. Connect to WebSocket and load nodes
+ * 3. Find matching node by code
+ * 4. Display node details or redirect if not found
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - Node matching is case-insensitive to handle different formats
+ * - Added debug logging to help identify data structure issues
+ * - Increased timeout before redirect to allow data to load
+ * - WebSocket must be connected before node data is available
+ *
+ * Last Modified: v1.0.1 - Fixed node loading and matching logic
+ * ============================================
+ */
+
+/**
  * Node Details Page
  * 
  * File Path: src/app/dashboard/nodes/[code]/page.js
  * 
  * Dynamic route for individual node details and remote management
  * 
- * @version 1.0.0
+ * @version 1.0.1
  */
 
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useWallet } from '../../../../components/wallet/WalletProvider';
 import { useAeroNyxWebSocket } from '../../../../hooks/useAeroNyxWebSocket';
@@ -29,7 +54,8 @@ import {
   CheckCircle,
   XCircle,
   AlertCircle,
-  DollarSign
+  DollarSign,
+  RefreshCw
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -38,15 +64,30 @@ export default function NodeDetailsPage({ params }) {
   const { wallet } = useWallet();
   const router = useRouter();
   const [showRemoteManagement, setShowRemoteManagement] = useState(false);
+  const [notFoundTimeout, setNotFoundTimeout] = useState(false);
+  const checkTimeoutRef = useRef(null);
   
   // Get node data from WebSocket
-  const { nodes, isLoading } = useAeroNyxWebSocket({
+  const { nodes, isLoading, wsState, refresh } = useAeroNyxWebSocket({
     autoConnect: true,
     autoMonitor: true
   });
 
-  // Find the specific node
-  const node = nodes.find(n => n.code === code);
+  // Debug logging
+  useEffect(() => {
+    console.log('[NodeDetails] Current state:', {
+      code,
+      isLoading,
+      wsState,
+      nodesCount: nodes.length,
+      nodes: nodes.map(n => ({ code: n.code, name: n.name }))
+    });
+  }, [code, isLoading, wsState, nodes]);
+
+  // Find the specific node (case-insensitive)
+  const node = nodes.find(n => 
+    n.code && n.code.toUpperCase() === code.toUpperCase()
+  );
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -55,19 +96,101 @@ export default function NodeDetailsPage({ params }) {
     }
   }, [wallet.connected, router]);
 
-  // 404 if node not found
+  // Set timeout for not found redirect (give time for data to load)
   useEffect(() => {
-    if (!isLoading && nodes.length > 0 && !node) {
+    // Clear any existing timeout
+    if (checkTimeoutRef.current) {
+      clearTimeout(checkTimeoutRef.current);
+    }
+
+    // Only set timeout if we're authenticated and monitoring
+    if (wsState.authenticated && wsState.monitoring && !node) {
+      checkTimeoutRef.current = setTimeout(() => {
+        setNotFoundTimeout(true);
+      }, 10000); // 10 seconds timeout
+    }
+
+    // Cleanup
+    return () => {
+      if (checkTimeoutRef.current) {
+        clearTimeout(checkTimeoutRef.current);
+      }
+    };
+  }, [wsState.authenticated, wsState.monitoring, node]);
+
+  // Redirect if node not found after timeout
+  useEffect(() => {
+    if (notFoundTimeout && !node) {
+      console.log('[NodeDetails] Node not found after timeout, redirecting...');
       router.push('/dashboard/nodes');
     }
-  }, [isLoading, nodes.length, node, router]);
+  }, [notFoundTimeout, node, router]);
 
-  if (isLoading || !node) {
+  // Loading states
+  if (!wsState.authenticated) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
-          <p className="text-gray-400">Loading node details...</p>
+          <p className="text-gray-400 mb-2">Connecting to AeroNyx network...</p>
+          <p className="text-xs text-gray-500">Authenticating wallet...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!wsState.monitoring || (isLoading && !node)) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
+          <p className="text-gray-400 mb-2">Loading node details...</p>
+          <p className="text-xs text-gray-500">Fetching data for {code}</p>
+          {nodes.length > 0 && (
+            <div className="mt-4 text-xs text-gray-600">
+              <p>Available nodes: {nodes.map(n => n.code).join(', ')}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // If no node found and timeout hasn't occurred yet
+  if (!node && !notFoundTimeout) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-4"></div>
+          <p className="text-gray-400 mb-2">Searching for node {code}...</p>
+          <p className="text-xs text-gray-500 mb-4">This may take a few moments</p>
+          <button
+            onClick={refresh}
+            className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg transition-all mx-auto"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Retry Connection
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // If still no node after all checks
+  if (!node) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-center">
+          <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+          <h2 className="text-xl font-semibold text-white mb-2">Node Not Found</h2>
+          <p className="text-gray-400 mb-4">Node {code} could not be found in your account</p>
+          <Link
+            href="/dashboard/nodes"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-all"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Back to Nodes
+          </Link>
         </div>
       </div>
     );
@@ -77,10 +200,11 @@ export default function NodeDetailsPage({ params }) {
     active: { color: 'green', Icon: CheckCircle, label: 'Active' },
     online: { color: 'green', Icon: CheckCircle, label: 'Online' },
     offline: { color: 'red', Icon: XCircle, label: 'Offline' },
-    pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending' }
+    pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending' },
+    unknown: { color: 'gray', Icon: AlertCircle, label: 'Unknown' }
   };
 
-  const status = statusConfig[node.status] || statusConfig.offline;
+  const status = statusConfig[node.status] || statusConfig.unknown;
   const StatusIcon = status.Icon;
 
   return (
@@ -117,16 +241,37 @@ export default function NodeDetailsPage({ params }) {
               </div>
               <div className={clsx(
                 "flex items-center gap-2 px-3 py-1 rounded-full",
-                `bg-${status.color}-500/10 border border-${status.color}-500/20`
+                status.color === 'green' && "bg-green-500/10 border border-green-500/20",
+                status.color === 'red' && "bg-red-500/10 border border-red-500/20",
+                status.color === 'yellow' && "bg-yellow-500/10 border border-yellow-500/20",
+                status.color === 'gray' && "bg-gray-500/10 border border-gray-500/20"
               )}>
-                <StatusIcon className={`w-4 h-4 text-${status.color}-400`} />
-                <span className={`text-sm font-medium text-${status.color}-400`}>{status.label}</span>
+                <StatusIcon className={clsx(
+                  "w-4 h-4",
+                  status.color === 'green' && "text-green-400",
+                  status.color === 'red' && "text-red-400",
+                  status.color === 'yellow' && "text-yellow-400",
+                  status.color === 'gray' && "text-gray-400"
+                )} />
+                <span className={clsx(
+                  "text-sm font-medium",
+                  status.color === 'green' && "text-green-400",
+                  status.color === 'red' && "text-red-400",
+                  status.color === 'yellow' && "text-yellow-400",
+                  status.color === 'gray' && "text-gray-400"
+                )}>{status.label}</span>
               </div>
             </div>
             
             <button
               onClick={() => setShowRemoteManagement(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-lg transition-all"
+              disabled={node.status !== 'active' && node.status !== 'online'}
+              className={clsx(
+                "flex items-center gap-2 px-4 py-2 rounded-lg transition-all",
+                node.status === 'active' || node.status === 'online'
+                  ? "bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 cursor-pointer"
+                  : "bg-gray-700 cursor-not-allowed opacity-50"
+              )}
             >
               <Terminal className="w-5 h-5" />
               Remote Management
@@ -174,8 +319,8 @@ export default function NodeDetailsPage({ params }) {
           <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6">
             <h2 className="text-xl font-semibold text-white mb-4">Node Information</h2>
             <div className="space-y-4">
-              <InfoRow label="Node Type" value={node.type} />
-              <InfoRow label="Status" value={node.status} />
+              <InfoRow label="Node Type" value={node.type || 'Unknown'} />
+              <InfoRow label="Status" value={status.label} />
               <InfoRow label="Last Seen" value={node.last_seen ? new Date(node.last_seen).toLocaleString() : 'Never'} />
               <InfoRow label="Uptime" value={node.uptime || 'N/A'} />
               
@@ -192,11 +337,13 @@ export default function NodeDetailsPage({ params }) {
       </div>
 
       {/* Remote Management Modal */}
-      <RemoteManagement
-        nodeReference={node.code}
-        isOpen={showRemoteManagement}
-        onClose={() => setShowRemoteManagement(false)}
-      />
+      {(node.status === 'active' || node.status === 'online') && (
+        <RemoteManagement
+          nodeReference={node.code}
+          isOpen={showRemoteManagement}
+          onClose={() => setShowRemoteManagement(false)}
+        />
+      )}
     </div>
   );
 }
@@ -210,7 +357,13 @@ function StatsCard({ icon: Icon, label, value, color }) {
       className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 p-6 hover:bg-white/[0.07] transition-all"
     >
       <div className="flex items-center justify-between mb-2">
-        <Icon className={`w-6 h-6 text-${color}-400`} />
+        <Icon className={clsx(
+          "w-6 h-6",
+          color === 'purple' && "text-purple-400",
+          color === 'blue' && "text-blue-400",
+          color === 'green' && "text-green-400",
+          color === 'yellow' && "text-yellow-400"
+        )} />
       </div>
       <p className="text-2xl font-bold text-white">{value}</p>
       <p className="text-sm text-gray-400">{label}</p>
@@ -247,7 +400,12 @@ function ResourceBar({ label, value }) {
           initial={{ width: 0 }}
           animate={{ width: `${value}%` }}
           transition={{ duration: 1, ease: "easeOut" }}
-          className={`h-full bg-${color}-500`}
+          className={clsx(
+            "h-full",
+            color === 'green' && "bg-green-500",
+            color === 'yellow' && "bg-yellow-500",
+            color === 'red' && "bg-red-500"
+          )}
         />
       </div>
     </div>
