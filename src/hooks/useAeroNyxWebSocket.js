@@ -283,43 +283,15 @@ class WebSocketManager {
       });
       this.updateState({ wsState: { authState: 'authenticating' }});
     } else {
-      // Get signature message from API and authenticate
-      console.log('[WebSocketManager] Getting signature message from API');
+      // Request signature message from WebSocket server
+      console.log('[WebSocketManager] Requesting signature message from server');
       this.updateState({ wsState: { authState: 'requesting_message' }});
       
-      try {
-        // Get signature message from the API endpoint
-        const messageResponse = await nodeRegistrationService.generateSignatureMessage(this.walletAddress);
-        
-        if (messageResponse.success && messageResponse.data?.message) {
-          console.log('[WebSocketManager] Got signature message from API, now signing');
-          
-          // Sign the message
-          this.updateState({ wsState: { authState: 'signing' }});
-          const signedData = await this.signMessage(messageResponse.data.message);
-          
-          // Send authentication
-          this.updateState({ wsState: { authState: 'authenticating' }});
-          this.sendMessage({
-            type: 'auth',
-            wallet_address: signedData.wallet.toLowerCase(),
-            signature: signedData.signature,
-            message: signedData.message,
-            wallet_type: 'ethereum'
-          });
-        } else {
-          throw new Error('Failed to get signature message from API');
-        }
-      } catch (error) {
-        console.error('[WebSocketManager] Auth preparation failed:', error);
-        this.authenticationInProgress = false;
-        this.updateState({ 
-          wsState: { 
-            authState: 'error', 
-            error: 'Authentication failed: ' + error.message 
-          }
-        });
-      }
+      // Server expects get_message after connection
+      this.sendMessage({
+        type: 'get_message',
+        wallet_address: this.walletAddress.toLowerCase()
+      });
     }
   }
 
