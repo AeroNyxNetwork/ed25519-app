@@ -504,15 +504,26 @@ class WebSocketManager {
    * Connect to WebSocket
    */
   async connect(wallet) {
-    // Prevent multiple simultaneous connections
-    if (!wallet || !wallet.connected || this.isConnecting) {
-      console.log('[WebSocketManager] Cannot connect - wallet not ready or already connecting');
+    // Check if already connected
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      console.log('[WebSocketManager] Already connected or connecting');
       return;
     }
 
-    // Check if already connected
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      console.log('[WebSocketManager] Already connected');
+    // Prevent multiple simultaneous connections
+    if (!wallet || !wallet.connected) {
+      console.log('[WebSocketManager] Cannot connect - wallet not ready');
+      return;
+    }
+    
+    // Allow reconnection even if previous connection failed
+    if (this.isConnecting && this.ws && this.ws.readyState === WebSocket.CLOSED) {
+      console.log('[WebSocketManager] Previous connection failed, resetting state');
+      this.isConnecting = false;
+    }
+    
+    if (this.isConnecting) {
+      console.log('[WebSocketManager] Already attempting connection');
       return;
     }
 
@@ -526,8 +537,9 @@ class WebSocketManager {
     });
 
     try {
-      console.log('[WebSocketManager] Connecting to WebSocket');
-      const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.aeronyx.network/ws/aeronyx/user-monitor/';
+      // Hardcode the correct WebSocket URL to avoid environment variable issues
+      const wsUrl = 'wss://api.aeronyx.network/ws/aeronyx/user-monitor/';
+      console.log('[WebSocketManager] Connecting to WebSocket:', wsUrl);
       this.ws = new WebSocket(wsUrl);
       
       // Store as global
