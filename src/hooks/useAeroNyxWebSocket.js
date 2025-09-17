@@ -3,25 +3,25 @@
  * File Creation/Modification Notes
  * ============================================
  * Creation Reason: WebSocket hook for real-time node monitoring
- * Modification Reason: Implemented singleton pattern to prevent duplicate connections
- * Main Functionality: Singleton WebSocket connection management with session persistence
- * Dependencies: useWallet, setGlobalWebSocket, setGlobalWsState
+ * Modification Reason: Fixed authentication flow to match backend expectations
+ * Main Functionality: Singleton WebSocket connection management with proper auth
+ * Dependencies: useWallet, nodeRegistrationService
  *
  * Main Logical Flow:
- * 1. Singleton instance ensures only ONE WebSocket connection
- * 2. Check for existing valid session token on startup
- * 3. Connect to WebSocket and use session if available
- * 4. Otherwise follow full authentication flow
- * 5. Store session for 30 minutes after successful auth
- * 6. Multiple components share the same connection
+ * 1. Connect to WebSocket server
+ * 2. Request signature message using get_message
+ * 3. Receive signature_message from server
+ * 4. Sign message with wallet
+ * 5. Send auth with signature
+ * 6. Start monitoring after successful auth
  *
  * ⚠️ Important Note for Next Developer:
- * - This uses a SINGLETON PATTERN - only one WebSocket instance exists
- * - Session tokens are properly reused for 30 minutes
- * - DO NOT create multiple instances - use the shared connection
- * - The globalWebSocketInstance prevents duplicate connections
+ * - Backend expects get_message -> signature_message -> auth flow
+ * - Must authenticate BEFORE sending any other messages
+ * - Session tokens are stored for 30 minutes
+ * - This uses singleton pattern - only ONE connection
  *
- * Last Modified: v4.0.0 - Singleton pattern implementation with proper session reuse
+ * Last Modified: v6.0.0 - Fixed authentication timing and message flow
  * ============================================
  */
 
@@ -29,7 +29,7 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
-import { setGlobalWebSocket, setGlobalWsState } from './useRemoteManagement';
+import nodeRegistrationService from '../lib/api/nodeRegistration';
 
 /**
  * WebSocket connection states
@@ -50,10 +50,7 @@ const WsState = {
 const SESSION_STORAGE_KEY = 'aeronyx_ws_session';
 const SESSION_DURATION = 30 * 60 * 1000; // 30 minutes
 
-/**
- * SINGLETON WebSocket instance and state
- * This ensures only ONE connection across the entire app
- */
+// Singleton WebSocket instance and state
 let globalWebSocketInstance = null;
 let globalListeners = new Set();
 let globalState = {
@@ -77,7 +74,9 @@ let globalState = {
   }
 };
 
-// Singleton connection manager
+/**
+ * WebSocket Manager Class (Singleton)
+ */
 class WebSocketManager {
   constructor() {
     this.ws = null;
@@ -90,6 +89,8 @@ class WebSocketManager {
     this.isConnecting = false;
     this.walletAddress = null;
     this.walletProvider = null;
+    this.authenticationInProgress = false;
+    this.signatureNonce = null;
   }
 
   /**
@@ -113,9 +114,7 @@ class WebSocketManager {
         return null;
       }
       
-      console.log('[WebSocketManager] Found valid stored session, expires in:', 
-        Math.round((session.expires_at - Date.now()) / 1000 / 60), 'minutes');
-      
+      console.log('[WebSocketManager] Found valid stored session');
       return session;
     } catch (error) {
       console.error('[WebSocketManager] Error reading stored session:', error);
@@ -143,16 +142,13 @@ class WebSocketManager {
   }
 
   /**
-   * Update global state and notify all listeners
+   * Update global state and notify listeners
    */
   updateState(updates) {
-    // Update wsState if provided
     if (updates.wsState) {
       globalState.wsState = { ...globalState.wsState, ...updates.wsState };
-      setGlobalWsState(globalState.wsState);
     }
     
-    // Update data if provided
     if (updates.data) {
       globalState.data = { ...globalState.data, ...updates.data };
     }
@@ -172,11 +168,12 @@ class WebSocketManager {
       this.ws.send(JSON.stringify(messageData));
       return true;
     }
+    console.warn('[WebSocketManager] Cannot send message - WebSocket not open');
     return false;
   }
 
   /**
-   * Setup ping interval
+   * Setup ping interval - only after authentication
    */
   setupPingInterval() {
     if (this.pingInterval) {
@@ -184,8 +181,7 @@ class WebSocketManager {
     }
 
     this.pingInterval = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        // Check if we received a pong recently
+      if (this.ws && this.ws.readyState === WebSocket.OPEN && globalState.wsState.authenticated) {
         const timeSinceLastPong = Date.now() - this.lastPong;
         if (timeSinceLastPong > 90000) { // 90 seconds without pong
           console.warn('[WebSocketManager] No pong received for 90 seconds, reconnecting');
@@ -198,19 +194,323 @@ class WebSocketManager {
           echo: Date.now()
         });
       }
-    }, 45000); // 45 seconds
+    }, 30000); // 30 seconds
   }
 
   /**
-   * Connect to WebSocket (singleton)
+   * Sign message with wallet
+   */
+  async signMessage(message) {
+    console.log('[WebSocketManager] Signing message for wallet:', this.walletAddress);
+    
+    try {
+      // Extract wallet from message
+      const walletMatch = message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
+      const messageWallet = walletMatch ? walletMatch[1] : this.walletAddress;
+      
+      // For OKX wallet or Ethereum wallets
+      if (window.okxwallet || window.ethereum) {
+        const provider = window.okxwallet || window.ethereum;
+        
+        // Ensure we have accounts
+        const accounts = await provider.request({ method: 'eth_accounts' });
+        if (!accounts || accounts.length === 0) {
+          // Request accounts
+          const newAccounts = await provider.request({ method: 'eth_requestAccounts' });
+          if (!newAccounts || newAccounts.length === 0) {
+            throw new Error('No accounts available');
+          }
+        }
+        
+        const accountToUse = accounts.find(acc => 
+          acc.toLowerCase() === messageWallet.toLowerCase()
+        ) || accounts[0];
+        
+        console.log('[WebSocketManager] Signing with account:', accountToUse);
+        
+        const signature = await provider.request({
+          method: 'personal_sign',
+          params: [message, accountToUse]
+        });
+        
+        return {
+          signature: signature.startsWith('0x') ? signature : `0x${signature}`,
+          message: message,
+          wallet: messageWallet
+        };
+      }
+      
+      // For other wallet providers
+      if (this.walletProvider) {
+        const signature = await this.walletProvider.request({
+          method: 'personal_sign',
+          params: [message, messageWallet]
+        });
+        
+        return {
+          signature: signature.startsWith('0x') ? signature : `0x${signature}`,
+          message: message,
+          wallet: messageWallet
+        };
+      }
+      
+      throw new Error('No wallet provider available');
+    } catch (error) {
+      console.error('[WebSocketManager] Sign error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Start authentication flow
+   */
+  async startAuthentication() {
+    if (this.authenticationInProgress) {
+      console.log('[WebSocketManager] Authentication already in progress');
+      return;
+    }
+
+    this.authenticationInProgress = true;
+
+    // Check for stored session first
+    const storedSession = this.getStoredSession(this.walletAddress);
+    if (storedSession) {
+      console.log('[WebSocketManager] Using stored session token');
+      this.sendMessage({
+        type: 'auth',
+        session_token: storedSession.session_token,
+        wallet_address: this.walletAddress.toLowerCase()
+      });
+      this.updateState({ wsState: { authState: 'authenticating' }});
+    } else {
+      // Request signature message from server
+      console.log('[WebSocketManager] Requesting signature message from server');
+      this.updateState({ wsState: { authState: 'requesting_message' }});
+      
+      this.sendMessage({
+        type: 'get_message',
+        wallet_address: this.walletAddress.toLowerCase()
+      });
+    }
+  }
+
+  /**
+   * Handle WebSocket messages
+   */
+  async handleMessage(event) {
+    try {
+      const messageData = JSON.parse(event.data);
+      console.log('[WebSocketManager] Received:', messageData.type, messageData);
+      
+      switch (messageData.type) {
+        case 'connected':
+          // WebSocket connected, wait before starting auth
+          this.updateState({ wsState: { connected: true, authState: 'connected' }});
+          
+          // Start authentication after a small delay
+          setTimeout(() => {
+            this.startAuthentication();
+          }, 100);
+          break;
+          
+        case 'signature_message':
+          // Server sent us a message to sign
+          console.log('[WebSocketManager] Received signature message from server');
+          
+          if (messageData.nonce) {
+            this.signatureNonce = messageData.nonce;
+          }
+          
+          this.updateState({ wsState: { authState: 'signing' }});
+          
+          try {
+            const signedData = await this.signMessage(messageData.message);
+            
+            this.updateState({ wsState: { authState: 'authenticating' }});
+            
+            // Send authentication with signature
+            this.sendMessage({
+              type: 'auth',
+              wallet_address: signedData.wallet.toLowerCase(),
+              signature: signedData.signature,
+              message: signedData.message,
+              wallet_type: 'ethereum' // Use 'ethereum' for better compatibility
+            });
+            
+          } catch (error) {
+            console.error('[WebSocketManager] Signing error:', error);
+            this.authenticationInProgress = false;
+            this.updateState({ 
+              wsState: { 
+                authState: 'error', 
+                error: 'Failed to sign message: ' + error.message 
+              }
+            });
+          }
+          break;
+          
+        case 'auth_success':
+          // Authentication successful
+          console.log('[WebSocketManager] Authentication successful');
+          
+          this.authenticationInProgress = false;
+          
+          if (messageData.session_token) {
+            this.sessionToken = messageData.session_token;
+            this.storeSession(this.walletAddress, messageData.session_token);
+          }
+          
+          this.updateState({ 
+            wsState: { 
+              authenticated: true, 
+              authState: 'authenticated',
+              error: null
+            }
+          });
+          
+          // Setup ping interval now that we're authenticated
+          this.setupPingInterval();
+          
+          // Process initial nodes if provided
+          if (messageData.nodes) {
+            this.processNodesData({ nodes: messageData.nodes });
+          }
+          
+          // Start monitoring
+          console.log('[WebSocketManager] Starting monitoring');
+          this.sendMessage({ type: 'start_monitor' });
+          break;
+          
+        case 'monitor_started':
+          console.log('[WebSocketManager] Monitoring started');
+          this.updateState({ wsState: { monitoring: true }});
+          break;
+          
+        case 'status_update':
+          // Update nodes data
+          this.processNodesData(messageData);
+          break;
+          
+        case 'error':
+          console.error('[WebSocketManager] Server error:', messageData.message);
+          
+          // Handle specific error codes
+          if (messageData.code === 'SESSION_INVALID' || 
+              messageData.code === 'SESSION_EXPIRED' ||
+              messageData.code === 'NONCE_NOT_FOUND' ||
+              messageData.message === 'Invalid or expired session token') {
+            
+            // Clear stored session and retry with signature
+            sessionStorage.removeItem(SESSION_STORAGE_KEY);
+            this.sessionToken = null;
+            this.authenticationInProgress = false;
+            
+            // Retry authentication with signature message
+            console.log('[WebSocketManager] Session invalid, requesting new signature');
+            this.startAuthentication();
+            
+          } else if (messageData.message === 'Not authenticated') {
+            // If we get "Not authenticated" and we're not in auth flow, start it
+            if (!this.authenticationInProgress) {
+              console.log('[WebSocketManager] Not authenticated, starting auth flow');
+              this.startAuthentication();
+            }
+          } else {
+            // Other errors
+            this.authenticationInProgress = false;
+            this.updateState({ 
+              wsState: { 
+                error: messageData.message || 'Server error',
+                authState: 'error'
+              }
+            });
+          }
+          break;
+          
+        case 'pong':
+          this.lastPong = Date.now();
+          console.log('[WebSocketManager] Pong received');
+          break;
+          
+        case 'heartbeat_ack':
+          // Handle heartbeat acknowledgment
+          this.lastPong = Date.now();
+          console.log('[WebSocketManager] Heartbeat acknowledged');
+          break;
+          
+        default:
+          console.log('[WebSocketManager] Unknown message type:', messageData.type);
+          break;
+      }
+      
+      // Notify listeners about the message
+      globalListeners.forEach(listener => {
+        if (listener.onMessage) {
+          listener.onMessage(messageData);
+        }
+      });
+      
+    } catch (error) {
+      console.error('[WebSocketManager] Message handling error:', error);
+    }
+  }
+
+  /**
+   * Process nodes data
+   */
+  processNodesData(wsData) {
+    if (!wsData || !wsData.nodes || !Array.isArray(wsData.nodes)) {
+      return;
+    }
+    
+    const nodes = wsData.nodes;
+    
+    const stats = {
+      totalNodes: nodes.length,
+      activeNodes: nodes.filter(n => n.status === 'active' || n.status === 'online').length,
+      offlineNodes: nodes.filter(n => n.status === 'offline').length,
+      totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.total_earnings || n.earnings || 0), 0),
+      resourceUtilization: this.calculateResourceUtilization(nodes)
+    };
+    
+    this.updateState({
+      data: {
+        nodes: nodes,
+        stats: stats,
+        lastUpdate: new Date()
+      }
+    });
+  }
+
+  /**
+   * Calculate resource utilization
+   */
+  calculateResourceUtilization(nodes) {
+    if (!Array.isArray(nodes) || nodes.length === 0) return 0;
+    
+    const activeNodes = nodes.filter(n => n.status === 'active' || n.status === 'online');
+    if (activeNodes.length === 0) return 0;
+    
+    const totalUtil = activeNodes.reduce((sum, node) => {
+      const cpu = node.performance?.cpu || 0;
+      const memory = node.performance?.memory || 0;
+      return sum + ((cpu + memory) / 2);
+    }, 0);
+    
+    return Math.round(totalUtil / activeNodes.length);
+  }
+
+  /**
+   * Connect to WebSocket
    */
   async connect(wallet) {
     // Prevent multiple simultaneous connections
     if (!wallet || !wallet.connected || this.isConnecting) {
+      console.log('[WebSocketManager] Cannot connect - wallet not ready or already connecting');
       return;
     }
 
-    // Check if we already have an open connection
+    // Check if already connected
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       console.log('[WebSocketManager] Already connected');
       return;
@@ -218,25 +518,20 @@ class WebSocketManager {
 
     this.isConnecting = true;
     this.walletAddress = wallet.address;
-    this.walletProvider = wallet.provider;
-    
-    // Check for stored session BEFORE connecting
-    const storedSession = this.getStoredSession(wallet.address);
-    if (storedSession) {
-      this.sessionToken = storedSession.session_token;
-    }
+    this.walletProvider = wallet.provider || window.okxwallet || window.ethereum;
+    this.authenticationInProgress = false;
     
     this.updateState({ 
       wsState: { authState: 'connecting', error: null }
     });
 
     try {
-      console.log('[WebSocketManager] Connecting to WebSocket (singleton)');
-      this.ws = new WebSocket('wss://api.aeronyx.network/ws/aeronyx/user-monitor/');
+      console.log('[WebSocketManager] Connecting to WebSocket');
+      const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.aeronyx.network/ws/aeronyx/user-monitor/';
+      this.ws = new WebSocket(wsUrl);
       
-      // Store as global WebSocket
+      // Store as global
       globalWebSocketInstance = this.ws;
-      setGlobalWebSocket(this.ws);
       
       // Connection timeout
       this.connectionTimeout = setTimeout(() => {
@@ -256,7 +551,6 @@ class WebSocketManager {
       this.ws.onopen = () => {
         console.log('[WebSocketManager] WebSocket opened');
         
-        // Clear connection timeout
         if (this.connectionTimeout) {
           clearTimeout(this.connectionTimeout);
           this.connectionTimeout = null;
@@ -265,9 +559,6 @@ class WebSocketManager {
         this.isConnecting = false;
         this.lastPong = Date.now();
         this.reconnectAttempts = 0;
-        
-        // Setup ping interval
-        this.setupPingInterval();
         
         this.updateState({ 
           wsState: { connected: true, error: null }
@@ -300,13 +591,12 @@ class WebSocketManager {
         this.ws = null;
         globalWebSocketInstance = null;
         this.isConnecting = false;
+        this.authenticationInProgress = false;
         
         if (this.pingInterval) {
           clearInterval(this.pingInterval);
           this.pingInterval = null;
         }
-        
-        setGlobalWebSocket(null);
         
         this.updateState({ 
           wsState: { 
@@ -334,6 +624,7 @@ class WebSocketManager {
       this.ws = null;
       globalWebSocketInstance = null;
       this.isConnecting = false;
+      this.authenticationInProgress = false;
       
       this.updateState({ 
         wsState: { 
@@ -342,235 +633,6 @@ class WebSocketManager {
         }
       });
     }
-  }
-
-  /**
-   * Handle WebSocket messages
-   */
-  async handleMessage(event) {
-    try {
-      const messageData = JSON.parse(event.data);
-      console.log('[WebSocketManager] Received:', messageData.type);
-      
-      switch (messageData.type) {
-        case 'connected':
-          // WebSocket connected, check for stored session
-          if (this.sessionToken) {
-            console.log('[WebSocketManager] Using stored session token');
-            this.updateState({ wsState: { authState: 'authenticating' }});
-            
-            // Try authentication with stored session
-            this.sendMessage({
-              type: 'auth',
-              session_token: this.sessionToken,
-              wallet_address: this.walletAddress.toLowerCase()
-            });
-          } else {
-            // No session, request signature
-            console.log('[WebSocketManager] No session, requesting signature');
-            this.updateState({ wsState: { authState: 'requesting_message' }});
-            
-            this.sendMessage({
-              type: 'get_message',
-              wallet_address: this.walletAddress.toLowerCase()
-            });
-          }
-          break;
-          
-        case 'signature_message':
-          // Need to sign message
-          console.log('[WebSocketManager] Signing message');
-          this.updateState({ wsState: { authState: 'signing' }});
-          
-          try {
-            const signature = await this.signMessage(messageData.message);
-            
-            this.updateState({ wsState: { authState: 'authenticating' }});
-            
-            // Extract wallet from message for consistency
-            const walletMatch = messageData.message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
-            const messageWallet = walletMatch ? walletMatch[1] : this.walletAddress;
-            
-            this.sendMessage({
-              type: 'auth',
-              wallet_address: messageWallet.toLowerCase(),
-              signature: signature,
-              message: messageData.message,
-              wallet_type: 'okx'
-            });
-            
-          } catch (error) {
-            console.error('[WebSocketManager] Signing error:', error);
-            this.updateState({ 
-              wsState: { 
-                authState: 'error', 
-                error: 'Failed to sign message' 
-              }
-            });
-          }
-          break;
-          
-        case 'auth_success':
-          // Authentication successful - STORE SESSION
-          console.log('[WebSocketManager] Authentication successful');
-          
-          if (messageData.session_token) {
-            this.sessionToken = messageData.session_token;
-            this.storeSession(this.walletAddress, messageData.session_token);
-          }
-          
-          this.updateState({ 
-            wsState: { 
-              authenticated: true, 
-              authState: 'authenticated',
-              error: null
-            }
-          });
-          
-          // Process initial nodes if provided
-          if (messageData.nodes) {
-            this.processNodesData({ nodes: messageData.nodes });
-          }
-          
-          // Start monitoring
-          console.log('[WebSocketManager] Starting monitoring');
-          this.sendMessage({ type: 'start_monitor' });
-          break;
-          
-        case 'monitor_started':
-          console.log('[WebSocketManager] Monitoring started');
-          this.updateState({ wsState: { monitoring: true }});
-          break;
-          
-        case 'status_update':
-          // Update nodes data
-          this.processNodesData(messageData);
-          break;
-          
-        case 'error':
-          console.error('[WebSocketManager] Server error:', messageData.message);
-          
-          // Handle authentication errors
-          if (messageData.code === 'AUTHENTICATION_REQUIRED' || 
-              messageData.code === 'INVALID_SIGNATURE' ||
-              messageData.code === 'SESSION_EXPIRED') {
-            
-            // Clear stored session and retry
-            sessionStorage.removeItem(SESSION_STORAGE_KEY);
-            this.sessionToken = null;
-            
-            this.updateState({ wsState: { authenticated: false, authState: 'requesting_message' }});
-            
-            this.sendMessage({
-              type: 'get_message',
-              wallet_address: this.walletAddress.toLowerCase()
-            });
-          } else {
-            this.updateState({ 
-              wsState: { error: messageData.message || 'Server error' }
-            });
-          }
-          break;
-          
-        case 'pong':
-          this.lastPong = Date.now();
-          break;
-          
-        default:
-          // Pass to any external handlers
-          break;
-      }
-      
-      // Notify all listeners about the message
-      globalListeners.forEach(listener => {
-        if (listener.onMessage) {
-          listener.onMessage(messageData);
-        }
-      });
-      
-    } catch (error) {
-      console.error('[WebSocketManager] Message handling error:', error);
-    }
-  }
-
-  /**
-   * Sign message with wallet
-   */
-  async signMessage(message) {
-    const walletMatch = message.match(/Wallet:\s*(0x[a-fA-F0-9]{40})/);
-    if (!walletMatch || !walletMatch[1]) {
-      throw new Error('Could not extract wallet address from message');
-    }
-    
-    const messageWallet = walletMatch[1];
-    
-    // For OKX wallet
-    if (window.okxwallet && this.walletProvider === window.okxwallet) {
-      const accounts = await this.walletProvider.request({ method: 'eth_accounts' });
-      const accountToUse = accounts.find(acc => 
-        acc.toLowerCase() === messageWallet.toLowerCase()
-      ) || accounts[0];
-      
-      const signature = await this.walletProvider.request({
-        method: 'personal_sign',
-        params: [message, accountToUse]
-      });
-      
-      return signature.startsWith('0x') ? signature : `0x${signature}`;
-    }
-    
-    // Standard wallet
-    const signature = await this.walletProvider.request({
-      method: 'personal_sign',
-      params: [message, messageWallet]
-    });
-    
-    return signature.startsWith('0x') ? signature : `0x${signature}`;
-  }
-
-  /**
-   * Process nodes data
-   */
-  processNodesData(wsData) {
-    if (!wsData || !wsData.nodes || !Array.isArray(wsData.nodes)) {
-      return;
-    }
-    
-    const nodes = wsData.nodes;
-    
-    const stats = {
-      totalNodes: nodes.length,
-      activeNodes: nodes.filter(n => n.status === 'active').length,
-      offlineNodes: nodes.filter(n => n.status === 'offline').length,
-      totalEarnings: nodes.reduce((sum, n) => sum + parseFloat(n.earnings || 0), 0),
-      resourceUtilization: this.calculateResourceUtilization(nodes)
-    };
-    
-    this.updateState({
-      data: {
-        nodes: nodes,
-        stats: stats,
-        lastUpdate: new Date()
-      }
-    });
-  }
-
-  /**
-   * Calculate resource utilization
-   */
-  calculateResourceUtilization(nodes) {
-    if (!Array.isArray(nodes) || nodes.length === 0) return 0;
-    
-    const activeNodes = nodes.filter(n => n.status === 'active' || n.status === 'online');
-    if (activeNodes.length === 0) return 0;
-    
-    const totalUtil = activeNodes.reduce((sum, node) => {
-      const cpu = node.performance?.cpu || 0;
-      const memory = node.performance?.memory || 0;
-      return sum + ((cpu + memory) / 2);
-    }, 0);
-    
-    return Math.round(totalUtil / activeNodes.length);
   }
 
   /**
@@ -644,7 +706,7 @@ class WebSocketManager {
       globalWebSocketInstance = null;
     }
     
-    setGlobalWebSocket(null);
+    this.authenticationInProgress = false;
   }
 
   /**
@@ -661,7 +723,7 @@ class WebSocketManager {
 const wsManager = new WebSocketManager();
 
 /**
- * Unified WebSocket Hook - Uses singleton connection
+ * Main Hook Export
  */
 export function useAeroNyxWebSocket(options = {}) {
   const {
@@ -734,10 +796,9 @@ export function useAeroNyxWebSocket(options = {}) {
     };
   }, [wallet.connected, wallet.address, autoConnect]);
 
-  // Cleanup on unmount (but don't disconnect shared connection)
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      // Remove listener but keep connection alive for other components
       if (listenerRef.current) {
         globalListeners.delete(listenerRef.current);
       }
@@ -788,7 +849,8 @@ export function useAeroNyxWebSocket(options = {}) {
     // Loading and error states
     isLoading: localState.wsState.authState === 'connecting' || 
                localState.wsState.authState === 'signing' || 
-               localState.wsState.authState === 'authenticating',
+               localState.wsState.authState === 'authenticating' ||
+               localState.wsState.authState === 'requesting_message',
     error: localState.wsState.error,
     
     // Session info
@@ -796,5 +858,8 @@ export function useAeroNyxWebSocket(options = {}) {
   };
 }
 
-// Export WebSocket states for external use
+// Export WebSocket states
 export { WsState };
+
+// Export for backward compatibility
+export default useAeroNyxWebSocket;
