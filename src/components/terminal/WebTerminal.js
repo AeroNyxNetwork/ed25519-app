@@ -124,7 +124,10 @@ export default function WebTerminal({
   const terminalInstanceRef = useRef(null);
   const outputHandlerRef = useRef(null);
 
-  // Initialize terminal
+  // Debug effect to monitor actualSessionId changes
+  useEffect(() => {
+    console.log('[WebTerminal] actualSessionId changed to:', actualSessionId);
+  }, [actualSessionId]);
   useEffect(() => {
     if (!terminalContainerRef.current || !isEnabled || !onInit) return;
     
@@ -176,16 +179,22 @@ export default function WebTerminal({
     // Set up input handler - send raw terminal input
     term.onData(data => {
       console.log('[WebTerminal] Sending input:', data.length, 'bytes');
-      if (onInput && actualSessionId) {
-        onInput(actualSessionId, data);
+      // Use actualSessionId if available, otherwise use the sessionId prop
+      const currentSessionId = actualSessionId || sessionId;
+      if (onInput && currentSessionId && currentSessionId !== 'pending') {
+        console.log('[WebTerminal] Calling onInput with session:', currentSessionId);
+        onInput(currentSessionId, data);
+      } else {
+        console.log('[WebTerminal] Cannot send input - no session ID available');
       }
     });
 
     // Set up resize handler
     term.onResize(({ cols, rows }) => {
       console.log('[WebTerminal] Terminal resized:', cols, 'x', rows);
-      if (onResize && actualSessionId) {
-        onResize(actualSessionId, rows, cols);
+      const currentSessionId = actualSessionId || sessionId;
+      if (onResize && currentSessionId && currentSessionId !== 'pending') {
+        onResize(currentSessionId, rows, cols);
       }
     });
 
@@ -279,6 +288,7 @@ export default function WebTerminal({
           onReady: (data) => {
             console.log('[WebTerminal] Terminal ready with session:', data?.session_id);
             const sessionId = data?.session_id || serverSessionId;
+            console.log('[WebTerminal] Setting actualSessionId in onReady to:', sessionId);
             setActualSessionId(sessionId);
             setStatus('ready');
             
@@ -291,6 +301,7 @@ export default function WebTerminal({
         
         // Store session ID if not already set by onReady
         if (!actualSessionId && serverSessionId) {
+          console.log('[WebTerminal] Setting actualSessionId to:', serverSessionId);
           setActualSessionId(serverSessionId);
           // If onReady wasn't called, set status to ready after a short delay
           setTimeout(() => {
