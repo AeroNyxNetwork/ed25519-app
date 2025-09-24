@@ -1,11 +1,26 @@
 /**
- * Web Terminal Component using xterm.js
- * 
- * File Path: src/components/terminal/WebTerminal.js
- * 
- * Full-featured terminal emulator for remote node access
- * 
- * @version 1.2.0
+ * ============================================
+ * File: src/components/terminal/WebTerminal.js
+ * ============================================
+ * Creation Reason: Web Terminal Component using xterm.js
+ * Modification Reason: Fixed terminal input/output handling and session management
+ * Main Functionality: Full-featured terminal emulator for remote node access
+ * Dependencies: xterm, useRemoteManagement hook
+ *
+ * Main Logical Flow:
+ * 1. Initialize xterm terminal instance
+ * 2. Call onInit to establish WebSocket terminal session
+ * 3. Handle bidirectional data flow (input/output)
+ * 4. Manage terminal resize and cleanup
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - Terminal data can be base64 encoded or raw text
+ * - Session ID is returned asynchronously from onInit
+ * - Must handle both term_ready and term_init_success messages
+ * - Raw terminal input is sent directly without encoding
+ *
+ * Last Modified: v1.3.0 - Fixed input/output handling and session management
+ * ============================================
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -104,9 +119,10 @@ export default function WebTerminal({
   const [showSettings, setShowSettings] = useState(false);
   const [actualSessionId, setActualSessionId] = useState(null);
   
-  // Add ref to track initialization
+  // Refs to prevent duplicate initialization
   const initializationRef = useRef(false);
   const terminalInstanceRef = useRef(null);
+  const outputHandlerRef = useRef(null);
 
   // Initialize terminal
   useEffect(() => {
@@ -118,7 +134,7 @@ export default function WebTerminal({
       return;
     }
 
-    console.log('[WebTerminal] Initializing terminal');
+    console.log('[WebTerminal] Initializing terminal for node:', nodeReference);
     initializationRef.current = true;
     
     // Create terminal instance
@@ -157,25 +173,26 @@ export default function WebTerminal({
     // Initial fit
     fitAddon.fit();
 
-    // Set up event handlers
+    // Set up input handler - send raw terminal input
     term.onData(data => {
+      console.log('[WebTerminal] Sending input:', data.length, 'bytes');
       if (onInput && actualSessionId) {
-        // Send raw data directly - backend expects raw terminal input
         onInput(actualSessionId, data);
       }
     });
 
+    // Set up resize handler
     term.onResize(({ cols, rows }) => {
-      console.log('[WebTerminal] Terminal resized:', cols, rows);
+      console.log('[WebTerminal] Terminal resized:', cols, 'x', rows);
       if (onResize && actualSessionId) {
         onResize(actualSessionId, rows, cols);
       }
     });
 
-    // Handle paste
+    // Handle keyboard shortcuts
     term.attachCustomKeyEventHandler((event) => {
       if (event.type === 'keydown') {
-        // Ctrl+V or Cmd+V
+        // Ctrl+V or Cmd+V for paste
         if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
           navigator.clipboard.readText().then(text => {
             if (text && onInput && actualSessionId) {
@@ -186,7 +203,7 @@ export default function WebTerminal({
           });
           return false;
         }
-        // Ctrl+C
+        // Ctrl+C for copy (when there's selection)
         if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
           const selection = term.getSelection();
           if (selection) {
@@ -195,43 +212,61 @@ export default function WebTerminal({
             });
             return false;
           }
+          // If no selection, let Ctrl+C pass through to terminal
         }
       }
       return true;
     });
 
-    // Initialize terminal session
+    // Initialize terminal session with proper callbacks
     const initializeSession = async () => {
       try {
-        let hasReceivedReady = false;
+        console.log('[WebTerminal] Initializing session with callbacks');
+        setStatus('connecting');
         
+        // Define the output handler that will process terminal data
+        const handleOutput = (data) => {
+          console.log('[WebTerminal] Received output:', typeof data, data?.length || 'N/A', 'bytes/chars');
+          
+          if (!data) return;
+          
+          // Handle different data formats
+          if (typeof data === 'string') {
+            // Check if it's base64 encoded
+            if (/^[A-Za-z0-9+/]+=*$/.test(data) && data.length % 4 === 0) {
+              try {
+                const decoded = atob(data);
+                console.log('[WebTerminal] Writing decoded base64 data:', decoded.length, 'bytes');
+                term.write(decoded);
+              } catch (err) {
+                // Not valid base64, write as raw
+                console.log('[WebTerminal] Writing raw string data:', data.length, 'chars');
+                term.write(data);
+              }
+            } else {
+              // Write raw string data
+              console.log('[WebTerminal] Writing raw string data:', data.length, 'chars');
+              term.write(data);
+            }
+          } else if (data instanceof Uint8Array || data instanceof ArrayBuffer) {
+            // Binary data - convert to string
+            const decoder = new TextDecoder();
+            const decoded = decoder.decode(data);
+            console.log('[WebTerminal] Writing binary data as string:', decoded.length, 'chars');
+            term.write(decoded);
+          } else {
+            console.warn('[WebTerminal] Unknown data format:', typeof data);
+          }
+        };
+
+        // Store the handler ref so we can clean it up later
+        outputHandlerRef.current = handleOutput;
+
+        // Call onInit with all necessary callbacks
         const serverSessionId = await onInit({
           rows: term.rows,
           cols: term.cols,
-          onOutput: (data) => {
-            // Mark as ready when we receive first output
-            if (!hasReceivedReady) {
-              hasReceivedReady = true;
-              setStatus('ready');
-            }
-            
-            // Handle output data - it might be base64 encoded or raw
-            if (data) {
-              // Check if it's base64 encoded (only alphanumeric, +, /, and = padding)
-              if (/^[A-Za-z0-9+/]+=*$/.test(data) && data.length % 4 === 0) {
-                try {
-                  const decoded = atob(data);
-                  term.write(decoded);
-                } catch (err) {
-                  // If base64 decode fails, write raw data
-                  term.write(data);
-                }
-              } else {
-                // Write raw data directly
-                term.write(data);
-              }
-            }
-          },
+          onOutput: handleOutput,
           onError: (error) => {
             console.error('[WebTerminal] Terminal error:', error);
             setError(error);
@@ -242,26 +277,32 @@ export default function WebTerminal({
             setStatus('closed');
           },
           onReady: (data) => {
-            // Store the actual session ID returned by server
-            console.log('[WebTerminal] Terminal ready with session ID:', data.session_id);
-            setActualSessionId(data.session_id);
-            hasReceivedReady = true;
+            console.log('[WebTerminal] Terminal ready with session:', data?.session_id);
+            const sessionId = data?.session_id || serverSessionId;
+            setActualSessionId(sessionId);
             setStatus('ready');
+            
+            // Write welcome message
+            term.write('\r\n\x1b[32m● Terminal connected to ' + nodeReference + '\x1b[0m\r\n\r\n');
           }
         });
         
-        // Set status to ready even if onReady wasn't called
-        setActualSessionId(serverSessionId);
+        console.log('[WebTerminal] Session initialized with ID:', serverSessionId);
         
-        // If we haven't received ready status after 3 seconds, assume it's ready
-        setTimeout(() => {
-          if (!hasReceivedReady) {
-            console.log('[WebTerminal] No ready signal received, assuming terminal is ready');
-            setStatus('ready');
-          }
-        }, 3000);
+        // Store session ID if not already set by onReady
+        if (!actualSessionId && serverSessionId) {
+          setActualSessionId(serverSessionId);
+          // If onReady wasn't called, set status to ready after a short delay
+          setTimeout(() => {
+            if (status === 'connecting') {
+              setStatus('ready');
+              term.write('\r\n\x1b[32m● Terminal ready\x1b[0m\r\n\r\n');
+            }
+          }, 1000);
+        }
         
         term.focus();
+        
       } catch (err) {
         console.error('[WebTerminal] Failed to initialize terminal:', err);
         setError(err.message);
@@ -270,35 +311,43 @@ export default function WebTerminal({
       }
     };
 
+    // Start initialization
     initializeSession();
 
-    // Cleanup
+    // Cleanup function
     return () => {
       console.log('[WebTerminal] Cleaning up terminal');
       initializationRef.current = false;
+      outputHandlerRef.current = null;
+      
       if (terminalInstanceRef.current) {
         terminalInstanceRef.current.dispose();
         terminalInstanceRef.current = null;
       }
+      
       xtermRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
-  }, [isEnabled, nodeReference]); // Remove dependencies that cause re-initialization
+  }, [isEnabled, nodeReference]); // Only reinitialize if these critical props change
 
   // Handle resize
   useEffect(() => {
     if (!fitAddonRef.current || !xtermRef.current) return;
 
     const handleResize = () => {
-      fitAddonRef.current.fit();
+      if (fitAddonRef.current) {
+        fitAddonRef.current.fit();
+      }
     };
 
     window.addEventListener('resize', handleResize);
     
     // Use ResizeObserver for more accurate resizing
     const resizeObserver = new ResizeObserver(() => {
-      fitAddonRef.current.fit();
+      if (fitAddonRef.current) {
+        fitAddonRef.current.fit();
+      }
     });
 
     if (terminalContainerRef.current) {
@@ -318,7 +367,6 @@ export default function WebTerminal({
     const selection = xtermRef.current.getSelection();
     if (selection) {
       navigator.clipboard.writeText(selection).then(() => {
-        // Show success feedback
         xtermRef.current.clearSelection();
       }).catch(err => {
         console.error('[WebTerminal] Failed to copy:', err);
@@ -364,7 +412,7 @@ export default function WebTerminal({
     URL.revokeObjectURL(url);
   }, [nodeReference]);
 
-  // Search in terminal
+  // Search functionality
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
 
