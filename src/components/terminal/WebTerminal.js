@@ -124,9 +124,21 @@ export default function WebTerminal({
   const terminalInstanceRef = useRef(null);
   const outputHandlerRef = useRef(null);
 
-  // Debug effect to monitor actualSessionId changes
+  // Refs to store current values
+  const actualSessionIdRef = useRef(null);
+  const onInputRef = useRef(onInput);
+  const onResizeRef = useRef(onResize);
+  
+  // Update refs when props change
   useEffect(() => {
-    console.log('[WebTerminal] actualSessionId changed to:', actualSessionId);
+    onInputRef.current = onInput;
+    onResizeRef.current = onResize;
+  }, [onInput, onResize]);
+  
+  // Update session ID ref when it changes
+  useEffect(() => {
+    actualSessionIdRef.current = actualSessionId;
+    console.log('[WebTerminal] actualSessionIdRef updated to:', actualSessionId);
   }, [actualSessionId]);
   useEffect(() => {
     if (!terminalContainerRef.current || !isEnabled || !onInit) return;
@@ -179,22 +191,31 @@ export default function WebTerminal({
     // Set up input handler - send raw terminal input
     term.onData(data => {
       console.log('[WebTerminal] Sending input:', data.length, 'bytes');
-      // Use actualSessionId if available, otherwise use the sessionId prop
-      const currentSessionId = actualSessionId || sessionId;
-      if (onInput && currentSessionId && currentSessionId !== 'pending') {
+      // Use refs to get current values
+      const currentSessionId = actualSessionIdRef.current || sessionId;
+      const currentOnInput = onInputRef.current;
+      
+      if (currentOnInput && currentSessionId && currentSessionId !== 'pending') {
         console.log('[WebTerminal] Calling onInput with session:', currentSessionId);
-        onInput(currentSessionId, data);
+        currentOnInput(currentSessionId, data);
       } else {
-        console.log('[WebTerminal] Cannot send input - no session ID available');
+        console.log('[WebTerminal] Cannot send input - no session ID available', {
+          currentSessionId,
+          hasOnInput: !!currentOnInput,
+          sessionId,
+          actualSessionIdRef: actualSessionIdRef.current
+        });
       }
     });
 
     // Set up resize handler
     term.onResize(({ cols, rows }) => {
       console.log('[WebTerminal] Terminal resized:', cols, 'x', rows);
-      const currentSessionId = actualSessionId || sessionId;
-      if (onResize && currentSessionId && currentSessionId !== 'pending') {
-        onResize(currentSessionId, rows, cols);
+      const currentSessionId = actualSessionIdRef.current || sessionId;
+      const currentOnResize = onResizeRef.current;
+      
+      if (currentOnResize && currentSessionId && currentSessionId !== 'pending') {
+        currentOnResize(currentSessionId, rows, cols);
       }
     });
 
