@@ -1,10 +1,26 @@
 /**
- * Remote Management Component with Caching
- * Fixed to prevent repeated requests
- * 
- * File Path: src/components/nodes/RemoteManagement.js
- * 
- * @version 5.2.0
+ * ============================================
+ * File: src/components/nodes/RemoteManagement.js
+ * ============================================
+ * Creation Reason: Remote management interface for nodes
+ * Modification Reason: Fixed terminal input/output connection
+ * Main Functionality: Terminal, File Manager, and System Info
+ * Dependencies: useRemoteManagement, WebTerminal
+ *
+ * Main Logical Flow:
+ * 1. Enable remote management when modal opens
+ * 2. Initialize terminal session when terminal tab is active
+ * 3. Properly connect onInput/onResize callbacks to sendTerminalInput/resizeTerminal
+ * 4. Handle terminal lifecycle properly
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - onInput MUST be connected to sendTerminalInput
+ * - onResize MUST be connected to resizeTerminal
+ * - Terminal session ID must be passed correctly
+ * - Prevent multiple terminal initializations
+ *
+ * Last Modified: v5.3.0 - Fixed terminal input/output connection
+ * ============================================
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -55,8 +71,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     isSignatureLoading,
     enableRemoteManagement,
     initTerminal,
-    sendTerminalInput,
-    resizeTerminal,
+    sendTerminalInput,    // ← CRITICAL: This must be used for terminal input
+    resizeTerminal,       // ← CRITICAL: This must be used for terminal resize
     closeTerminal,
     executeCommand,
     uploadFile
@@ -207,7 +223,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     return loadSystemInfoPromiseRef.current;
   }, [executeCommand, nodeReference]);
 
-  // Handle terminal initialization - FIXED to prevent double initialization
+  // Handle terminal initialization
   const handleStartTerminal = useCallback(async () => {
     if (isInitializingTerminal || activeTerminalId || terminalInitialized) return;
     
@@ -215,8 +231,25 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     setTerminalInitialized(true); // Mark as initialized to show the terminal component
   }, [isInitializingTerminal, activeTerminalId, terminalInitialized]);
 
+  // CRITICAL: Properly handle terminal input
+  const handleTerminalInput = useCallback((termSessionId, data) => {
+    console.log('[RemoteManagement] Handling terminal input for session:', termSessionId, 'data length:', data?.length);
+    if (termSessionId && termSessionId !== 'pending') {
+      sendTerminalInput(termSessionId, data);
+    }
+  }, [sendTerminalInput]);
+
+  // CRITICAL: Properly handle terminal resize
+  const handleTerminalResize = useCallback((termSessionId, rows, cols) => {
+    console.log('[RemoteManagement] Handling terminal resize for session:', termSessionId, rows, 'x', cols);
+    if (termSessionId && termSessionId !== 'pending') {
+      resizeTerminal(termSessionId, rows, cols);
+    }
+  }, [resizeTerminal]);
+
   // Handle terminal close
   const handleTerminalClose = useCallback((termSessionId) => {
+    console.log('[RemoteManagement] Closing terminal session:', termSessionId);
     if (termSessionId && termSessionId !== 'pending') {
       closeTerminal(termSessionId);
     }
@@ -224,6 +257,32 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     setTerminalInitialized(false);
     terminalInitRef.current = false;
   }, [closeTerminal]);
+
+  // Handle terminal initialization callback
+  const handleTerminalInit = useCallback(async (options) => {
+    // Prevent multiple initializations
+    if (terminalInitRef.current || activeTerminalId) {
+      console.log('[RemoteManagement] Terminal already initialized or initializing');
+      return activeTerminalId;
+    }
+    
+    terminalInitRef.current = true;
+    try {
+      console.log('[RemoteManagement] Initializing terminal with options:', options);
+      const termSessionId = await initTerminal(options);
+      console.log('[RemoteManagement] Terminal initialized with session ID:', termSessionId);
+      setActiveTerminalId(termSessionId);
+      setIsInitializingTerminal(false);
+      return termSessionId;
+    } catch (err) {
+      console.error('[RemoteManagement] Failed to initialize terminal:', err);
+      setError(err.message);
+      setTerminalInitialized(false);
+      setIsInitializingTerminal(false);
+      terminalInitRef.current = false;
+      throw err;
+    }
+  }, [activeTerminalId, initTerminal]);
 
   // Close modal handler
   const handleClose = useCallback(() => {
@@ -390,31 +449,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                       sessionId={activeTerminalId || 'pending'}
                       nodeReference={nodeReference}
                       isEnabled={isEnabled}
-                      onInit={async (options) => {
-                        // Prevent multiple initializations
-                        if (terminalInitRef.current || activeTerminalId) {
-                          console.log('[RemoteManagement] Terminal already initialized or initializing');
-                          return activeTerminalId;
-                        }
-                        
-                        terminalInitRef.current = true;
-                        try {
-                          const termSessionId = await initTerminal(options);
-                          setActiveTerminalId(termSessionId);
-                          setIsInitializingTerminal(false);
-                          console.log('[RemoteManagement] Terminal initialized:', termSessionId);
-                          return termSessionId;
-                        } catch (err) {
-                          console.error('[RemoteManagement] Failed to initialize terminal:', err);
-                          setError(err.message);
-                          setTerminalInitialized(false);
-                          setIsInitializingTerminal(false);
-                          terminalInitRef.current = false;
-                          throw err;
-                        }
-                      }}
-                      onInput={sendTerminalInput}
-                      onResize={resizeTerminal}
+                      onInit={handleTerminalInit}              // ← Proper initialization handler
+                      onInput={handleTerminalInput}            // ← CRITICAL: Connected to sendTerminalInput
+                      onResize={handleTerminalResize}          // ← CRITICAL: Connected to resizeTerminal  
                       onClose={() => handleTerminalClose(activeTerminalId)}
                       className="h-full"
                     />
