@@ -304,11 +304,13 @@ export function useRemoteManagement(nodeReference) {
         // Handle terminal output
         else if (data.type === 'term_output' && data.session_id) {
           const handlers = terminalHandlersRef.current.get(data.session_id);
-          console.log('[useRemoteManagement] Terminal output for session:', data.session_id, 'has handler:', !!handlers);
+          console.log('[useRemoteManagement] Terminal output for session:', data.session_id, 'has handler:', !!handlers, 'data:', data.data);
           
           if (handlers?.onOutput) {
-            // Pass the raw data to the handler
+            // Pass the raw data to the handler (server already decoded it)
             handlers.onOutput(data.data);
+          } else {
+            console.warn('[useRemoteManagement] No handler found for session:', data.session_id);
           }
         }
         // Handle terminal errors
@@ -511,14 +513,15 @@ export function useRemoteManagement(nodeReference) {
       return;
     }
 
-    console.log('[useRemoteManagement] Sending input to session:', termSessionId, 'data length:', data.length);
+    console.log('[useRemoteManagement] Sending input to session:', termSessionId, 'data length:', data.length, 'data:', data);
 
     const message = {
       type: 'term_input',
       session_id: termSessionId,
-      data: data // Send raw data as-is
+      data: data // Send raw data as-is (no encoding needed)
     };
 
+    console.log('[useRemoteManagement] Sending term_input message:', message);
     sendMessage(message);
   }, [isEnabled, sendMessage]);
 
