@@ -1,9 +1,27 @@
 /**
- * Fixed Remote Management Hook with proper message format
- * 
- * File Path: src/hooks/useRemoteManagement.js
- * 
- * @version 5.3.1
+ * ============================================
+ * File: src/hooks/useRemoteManagement.js
+ * ============================================
+ * Creation Reason: Hook for remote node management via WebSocket
+ * Modification Reason: Fixed terminal output routing and session management
+ * Main Functionality: Manages terminal sessions and file operations
+ * Dependencies: useAeroNyxWebSocket, useGlobalSignature
+ *
+ * Main Logical Flow:
+ * 1. Get JWT token for remote management
+ * 2. Authenticate with WebSocket using JWT
+ * 3. Initialize terminal sessions with proper handlers
+ * 4. Route terminal messages to appropriate callbacks
+ * 5. Handle terminal lifecycle (init, output, resize, close)
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - Terminal handlers MUST be stored before sending term_init
+ * - Output data needs proper decoding (base64 or raw)
+ * - Session handlers are stored in terminalHandlersRef
+ * - Must handle both term_ready and term_init_success messages
+ *
+ * Last Modified: v5.4.0 - Fixed terminal output routing
+ * ============================================
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -155,7 +173,7 @@ export function useRemoteManagement(nodeReference) {
         const handleMessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            console.log('[useRemoteManagement] Received message:', data.type);
+            console.log('[useRemoteManagement] Auth handler received:', data.type);
             
             if (data.type === 'remote_auth_success') {
               console.log('[useRemoteManagement] Remote auth successful');
@@ -235,114 +253,85 @@ export function useRemoteManagement(nodeReference) {
       try {
         const data = JSON.parse(event.data);
         
-        // Skip if this is a message we're handling elsewhere
+        // Skip non-terminal messages
         if (data.type === 'remote_auth_success' || data.type === 'connected' || 
-            data.type === 'auth_success' || data.type === 'status_update') {
+            data.type === 'auth_success' || data.type === 'status_update' ||
+            data.type === 'signature_message' || data.type === 'monitor_started') {
           return;
         }
         
-        // Log all messages for debugging
-        console.log('[useRemoteManagement] Permanent handler received:', data.type, data);
+        console.log('[useRemoteManagement] Permanent handler received:', data.type);
         
-        // Handle terminal-related messages - FIXED to handle term_init_success
-        if (data.type === 'term_init_success') {
-          console.log('[useRemoteManagement] Terminal init success:', data);
+        // Handle terminal initialization success
+        if (data.type === 'term_init_success' || data.type === 'term_ready') {
+          console.log('[useRemoteManagement] Terminal initialized:', data);
           const sessionId = data.session_id;
-          const timeout = terminalTimeouts.current.get('pending_' + nodeReference);
           
-          if (timeout) {
-            clearTimeout(timeout.timeout);
+          // Find and resolve the pending initialization
+          const pending = terminalTimeouts.current.get('pending_' + nodeReference);
+          if (pending) {
+            clearTimeout(pending.timeout);
             terminalTimeouts.current.delete('pending_' + nodeReference);
             
-            // Call the resolve function stored with the timeout
-            if (timeout.resolve) {
-              // Set up session handlers
-              terminalHandlersRef.current.set(sessionId, {
-                onOutput: timeout.options?.onOutput || null,
-                onError: timeout.options?.onError || null,
-                onClose: timeout.options?.onClose || null
-              });
-              
+            // The handlers were already set up during initTerminal
+            // Just need to mark the session as ready
+            const handlers = terminalHandlersRef.current.get(sessionId);
+            if (handlers) {
               setTerminalSessions(prev => {
                 const next = new Map(prev);
                 next.set(sessionId, {
                   sessionId: sessionId,
                   nodeReference,
                   status: 'ready',
-                  rows: timeout.options?.rows || 24,
-                  cols: timeout.options?.cols || 80
+                  rows: pending.options?.rows || 24,
+                  cols: pending.options?.cols || 80
                 });
                 return next;
               });
               
-              // Call onReady callback if provided
-              if (timeout.options?.onReady) {
-                timeout.options.onReady({ session_id: sessionId });
+              // Call onReady callback
+              if (handlers.onReady) {
+                handlers.onReady({ session_id: sessionId });
               }
-              
-              timeout.resolve(sessionId);
+            }
+            
+            // Resolve the promise
+            if (pending.resolve) {
+              pending.resolve(sessionId);
             }
           }
-        } else if (data.type === 'term_ready') {
-          // Handle term_ready for backwards compatibility
-          console.log('[useRemoteManagement] Terminal ready (legacy):', data);
-          const sessionId = data.session_id;
-          const timeout = terminalTimeouts.current.get('pending_' + nodeReference);
+        }
+        // Handle terminal output
+        else if (data.type === 'term_output' && data.session_id) {
+          const handlers = terminalHandlersRef.current.get(data.session_id);
+          console.log('[useRemoteManagement] Terminal output for session:', data.session_id, 'has handler:', !!handlers);
           
-          if (timeout && timeout.resolve) {
-            clearTimeout(timeout.timeout);
-            terminalTimeouts.current.delete('pending_' + nodeReference);
-            
-            // Set up session handlers
-            terminalHandlersRef.current.set(sessionId, {
-              onOutput: timeout.options?.onOutput || null,
-              onError: timeout.options?.onError || null,
-              onClose: timeout.options?.onClose || null
-            });
-            
-            setTerminalSessions(prev => {
-              const next = new Map(prev);
-              next.set(sessionId, {
-                sessionId: sessionId,
-                nodeReference,
-                status: 'ready',
-                rows: timeout.options?.rows || 24,
-                cols: timeout.options?.cols || 80
-              });
-              return next;
-            });
-            
-            if (timeout.options?.onReady) {
-              timeout.options.onReady({ session_id: sessionId });
-            }
-            
-            timeout.resolve(sessionId);
+          if (handlers?.onOutput) {
+            // Pass the raw data to the handler
+            handlers.onOutput(data.data);
           }
-        } else if (data.type === 'term_output' && data.session_id) {
-          const sessionHandler = terminalHandlersRef.current.get(data.session_id);
-          if (sessionHandler?.onOutput) {
-            sessionHandler.onOutput(data.data);
-          }
-        } else if (data.type === 'term_error') {
+        }
+        // Handle terminal errors
+        else if (data.type === 'term_error') {
           console.error('[useRemoteManagement] Terminal error:', data);
           
           // Check if this is an init error
           if (data.message && (data.message.includes('init') || data.code === 'INVALID_SESSION')) {
-            const timeout = terminalTimeouts.current.get('pending_' + nodeReference);
-            if (timeout) {
-              clearTimeout(timeout.timeout);
+            const pending = terminalTimeouts.current.get('pending_' + nodeReference);
+            if (pending) {
+              clearTimeout(pending.timeout);
               terminalTimeouts.current.delete('pending_' + nodeReference);
-              if (timeout.reject) {
-                timeout.reject(new Error(data.error || data.message || 'Terminal initialization failed'));
+              if (pending.reject) {
+                pending.reject(new Error(data.error || data.message || 'Terminal initialization failed'));
               }
             }
           }
           
           // Handle session-specific errors
           if (data.session_id) {
-            const sessionHandler = terminalHandlersRef.current.get(data.session_id);
-            if (sessionHandler?.onError) {
-              sessionHandler.onError(data.error || data.message);
+            const handlers = terminalHandlersRef.current.get(data.session_id);
+            if (handlers?.onError) {
+              handlers.onError(data.error || data.message);
             }
             // Clean up failed session
             terminalHandlersRef.current.delete(data.session_id);
@@ -352,11 +341,13 @@ export function useRemoteManagement(nodeReference) {
               return next;
             });
           }
-        } else if (data.type === 'term_closed' && data.session_id) {
+        }
+        // Handle terminal closed
+        else if (data.type === 'term_closed' && data.session_id) {
           console.log('[useRemoteManagement] Terminal closed:', data.session_id);
-          const sessionHandler = terminalHandlersRef.current.get(data.session_id);
-          if (sessionHandler?.onClose) {
-            sessionHandler.onClose();
+          const handlers = terminalHandlersRef.current.get(data.session_id);
+          if (handlers?.onClose) {
+            handlers.onClose();
           }
           terminalHandlersRef.current.delete(data.session_id);
           setTerminalSessions(prev => {
@@ -364,11 +355,12 @@ export function useRemoteManagement(nodeReference) {
             next.delete(data.session_id);
             return next;
           });
-        } else if (data.type === 'error') {
-          // Log all errors for debugging
+        }
+        // Handle general errors
+        else if (data.type === 'error') {
           console.error('[useRemoteManagement] General error:', data);
           
-          // Handle specific terminal-related errors
+          // Handle terminal-related errors
           if (data.code === 'NODE_MISMATCH' || 
               data.code === 'NODE_OFFLINE' || 
               data.code === 'NODE_NOT_FOUND' ||
@@ -378,36 +370,26 @@ export function useRemoteManagement(nodeReference) {
               data.code === 'INVALID_TOKEN' ||
               data.code === 'TOKEN_EXPIRED' ||
               data.code === 'INVALID_SESSION') {
-            console.error('[useRemoteManagement] Terminal operation error:', data.code, data.message);
             
             // Handle pending terminal init
-            const timeout = terminalTimeouts.current.get('pending_' + nodeReference);
-            if (timeout) {
-              clearTimeout(timeout.timeout);
+            const pending = terminalTimeouts.current.get('pending_' + nodeReference);
+            if (pending) {
+              clearTimeout(pending.timeout);
               terminalTimeouts.current.delete('pending_' + nodeReference);
-              if (timeout.reject) {
-                timeout.reject(new Error(data.message || 'Terminal operation failed'));
+              if (pending.reject) {
+                pending.reject(new Error(data.message || 'Terminal operation failed'));
               }
             }
           }
         }
-        
         // Handle command responses
-        if (data.type === 'remote_command_response') {
+        else if (data.type === 'remote_command_response') {
           const pending = pendingRequests.current.get(data.request_id);
           if (pending) {
             clearTimeout(pending.timeout);
             pendingRequests.current.delete(data.request_id);
             
-            console.log('[useRemoteManagement] Command response:', {
-              request_id: data.request_id,
-              success: data.success,
-              result: data.result,
-              error: data.error
-            });
-            
             if (data.success) {
-              // For file operations, format the response to match ApiResponse format
               const response = {
                 success: true,
                 message: 'Operation completed successfully',
@@ -416,7 +398,6 @@ export function useRemoteManagement(nodeReference) {
               };
               pending.resolve(response);
             } else {
-              // Format error response to match ApiResponse format
               const errorResponse = {
                 success: false,
                 message: data.error || 'Operation failed',
@@ -429,8 +410,6 @@ export function useRemoteManagement(nodeReference) {
               pending.reject(errorResponse);
             }
           }
-        } else if (data.type === 'remote_command_sent' && data.request_id) {
-          console.log('[useRemoteManagement] Command acknowledged by server:', data.request_id);
         }
       } catch (err) {
         console.error('[useRemoteManagement] Error in permanent handler:', err);
@@ -438,8 +417,6 @@ export function useRemoteManagement(nodeReference) {
     };
 
     globalWebSocket.addEventListener('message', handler);
-    
-    // Store handler reference for cleanup
     messageHandlerRef.current = handler;
   }, [nodeReference]);
 
@@ -464,20 +441,23 @@ export function useRemoteManagement(nodeReference) {
       // Generate a unique session ID
       const tempSessionId = `term_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
+      // Store handlers BEFORE sending the init message
+      // This ensures we can receive output even if term_ready is delayed
+      terminalHandlersRef.current.set(tempSessionId, {
+        onOutput: options.onOutput || null,
+        onError: options.onError || null,
+        onClose: options.onClose || null,
+        onReady: options.onReady || null
+      });
+      
+      console.log('[useRemoteManagement] Stored handlers for session:', tempSessionId);
+      
+      // Set up timeout with fallback
       const timeout = setTimeout(() => {
-        console.error('[useRemoteManagement] Terminal initialization timeout');
+        console.log('[useRemoteManagement] Terminal init timeout, using fallback');
         terminalTimeouts.current.delete('pending_' + nodeReference);
         
-        // Try a fallback approach - assume success if no error was received
-        console.log('[useRemoteManagement] Attempting fallback terminal initialization');
-        
-        // Set up a basic session
-        terminalHandlersRef.current.set(tempSessionId, {
-          onOutput: options?.onOutput || null,
-          onError: options?.onError || null,
-          onClose: options?.onClose || null
-        });
-        
+        // Assume success if no error was received
         setTerminalSessions(prev => {
           const next = new Map(prev);
           next.set(tempSessionId, {
@@ -490,16 +470,16 @@ export function useRemoteManagement(nodeReference) {
           return next;
         });
         
-        // Call onReady callback if provided
+        // Call onReady callback
         if (options?.onReady) {
           options.onReady({ session_id: tempSessionId });
         }
         
-        // Resolve with the temporary session ID
+        // Resolve with the session ID
         resolve(tempSessionId);
-      }, 10000); // Reduced to 10 seconds with fallback
+      }, 10000);
 
-      // Store timeout info with resolve/reject callbacks
+      // Store pending info
       terminalTimeouts.current.set('pending_' + nodeReference, {
         timeout,
         resolve,
@@ -508,7 +488,7 @@ export function useRemoteManagement(nodeReference) {
         tempSessionId
       });
 
-      // Send term_init message with all fields
+      // Send term_init message
       const initMessage = {
         type: 'term_init',
         node_reference: nodeReference,
@@ -519,7 +499,7 @@ export function useRemoteManagement(nodeReference) {
         env: options.env || {}
       };
 
-      console.log('[useRemoteManagement] Sending term_init message:', JSON.stringify(initMessage));
+      console.log('[useRemoteManagement] Sending term_init:', initMessage);
       sendMessage(initMessage);
     });
   }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendMessage]);
@@ -527,13 +507,16 @@ export function useRemoteManagement(nodeReference) {
   // Send terminal input
   const sendTerminalInput = useCallback((termSessionId, data) => {
     if (!isEnabled || !globalWebSocket) {
-      throw new Error('Remote management not enabled');
+      console.error('[useRemoteManagement] Cannot send input - not enabled');
+      return;
     }
+
+    console.log('[useRemoteManagement] Sending input to session:', termSessionId, 'data length:', data.length);
 
     const message = {
       type: 'term_input',
       session_id: termSessionId,
-      data: data // Send raw data, WebTerminal handles encoding
+      data: data // Send raw data as-is
     };
 
     sendMessage(message);
@@ -542,12 +525,14 @@ export function useRemoteManagement(nodeReference) {
   // Resize terminal
   const resizeTerminal = useCallback((termSessionId, rows, cols) => {
     if (!isEnabled || !globalWebSocket) {
-      throw new Error('Remote management not enabled');
+      return;
     }
 
-    // Validate ranges according to documentation
+    // Validate ranges
     const validRows = Math.max(10, Math.min(200, rows));
     const validCols = Math.max(40, Math.min(400, cols));
+
+    console.log('[useRemoteManagement] Resizing terminal:', termSessionId, validRows, 'x', validCols);
 
     const message = {
       type: 'term_resize',
@@ -576,6 +561,8 @@ export function useRemoteManagement(nodeReference) {
       return;
     }
 
+    console.log('[useRemoteManagement] Closing terminal:', termSessionId);
+
     const message = {
       type: 'term_close',
       session_id: termSessionId
@@ -592,7 +579,7 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [isEnabled, sendMessage]);
 
-  // Execute command (legacy support for file manager)
+  // Legacy command execution support
   const executeCommand = useCallback(async (command, args = [], cwd = null) => {
     if (!isEnabled || !globalWebSocket) {
       throw new Error('Remote management not enabled');
@@ -600,7 +587,7 @@ export function useRemoteManagement(nodeReference) {
 
     // Check if JWT is still valid
     if (!isJwtValid()) {
-      console.log('[useRemoteManagement] JWT expired, re-enabling remote management');
+      console.log('[useRemoteManagement] JWT expired, re-enabling');
       const success = await enableRemoteManagement();
       if (!success) {
         throw new Error('Failed to re-enable remote management');
@@ -646,7 +633,7 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [isEnabled, nodeReference, isJwtValid, enableRemoteManagement, sendMessage]);
 
-  // Upload file (legacy support for file manager)
+  // Legacy file upload support
   const uploadFile = useCallback(async (path, content, base64 = false) => {
     if (!isEnabled || !globalWebSocket) {
       throw new Error('Remote management not enabled');
@@ -654,7 +641,7 @@ export function useRemoteManagement(nodeReference) {
 
     // Check if JWT is still valid
     if (!isJwtValid()) {
-      console.log('[useRemoteManagement] JWT expired, re-enabling remote management');
+      console.log('[useRemoteManagement] JWT expired, re-enabling');
       const success = await enableRemoteManagement();
       if (!success) {
         throw new Error('Failed to re-enable remote management');
