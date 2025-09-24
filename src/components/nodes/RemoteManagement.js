@@ -466,7 +466,29 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
           </div>
         ) : (
           <>
-            {/* Tabs */}
+            {/* Add a test button for debugging */}
+            {activeTab === 'terminal' && activeTerminalId && process.env.NODE_ENV === 'development' && (
+              <button
+                onClick={() => {
+                  console.log('[RemoteManagement] Test: Sending test input directly');
+                  if (globalWebSocket && globalWebSocket.readyState === WebSocket.OPEN) {
+                    const testMessage = JSON.stringify({
+                      type: 'term_input',
+                      session_id: activeTerminalId,
+                      data: 'ls\n'
+                    });
+                    console.log('[RemoteManagement] Test: Sending:', testMessage);
+                    globalWebSocket.send(testMessage);
+                    console.log('[RemoteManagement] Test: Message sent');
+                  } else {
+                    console.error('[RemoteManagement] Test: WebSocket not available');
+                  }
+                }}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs rounded"
+              >
+                Test Send "ls"
+              </button>
+            )}
             <div className="flex border-b border-white/10">
               <button
                 onClick={() => setActiveTab('terminal')}
