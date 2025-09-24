@@ -239,24 +239,11 @@ export default function WebTerminal({
           
           if (!data) return;
           
-          // Handle different data formats
+          // Server already decodes Base64, so we receive raw text
+          // Just write it directly to the terminal
           if (typeof data === 'string') {
-            // Check if it's base64 encoded
-            if (/^[A-Za-z0-9+/]+=*$/.test(data) && data.length % 4 === 0) {
-              try {
-                const decoded = atob(data);
-                console.log('[WebTerminal] Writing decoded base64 data:', decoded.length, 'bytes');
-                term.write(decoded);
-              } catch (err) {
-                // Not valid base64, write as raw
-                console.log('[WebTerminal] Writing raw string data:', data.length, 'chars');
-                term.write(data);
-              }
-            } else {
-              // Write raw string data
-              console.log('[WebTerminal] Writing raw string data:', data.length, 'chars');
-              term.write(data);
-            }
+            console.log('[WebTerminal] Writing raw string data:', data.length, 'chars');
+            term.write(data);
           } else if (data instanceof Uint8Array || data instanceof ArrayBuffer) {
             // Binary data - convert to string
             const decoder = new TextDecoder();
