@@ -3,23 +3,23 @@
  * File: src/components/nodes/RemoteManagement.js
  * ============================================
  * Creation Reason: Remote management interface for nodes
- * Modification Reason: Fixed terminal input/output connection
+ * Modification Reason: Added complete debug logging for terminal I/O
  * Main Functionality: Terminal, File Manager, and System Info
  * Dependencies: useRemoteManagement, WebTerminal
  *
  * Main Logical Flow:
  * 1. Enable remote management when modal opens
  * 2. Initialize terminal session when terminal tab is active
- * 3. Properly connect onInput/onResize callbacks to sendTerminalInput/resizeTerminal
+ * 3. Properly connect onInput/onResize callbacks
  * 4. Handle terminal lifecycle properly
  *
  * ⚠️ Important Note for Next Developer:
+ * - Complete debug logging added for troubleshooting
  * - onInput MUST be connected to sendTerminalInput
  * - onResize MUST be connected to resizeTerminal
- * - Terminal session ID must be passed correctly
- * - Prevent multiple terminal initializations
+ * - Check console logs for session ID and data flow
  *
- * Last Modified: v5.3.0 - Fixed terminal input/output connection
+ * Last Modified: v5.4.0 - Added complete debug logging
  * ============================================
  */
 
@@ -71,8 +71,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     isSignatureLoading,
     enableRemoteManagement,
     initTerminal,
-    sendTerminalInput,    // ← CRITICAL: This must be used for terminal input
-    resizeTerminal,       // ← CRITICAL: This must be used for terminal resize
+    sendTerminalInput,
+    resizeTerminal,
     closeTerminal,
     executeCommand,
     uploadFile
@@ -92,14 +92,22 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const loadSystemInfoPromiseRef = useRef(null);
   const terminalInitRef = useRef(false);
 
+  // Debug: Monitor activeTerminalId changes
+  useEffect(() => {
+    console.log('[RemoteManagement] activeTerminalId changed to:', activeTerminalId);
+  }, [activeTerminalId]);
+
   // Initialize remote management when modal opens
   useEffect(() => {
     if (isOpen && !isEnabled && !isEnabling && nodeReference && !isInitializingRef.current) {
+      console.log('[RemoteManagement] Starting remote management initialization');
       isInitializingRef.current = true;
       enableRemoteManagement()
         .then((success) => {
           if (success) {
             console.log('[RemoteManagement] Remote management enabled successfully');
+          } else {
+            console.log('[RemoteManagement] Remote management enablement returned false');
           }
         })
         .catch((err) => {
@@ -112,23 +120,24 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     }
   }, [isOpen, isEnabled, isEnabling, nodeReference, enableRemoteManagement]);
 
-  // Load system info when tab is activated and remote management is enabled
+  // Load system info when tab is activated
   useEffect(() => {
     if (activeTab === 'system' && isEnabled && !hasLoadedSystemInfoRef.current && !isLoadingSystemInfo) {
       loadSystemInfo();
     }
   }, [activeTab, isEnabled]);
 
-  // Load system info with caching and deduplication
+  // Load system info with caching
   const loadSystemInfo = useCallback(async () => {
-    if (!executeCommand) return;
+    if (!executeCommand) {
+      console.log('[RemoteManagement] executeCommand not available');
+      return;
+    }
     
-    // Return existing promise if already loading
     if (loadSystemInfoPromiseRef.current) {
       return loadSystemInfoPromiseRef.current;
     }
     
-    // Check cache first
     const cacheKey = `${nodeReference}_systemInfo`;
     const cached = systemInfoCache.get(cacheKey);
     
@@ -142,12 +151,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     setIsLoadingSystemInfo(true);
     hasLoadedSystemInfoRef.current = true;
     
-    // Create and store the promise
     loadSystemInfoPromiseRef.current = (async () => {
       try {
         console.log('[RemoteManagement] Fetching system info...');
         
-        // Get system information using commands
         const [hostname, uname, uptime, df, free] = await Promise.all([
           executeCommand('hostname', []),
           executeCommand('uname', ['-a']),
@@ -156,7 +163,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
           executeCommand('free', ['-h'])
         ]);
 
-        // Parse the results
         const dfLines = (df.data?.stdout || df.stdout || '').split('\n');
         const diskInfo = dfLines[1] ? dfLines[1].split(/\s+/) : [];
         
@@ -187,7 +193,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
           }
         };
 
-        // Try to get CPU info
         try {
           const cpuInfo = await executeCommand('cat', ['/proc/cpuinfo']);
           const cpuLines = (cpuInfo.data?.stdout || cpuInfo.stdout || '').split('\n');
@@ -205,7 +210,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
         setSystemInfo(info);
         
-        // Cache the result
         systemInfoCache.set(cacheKey, {
           data: info,
           timestamp: Date.now()
@@ -223,31 +227,81 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     return loadSystemInfoPromiseRef.current;
   }, [executeCommand, nodeReference]);
 
-  // Handle terminal initialization
+  // Handle terminal start button click
   const handleStartTerminal = useCallback(async () => {
-    if (isInitializingTerminal || activeTerminalId || terminalInitialized) return;
+    if (isInitializingTerminal || activeTerminalId || terminalInitialized) {
+      console.log('[RemoteManagement] Terminal already initialized or initializing', {
+        isInitializingTerminal,
+        activeTerminalId,
+        terminalInitialized
+      });
+      return;
+    }
     
+    console.log('[RemoteManagement] Starting terminal initialization');
     setIsInitializingTerminal(true);
-    setTerminalInitialized(true); // Mark as initialized to show the terminal component
+    setTerminalInitialized(true);
   }, [isInitializingTerminal, activeTerminalId, terminalInitialized]);
 
-  // CRITICAL: Properly handle terminal input
+  // CRITICAL: Terminal input handler with full debugging
   const handleTerminalInput = useCallback((termSessionId, data) => {
-    console.log('[RemoteManagement] Handling terminal input for session:', termSessionId, 'data length:', data?.length);
-    if (termSessionId && termSessionId !== 'pending') {
+    console.log('[RemoteManagement] handleTerminalInput called:', {
+      sessionId: termSessionId,
+      dataLength: data?.length,
+      dataType: typeof data,
+      data: data,  // Log the actual data
+      activeTerminalId: activeTerminalId,
+      hasSendTerminalInput: !!sendTerminalInput,
+      firstChars: data ? data.substring(0, 10) : null
+    });
+    
+    if (!termSessionId || termSessionId === 'pending') {
+      console.warn('[RemoteManagement] Invalid session ID for input:', termSessionId);
+      return;
+    }
+    
+    if (!sendTerminalInput) {
+      console.error('[RemoteManagement] sendTerminalInput function not available!');
+      return;
+    }
+    
+    console.log('[RemoteManagement] Calling sendTerminalInput with data:', data);
+    try {
       sendTerminalInput(termSessionId, data);
+      console.log('[RemoteManagement] sendTerminalInput called successfully');
+    } catch (err) {
+      console.error('[RemoteManagement] Error calling sendTerminalInput:', err);
     }
-  }, [sendTerminalInput]);
+  }, [sendTerminalInput, activeTerminalId]);
 
-  // CRITICAL: Properly handle terminal resize
+  // Terminal resize handler with debugging
   const handleTerminalResize = useCallback((termSessionId, rows, cols) => {
-    console.log('[RemoteManagement] Handling terminal resize for session:', termSessionId, rows, 'x', cols);
-    if (termSessionId && termSessionId !== 'pending') {
-      resizeTerminal(termSessionId, rows, cols);
+    console.log('[RemoteManagement] handleTerminalResize called:', {
+      sessionId: termSessionId,
+      rows,
+      cols,
+      activeTerminalId: activeTerminalId
+    });
+    
+    if (!termSessionId || termSessionId === 'pending') {
+      console.warn('[RemoteManagement] Invalid session ID for resize:', termSessionId);
+      return;
     }
-  }, [resizeTerminal]);
+    
+    if (!resizeTerminal) {
+      console.error('[RemoteManagement] resizeTerminal function not available!');
+      return;
+    }
+    
+    try {
+      resizeTerminal(termSessionId, rows, cols);
+      console.log('[RemoteManagement] resizeTerminal called successfully');
+    } catch (err) {
+      console.error('[RemoteManagement] Error calling resizeTerminal:', err);
+    }
+  }, [resizeTerminal, activeTerminalId]);
 
-  // Handle terminal close
+  // Terminal close handler
   const handleTerminalClose = useCallback((termSessionId) => {
     console.log('[RemoteManagement] Closing terminal session:', termSessionId);
     if (termSessionId && termSessionId !== 'pending') {
@@ -258,21 +312,33 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     terminalInitRef.current = false;
   }, [closeTerminal]);
 
-  // Handle terminal initialization callback
+  // Terminal initialization callback with full debugging
   const handleTerminalInit = useCallback(async (options) => {
-    // Prevent multiple initializations
+    console.log('[RemoteManagement] handleTerminalInit called with options:', {
+      rows: options.rows,
+      cols: options.cols,
+      hasOnOutput: !!options.onOutput,
+      hasOnError: !!options.onError,
+      hasOnClose: !!options.onClose,
+      hasOnReady: !!options.onReady,
+      currentActiveTerminalId: activeTerminalId,
+      terminalInitRef: terminalInitRef.current
+    });
+    
     if (terminalInitRef.current || activeTerminalId) {
-      console.log('[RemoteManagement] Terminal already initialized or initializing');
+      console.log('[RemoteManagement] Terminal already initialized, returning existing session:', activeTerminalId);
       return activeTerminalId;
     }
     
     terminalInitRef.current = true;
     try {
-      console.log('[RemoteManagement] Initializing terminal with options:', options);
+      console.log('[RemoteManagement] Calling initTerminal...');
       const termSessionId = await initTerminal(options);
-      console.log('[RemoteManagement] Terminal initialized with session ID:', termSessionId);
+      console.log('[RemoteManagement] Terminal initialized successfully with session ID:', termSessionId);
+      
       setActiveTerminalId(termSessionId);
       setIsInitializingTerminal(false);
+      
       return termSessionId;
     } catch (err) {
       console.error('[RemoteManagement] Failed to initialize terminal:', err);
@@ -286,7 +352,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // Close modal handler
   const handleClose = useCallback(() => {
-    // Reset state
+    console.log('[RemoteManagement] Closing modal, cleaning up...');
     hasLoadedSystemInfoRef.current = false;
     loadSystemInfoPromiseRef.current = null;
     terminalInitRef.current = false;
@@ -296,8 +362,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     setIsInitializingTerminal(false);
     setTerminalInitialized(false);
     
-    // Close all terminal sessions
     terminalSessions.forEach(session => {
+      console.log('[RemoteManagement] Closing terminal session:', session.sessionId);
       closeTerminal(session.sessionId);
     });
     onClose();
@@ -449,9 +515,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                       sessionId={activeTerminalId || 'pending'}
                       nodeReference={nodeReference}
                       isEnabled={isEnabled}
-                      onInit={handleTerminalInit}              // ← Proper initialization handler
-                      onInput={handleTerminalInput}            // ← CRITICAL: Connected to sendTerminalInput
-                      onResize={handleTerminalResize}          // ← CRITICAL: Connected to resizeTerminal  
+                      onInit={handleTerminalInit}
+                      onInput={handleTerminalInput}
+                      onResize={handleTerminalResize}
                       onClose={() => handleTerminalClose(activeTerminalId)}
                       className="h-full"
                     />
@@ -528,7 +594,6 @@ function SystemInfo({ systemInfo, isLoading, onRefresh }) {
       </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {/* System Overview */}
         <div className="bg-white/5 rounded-xl p-6 space-y-4">
           <h3 className="text-lg font-semibold text-white mb-4">System Overview</h3>
           <InfoRow label="Hostname" value={systemInfo.hostname} />
@@ -536,14 +601,12 @@ function SystemInfo({ systemInfo, isLoading, onRefresh }) {
           <InfoRow label="Uptime" value={systemInfo.uptime.split('up')[1]?.split(',')[0]?.trim() || 'N/A'} />
         </div>
 
-        {/* CPU Info */}
         <div className="bg-white/5 rounded-xl p-6 space-y-4">
           <h3 className="text-lg font-semibold text-white mb-4">CPU</h3>
           <InfoRow label="Model" value={systemInfo.cpu.model} />
           <InfoRow label="Cores" value={systemInfo.cpu.cores} />
         </div>
 
-        {/* Memory Info */}
         <div className="bg-white/5 rounded-xl p-6 space-y-4">
           <h3 className="text-lg font-semibold text-white mb-4">Memory</h3>
           <InfoRow label="Total" value={systemInfo.memory.total} />
@@ -563,7 +626,6 @@ function SystemInfo({ systemInfo, isLoading, onRefresh }) {
           </div>
         </div>
 
-        {/* Disk Info */}
         <div className="bg-white/5 rounded-xl p-6 space-y-4">
           <h3 className="text-lg font-semibold text-white mb-4">Disk</h3>
           <InfoRow label="Total" value={systemInfo.disk.total} />
