@@ -3,25 +3,27 @@
  * File Creation/Modification Notes
  * ============================================
  * Creation Reason: WebSocket hook for real-time node monitoring
- * Modification Reason: Fixed authentication flow to match backend expectations
- * Main Functionality: Singleton WebSocket connection management with proper auth
- * Dependencies: useWallet, nodeRegistrationService
+ * Modification Reason: Fixed global WebSocket sharing for RemoteManagement
+ * Main Functionality: Singleton WebSocket connection with proper global sharing
+ * Dependencies: useWallet, nodeRegistrationService, useRemoteManagement
  *
  * Main Logical Flow:
  * 1. Connect to WebSocket server
- * 2. Request signature message using get_message
- * 3. Receive signature_message from server
- * 4. Sign message with wallet
- * 5. Send auth with signature
- * 6. Start monitoring after successful auth
+ * 2. Share WebSocket instance globally for RemoteManagement
+ * 3. Request signature message using get_message
+ * 4. Receive signature_message from server
+ * 5. Sign message with wallet
+ * 6. Send auth with signature
+ * 7. Start monitoring after successful auth
  *
  * ⚠️ Important Note for Next Developer:
+ * - CRITICAL: Must call setGlobalWebSocket from useRemoteManagement
  * - Backend expects get_message -> signature_message -> auth flow
  * - Must authenticate BEFORE sending any other messages
  * - Session tokens are stored for 30 minutes
  * - This uses singleton pattern - only ONE connection
  *
- * Last Modified: v6.0.0 - Fixed authentication timing and message flow
+ * Last Modified: v7.0.0 - Fixed global WebSocket sharing for RemoteManagement
  * ============================================
  */
 
@@ -30,6 +32,8 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
+// Import the setter functions from useRemoteManagement
+import { setGlobalWebSocket, setGlobalWsState } from './useRemoteManagement';
 
 /**
  * WebSocket connection states
@@ -143,10 +147,13 @@ class WebSocketManager {
 
   /**
    * Update global state and notify listeners
+   * CRITICAL: Also update RemoteManagement's global state
    */
   updateState(updates) {
     if (updates.wsState) {
       globalState.wsState = { ...globalState.wsState, ...updates.wsState };
+      // CRITICAL: Share state with RemoteManagement
+      setGlobalWsState(globalState.wsState);
     }
     
     if (updates.data) {
@@ -283,15 +290,39 @@ class WebSocketManager {
       });
       this.updateState({ wsState: { authState: 'authenticating' }});
     } else {
-      // Request signature message from WebSocket server
-      console.log('[WebSocketManager] Requesting signature message from server');
-      this.updateState({ wsState: { authState: 'requesting_message' }});
-      
-      // Server expects get_message after connection
-      this.sendMessage({
-        type: 'get_message',
-        wallet_address: this.walletAddress.toLowerCase()
-      });
+      // Try API fallback first due to WebSocket server issues
+      console.log('[WebSocketManager] Using API fallback for signature message');
+      try {
+        const messageResponse = await nodeRegistrationService.generateSignatureMessage(this.walletAddress);
+        if (messageResponse.success && messageResponse.data.message) {
+          console.log('[WebSocketManager] Got signature message from API');
+          
+          this.updateState({ wsState: { authState: 'signing' }});
+          
+          const signedData = await this.signMessage(messageResponse.data.message);
+          
+          this.updateState({ wsState: { authState: 'authenticating' }});
+          
+          // Send authentication with signature
+          this.sendMessage({
+            type: 'auth',
+            wallet_address: signedData.wallet.toLowerCase(),
+            signature: signedData.signature,
+            message: signedData.message,
+            wallet_type: 'ethereum'
+          });
+        } else {
+          throw new Error('Failed to get signature message from API');
+        }
+      } catch (error) {
+        console.error('[WebSocketManager] API fallback failed:', error);
+        // Try WebSocket method as last resort
+        this.updateState({ wsState: { authState: 'requesting_message' }});
+        this.sendMessage({
+          type: 'get_message',
+          wallet_address: this.walletAddress.toLowerCase()
+        });
+      }
     }
   }
 
@@ -335,7 +366,7 @@ class WebSocketManager {
               wallet_address: signedData.wallet.toLowerCase(),
               signature: signedData.signature,
               message: signedData.message,
-              wallet_type: 'ethereum' // Use 'ethereum' for better compatibility
+              wallet_type: 'ethereum'
             });
             
           } catch (error) {
@@ -399,16 +430,19 @@ class WebSocketManager {
           if (messageData.code === 'SESSION_INVALID' || 
               messageData.code === 'SESSION_EXPIRED' ||
               messageData.code === 'NONCE_NOT_FOUND' ||
-              messageData.message === 'Invalid or expired session token') {
+              messageData.message === 'Invalid or expired session token' ||
+              messageData.message === 'Internal error') {
             
-            // Clear stored session and retry with signature
+            // Clear stored session and retry with API
             sessionStorage.removeItem(SESSION_STORAGE_KEY);
             this.sessionToken = null;
             this.authenticationInProgress = false;
             
-            // Retry authentication with signature from API
-            console.log('[WebSocketManager] Session invalid, getting new signature from API');
-            this.startAuthentication();
+            // Use API fallback for authentication
+            console.log('[WebSocketManager] Server error, using API fallback');
+            setTimeout(() => {
+              this.startAuthentication();
+            }, 1000);
             
           } else if (messageData.message === 'Not authenticated') {
             // If we get "Not authenticated" and we're not in auth flow, start it
@@ -508,6 +542,9 @@ class WebSocketManager {
     // Check if already connected
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       console.log('[WebSocketManager] Already connected or connecting');
+      // Still share the existing WebSocket
+      setGlobalWebSocket(this.ws);
+      setGlobalWsState(globalState.wsState);
       return;
     }
 
@@ -546,6 +583,10 @@ class WebSocketManager {
       // Store as global
       globalWebSocketInstance = this.ws;
       
+      // CRITICAL: Share WebSocket with RemoteManagement
+      setGlobalWebSocket(this.ws);
+      console.log('[WebSocketManager] Shared WebSocket with RemoteManagement');
+      
       // Connection timeout
       this.connectionTimeout = setTimeout(() => {
         if (this.ws.readyState === WebSocket.CONNECTING) {
@@ -576,6 +617,9 @@ class WebSocketManager {
         this.updateState({ 
           wsState: { connected: true, error: null }
         });
+        
+        // Share updated state
+        setGlobalWsState(globalState.wsState);
       };
       
       this.ws.onmessage = (event) => this.handleMessage(event);
@@ -605,6 +649,9 @@ class WebSocketManager {
         globalWebSocketInstance = null;
         this.isConnecting = false;
         this.authenticationInProgress = false;
+        
+        // Clear global WebSocket in RemoteManagement
+        setGlobalWebSocket(null);
         
         if (this.pingInterval) {
           clearInterval(this.pingInterval);
@@ -638,6 +685,9 @@ class WebSocketManager {
       globalWebSocketInstance = null;
       this.isConnecting = false;
       this.authenticationInProgress = false;
+      
+      // Clear global WebSocket
+      setGlobalWebSocket(null);
       
       this.updateState({ 
         wsState: { 
@@ -717,6 +767,9 @@ class WebSocketManager {
       this.ws.close(1000, 'User disconnect');
       this.ws = null;
       globalWebSocketInstance = null;
+      
+      // Clear global WebSocket
+      setGlobalWebSocket(null);
     }
     
     this.authenticationInProgress = false;
