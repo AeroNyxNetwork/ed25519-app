@@ -253,104 +253,144 @@ export function useRemoteManagement(nodeReference) {
       try {
         const data = JSON.parse(event.data);
         
-        // Skip non-terminal messages
-        if (data.type === 'remote_auth_success' || data.type === 'connected' || 
-            data.type === 'auth_success' || data.type === 'status_update' ||
-            data.type === 'signature_message' || data.type === 'monitor_started') {
+        // 调试日志
+        if (data.type && data.type.includes('term')) {
+          console.log('[RemoteManagement] Terminal message:', {
+            type: data.type,
+            sessionId: data.session_id,
+            hasData: !!data.data,
+            dataPreview: data.data ? data.data.substring(0, 50) : null
+          });
+        }
+        
+        // 跳过非终端相关消息
+        if (['connected', 'auth_success', 'status_update', 'signature_message', 
+             'monitor_started', 'pong', 'ping', 'heartbeat_ack'].includes(data.type)) {
           return;
         }
         
-        console.log('[useRemoteManagement] Permanent handler received:', data.type);
-        
-        // Handle terminal initialization success
-        if (data.type === 'term_init_success' || data.type === 'term_ready') {
-          console.log('[useRemoteManagement] Terminal initialized:', data);
+        // 处理终端初始化成功 - term_ready 是服务端实际返回的类型
+        if (data.type === 'term_ready') {
+          console.log('[RemoteManagement] Terminal ready:', data);
           const sessionId = data.session_id;
           
-          // Find and resolve the pending initialization
-          const pending = terminalTimeouts.current.get('pending_' + nodeReference);
+          // 查找待处理的初始化请求
+          const pendingKey = 'pending_' + nodeReference;
+          const pending = terminalTimeouts.current.get(pendingKey);
+          
           if (pending) {
             clearTimeout(pending.timeout);
-            terminalTimeouts.current.delete('pending_' + nodeReference);
+            terminalTimeouts.current.delete(pendingKey);
             
-            // The handlers were already set up during initTerminal
-            // Just need to mark the session as ready
-            const handlers = terminalHandlersRef.current.get(sessionId);
-            if (handlers) {
-              setTerminalSessions(prev => {
-                const next = new Map(prev);
-                next.set(sessionId, {
-                  sessionId: sessionId,
-                  nodeReference,
-                  status: 'ready',
-                  rows: pending.options?.rows || 24,
-                  cols: pending.options?.cols || 80
-                });
-                return next;
-              });
-              
-              // Call onReady callback
-              if (handlers.onReady) {
-                handlers.onReady({ session_id: sessionId });
+            // 如果 session_id 发生变化，更新 handlers
+            if (pending.tempSessionId !== sessionId) {
+              const handlers = terminalHandlersRef.current.get(pending.tempSessionId);
+              if (handlers) {
+                terminalHandlersRef.current.delete(pending.tempSessionId);
+                terminalHandlersRef.current.set(sessionId, handlers);
               }
             }
             
-            // Resolve the promise
+            // 更新终端会话状态
+            setTerminalSessions(prev => {
+              const next = new Map(prev);
+              next.set(sessionId, {
+                sessionId: sessionId,
+                nodeReference,
+                status: 'ready',
+                rows: pending.options?.rows || 24,
+                cols: pending.options?.cols || 80
+              });
+              return next;
+            });
+            
+            // 调用 onReady 回调
+            const handlers = terminalHandlersRef.current.get(sessionId);
+            if (handlers?.onReady) {
+              handlers.onReady({ session_id: sessionId });
+            }
+            
+            // 解析 Promise
             if (pending.resolve) {
               pending.resolve(sessionId);
             }
           }
         }
-        // Handle terminal output
+        
+        // 处理终端输出 - 关键修复
         else if (data.type === 'term_output' && data.session_id) {
-          const handlers = terminalHandlersRef.current.get(data.session_id);
-          console.log('[useRemoteManagement] Terminal output for session:', data.session_id, 'has handler:', !!handlers, 'data:', data.data);
+          const sessionId = data.session_id;
+          console.log('[RemoteManagement] Terminal output for session:', sessionId);
           
-          if (handlers?.onOutput) {
-            // Pass the raw data to the handler (server already decoded it)
-            handlers.onOutput(data.data);
-          } else {
-            console.warn('[useRemoteManagement] No handler found for session:', data.session_id);
-          }
-        }
-        // Handle terminal errors
-        else if (data.type === 'term_error') {
-          console.error('[useRemoteManagement] Terminal error:', data);
+          // 查找对应的处理器
+          let handlers = terminalHandlersRef.current.get(sessionId);
           
-          // Check if this is an init error
-          if (data.message && (data.message.includes('init') || data.code === 'INVALID_SESSION')) {
-            const pending = terminalTimeouts.current.get('pending_' + nodeReference);
-            if (pending) {
-              clearTimeout(pending.timeout);
-              terminalTimeouts.current.delete('pending_' + nodeReference);
-              if (pending.reject) {
-                pending.reject(new Error(data.error || data.message || 'Terminal initialization failed'));
+          // 如果没找到，尝试模糊匹配
+          if (!handlers) {
+            for (const [key, value] of terminalHandlersRef.current.entries()) {
+              // 检查是否是同一个节点的会话
+              if (key.includes(nodeReference) || sessionId.includes(nodeReference)) {
+                handlers = value;
+                // 更新映射
+                terminalHandlersRef.current.delete(key);
+                terminalHandlersRef.current.set(sessionId, handlers);
+                console.log('[RemoteManagement] Found handler with fuzzy match');
+                break;
               }
             }
           }
           
-          // Handle session-specific errors
-          if (data.session_id) {
-            const handlers = terminalHandlersRef.current.get(data.session_id);
+          if (handlers?.onOutput) {
+            // 数据已经是原始文本，直接传递
+            console.log('[RemoteManagement] Passing output to terminal');
+            handlers.onOutput(data.data);
+          } else {
+            console.warn('[RemoteManagement] No output handler found for session:', sessionId);
+            console.log('[RemoteManagement] Available handlers:', 
+              Array.from(terminalHandlersRef.current.keys()));
+          }
+        }
+        
+        // 处理终端错误
+        else if (data.type === 'term_error') {
+          console.error('[RemoteManagement] Terminal error:', data);
+          
+          const sessionId = data.session_id;
+          if (sessionId) {
+            const handlers = terminalHandlersRef.current.get(sessionId);
             if (handlers?.onError) {
-              handlers.onError(data.error || data.message);
+              handlers.onError(data.error || data.message || 'Unknown error');
             }
-            // Clean up failed session
-            terminalHandlersRef.current.delete(data.session_id);
+            
+            // 清理失败的会话
+            terminalHandlersRef.current.delete(sessionId);
             setTerminalSessions(prev => {
               const next = new Map(prev);
-              next.delete(data.session_id);
+              next.delete(sessionId);
               return next;
             });
           }
+          
+          // 处理初始化错误
+          const pending = terminalTimeouts.current.get('pending_' + nodeReference);
+          if (pending) {
+            clearTimeout(pending.timeout);
+            terminalTimeouts.current.delete('pending_' + nodeReference);
+            if (pending.reject) {
+              pending.reject(new Error(data.error || data.message || 'Terminal initialization failed'));
+            }
+          }
         }
-        // Handle terminal closed
+        
+        // 处理终端关闭
         else if (data.type === 'term_closed' && data.session_id) {
-          console.log('[useRemoteManagement] Terminal closed:', data.session_id);
+          console.log('[RemoteManagement] Terminal closed:', data.session_id);
           const handlers = terminalHandlersRef.current.get(data.session_id);
           if (handlers?.onClose) {
             handlers.onClose();
           }
+          
+          // 清理资源
           terminalHandlersRef.current.delete(data.session_id);
           setTerminalSessions(prev => {
             const next = new Map(prev);
@@ -358,33 +398,37 @@ export function useRemoteManagement(nodeReference) {
             return next;
           });
         }
-        // Handle general errors
+        
+        // 处理一般错误
         else if (data.type === 'error') {
-          console.error('[useRemoteManagement] General error:', data);
+          console.error('[RemoteManagement] Error:', data);
           
-          // Handle terminal-related errors
-          if (data.code === 'NODE_MISMATCH' || 
-              data.code === 'NODE_OFFLINE' || 
-              data.code === 'NODE_NOT_FOUND' ||
-              data.code === 'SESSION_LIMIT_EXCEEDED' ||
-              data.code === 'REMOTE_NOT_ENABLED' ||
-              data.code === 'NOT_AUTHENTICATED' ||
-              data.code === 'INVALID_TOKEN' ||
-              data.code === 'TOKEN_EXPIRED' ||
-              data.code === 'INVALID_SESSION') {
+          // 特定错误代码处理
+          if (['NODE_OFFLINE', 'NODE_NOT_FOUND', 'INVALID_SESSION', 
+               'REMOTE_NOT_ENABLED', 'TOKEN_EXPIRED'].includes(data.code)) {
             
-            // Handle pending terminal init
             const pending = terminalTimeouts.current.get('pending_' + nodeReference);
             if (pending) {
               clearTimeout(pending.timeout);
               terminalTimeouts.current.delete('pending_' + nodeReference);
               if (pending.reject) {
-                pending.reject(new Error(data.message || 'Terminal operation failed'));
+                pending.reject(new Error(data.message || 'Operation failed'));
               }
+            }
+            
+            // 如果是会话错误，清理相关会话
+            if (data.code === 'INVALID_SESSION' && data.session_id) {
+              terminalHandlersRef.current.delete(data.session_id);
+              setTerminalSessions(prev => {
+                const next = new Map(prev);
+                next.delete(data.session_id);
+                return next;
+              });
             }
           }
         }
-        // Handle command responses
+        
+        // 处理命令响应
         else if (data.type === 'remote_command_response') {
           const pending = pendingRequests.current.get(data.request_id);
           if (pending) {
@@ -392,34 +436,30 @@ export function useRemoteManagement(nodeReference) {
             pendingRequests.current.delete(data.request_id);
             
             if (data.success) {
-              const response = {
+              pending.resolve({
                 success: true,
-                message: 'Operation completed successfully',
-                data: data.result,
-                error: null
-              };
-              pending.resolve(response);
+                message: 'Command executed successfully',
+                data: data.result
+              });
             } else {
-              const errorResponse = {
+              pending.reject({
                 success: false,
-                message: data.error || 'Operation failed',
-                data: null,
-                error: {
-                  message: data.error || 'Operation failed',
-                  code: 400
-                }
-              };
-              pending.reject(errorResponse);
+                message: data.error || 'Command failed',
+                error: { message: data.error || 'Command failed' }
+              });
             }
           }
         }
       } catch (err) {
-        console.error('[useRemoteManagement] Error in permanent handler:', err);
+        console.error('[RemoteManagement] Error handling message:', err);
       }
     };
-
+  
+    // 注册消息处理器
     globalWebSocket.addEventListener('message', handler);
     messageHandlerRef.current = handler;
+    
+    console.log('[RemoteManagement] Permanent handlers set up');
   }, [nodeReference]);
 
   // Initialize terminal session
