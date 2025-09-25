@@ -75,53 +75,67 @@ const colors = {
 /**
  * Normalize node status to standard values
  * Handles various status strings from backend
+ * IMPORTANT: Trust server's judgment - it knows the actual node state
  */
 function normalizeNodeStatus(node) {
   if (!node) return 'unknown';
   
   const status = node.status?.toLowerCase() || '';
   
-  // Check explicit status values
+  // PRIORITY 1: Trust the server's explicit status field
+  // The server is authoritative about node state
   if (['active', 'online', 'running', 'connected'].includes(status)) {
     return 'online';
-  }
-  
-  if (['inactive', 'offline', 'disconnected', 'stopped'].includes(status)) {
-    return 'offline';
   }
   
   if (['pending', 'starting', 'connecting'].includes(status)) {
     return 'pending';
   }
   
-  // Check last_seen time as fallback
-  if (node.last_seen) {
-    try {
-      const lastSeenTime = new Date(node.last_seen).getTime();
-      const now = Date.now();
-      const timeDiff = now - lastSeenTime;
+  // PRIORITY 2: Check is_connected field if available
+  // This is the server's explicit connection status
+  if (node.is_connected !== undefined) {
+    return node.is_connected ? 'online' : 'offline';
+  }
+  
+  // PRIORITY 3: If status is explicitly offline but we have recent performance data
+  // This might indicate a state transition
+  if (['inactive', 'offline', 'disconnected', 'stopped'].includes(status)) {
+    // Check if we have active performance metrics
+    if (node.performance) {
+      const hasActiveMetrics = 
+        (node.performance.cpu > 0) || 
+        (node.performance.memory > 0) || 
+        (node.performance.network > 0);
       
-      // If last seen within 5 minutes, consider online
-      if (timeDiff < 5 * 60 * 1000) {
-        return 'online';
-      }
-      
-      // If last seen within 15 minutes, consider pending/unstable
-      if (timeDiff < 15 * 60 * 1000) {
+      if (hasActiveMetrics) {
+        console.log('[NodeStatus] Status is offline but has active metrics, might be transitioning');
         return 'pending';
       }
-    } catch (e) {
-      console.error('[NodeStatus] Error parsing last_seen:', e);
+    }
+    
+    // Definitively offline
+    return 'offline';
+  }
+  
+  // PRIORITY 4: For unknown status, check performance data
+  if (node.performance) {
+    const hasPerformanceData = 
+      (node.performance.cpu > 0) || 
+      (node.performance.memory > 0) || 
+      (node.performance.disk > 0) || 
+      (node.performance.network > 0);
+    
+    if (hasPerformanceData) {
+      return 'online';
     }
   }
   
-  // If we have performance data, node is likely online
-  if (node.performance && (node.performance.cpu > 0 || node.performance.memory > 0)) {
-    return 'online';
-  }
+  // Note: We do NOT use last_seen for status determination due to timezone issues
+  // The server's status field is the source of truth
   
-  // Default to the original status or offline
-  return status || 'offline';
+  // PRIORITY 5: Default fallback
+  return status || 'unknown';
 }
 
 export default function NodeDetailsPage({ params }) {
