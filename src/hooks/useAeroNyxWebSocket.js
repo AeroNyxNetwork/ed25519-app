@@ -3,8 +3,8 @@
  * File: src/hooks/useAeroNyxWebSocket.js
  * ============================================
  * Creation Reason: WebSocket hook for real-time node monitoring
- * Modification Reason: Added global WebSocket sharing for RemoteManagement
- * Main Functionality: Singleton WebSocket connection management with proper auth
+ * Modification Reason: Fixed terminal message forwarding - messages were not being passed to listeners
+ * Main Functionality: Singleton WebSocket connection management with proper auth and message forwarding
  * Dependencies: useWallet, nodeRegistrationService, useRemoteManagement
  *
  * Main Logical Flow:
@@ -15,6 +15,7 @@
  * 5. Sign message with wallet
  * 6. Send auth with signature (using 'message' field, NOT 'signature_message')
  * 7. Start monitoring after successful auth
+ * 8. CRITICAL: Forward ALL messages to listeners, including terminal messages
  *
  * ⚠️ Important Note for Next Developer:
  * - Backend expects get_message -> signature_message -> auth flow
@@ -24,8 +25,9 @@
  * - Session tokens are stored for 30 minutes
  * - This uses singleton pattern - only ONE connection
  * - CRITICAL: Must share WebSocket with RemoteManagement via setGlobalWebSocket
+ * - CRITICAL: Must forward ALL messages to listeners, not just known types
  *
- * Last Modified: v7.0.0 - Added global WebSocket sharing for RemoteManagement
+ * Last Modified: v7.1.0 - Fixed terminal message forwarding
  * ============================================
  */
 
@@ -314,12 +316,26 @@ class WebSocketManager {
 
   /**
    * Handle WebSocket messages
+   * ⚠️ CRITICAL: Must forward ALL messages to listeners, including terminal messages
    */
   async handleMessage(event) {
     try {
       const messageData = JSON.parse(event.data);
       console.log('[WebSocketManager] Received:', messageData.type, messageData);
       
+      // ⚠️ CRITICAL: Forward message to all listeners FIRST
+      // This ensures terminal messages reach useRemoteManagement
+      globalListeners.forEach(listener => {
+        if (listener.onMessage) {
+          try {
+            listener.onMessage(messageData);
+          } catch (err) {
+            console.error('[WebSocketManager] Listener error:', err);
+          }
+        }
+      });
+      
+      // Then handle known message types
       switch (messageData.type) {
         case 'connected':
           // WebSocket connected, wait before starting auth
@@ -466,17 +482,21 @@ class WebSocketManager {
           console.log('[WebSocketManager] Heartbeat acknowledged');
           break;
           
+        // ⚠️ CRITICAL: Terminal messages are handled by listeners, not here
+        // We only log them for debugging
+        case 'term_ready':
+        case 'term_output':
+        case 'term_error':
+        case 'term_closed':
+          console.log('[WebSocketManager] Terminal message:', messageData.type, 'for session:', messageData.session_id);
+          // These are handled by useRemoteManagement through the listener
+          break;
+          
         default:
+          // Unknown message type - still forwarded to listeners above
           console.log('[WebSocketManager] Unknown message type:', messageData.type);
           break;
       }
-      
-      // Notify listeners about the message
-      globalListeners.forEach(listener => {
-        if (listener.onMessage) {
-          listener.onMessage(messageData);
-        }
-      });
       
     } catch (error) {
       console.error('[WebSocketManager] Message handling error:', error);
@@ -587,6 +607,9 @@ class WebSocketManager {
         console.log('[WebSocketManager] Shared WebSocket with RemoteManagement');
       }
       
+      // Make it globally accessible for debugging
+      window.globalWebSocket = this.ws;
+      
       // Connection timeout
       this.connectionTimeout = setTimeout(() => {
         if (this.ws.readyState === WebSocket.CONNECTING) {
@@ -644,6 +667,7 @@ class WebSocketManager {
         
         this.ws = null;
         globalWebSocketInstance = null;
+        window.globalWebSocket = null;
         this.isConnecting = false;
         this.authenticationInProgress = false;
         
@@ -683,6 +707,7 @@ class WebSocketManager {
       
       this.ws = null;
       globalWebSocketInstance = null;
+      window.globalWebSocket = null;
       this.isConnecting = false;
       this.authenticationInProgress = false;
       
@@ -769,6 +794,7 @@ class WebSocketManager {
       this.ws.close(1000, 'User disconnect');
       this.ws = null;
       globalWebSocketInstance = null;
+      window.globalWebSocket = null;
       
       // Clear global WebSocket in RemoteManagement
       if (typeof setGlobalWebSocket === 'function') {
