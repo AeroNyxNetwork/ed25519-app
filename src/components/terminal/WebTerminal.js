@@ -1,11 +1,31 @@
 /**
- * WebTerminal Component - Fixed Version
- * File: src/components/terminal/WebTerminal.js
+ * ============================================
+ * File Creation/Modification Notes
+ * =========================================
+ * Creation Reason: Web-based terminal interface for remote node management
+ * Modification Reason: Fix output display issue where data wasn't being rendered
+ * Main Functionality: 
+ * - Terminal UI using xterm.js
+ * - WebSocket communication for input/output
+ * - Session management
  * 
- * 修复了无限循环和初始化问题
+ * Main Logical Flow:
+ * 1. Initialize xterm.js terminal instance
+ * 2. Connect to remote node via WebSocket
+ * 3. Handle bidirectional data flow (input/output)
+ * 4. Display terminal output and send user input
+ * 
+ * ⚠️ Important Note for Next Developer:
+ * - The core terminal instance must be preserved during component lifecycle
+ * - WebSocket message handlers must be properly cleaned up
+ * - Session ID management is critical for proper routing
+ * - The fallback WebSocket listener ensures output is always displayed
+ * 
+ * Last Modified: v2.1.0 - Fixed output display by adding fallback handler
+ * ==========================================
  */
 
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
@@ -21,14 +41,15 @@ import {
   AlertCircle,
   Loader2,
   RefreshCw,
-  Search
+  Search,
+  Command
 } from 'lucide-react';
 import clsx from 'clsx';
 
 // Import xterm styles
 import 'xterm/css/xterm.css';
 
-// Terminal themes
+// Terminal color themes
 const THEMES = {
   dark: {
     background: '#1e1e1e',
@@ -55,6 +76,19 @@ const THEMES = {
   }
 };
 
+/**
+ * WebTerminal Component
+ * 
+ * @param {Object} props
+ * @param {string} props.sessionId - Initial session ID (may be pending)
+ * @param {string} props.nodeReference - Node reference code (e.g., AERO-65574)
+ * @param {boolean} props.isEnabled - Whether terminal is enabled
+ * @param {Function} props.onInit - Initialization callback
+ * @param {Function} props.onInput - Input handler callback
+ * @param {Function} props.onResize - Resize handler callback
+ * @param {Function} props.onClose - Close handler callback
+ * @param {string} props.className - Additional CSS classes
+ */
 export default function WebTerminal({
   sessionId: propSessionId,
   nodeReference,
@@ -66,11 +100,12 @@ export default function WebTerminal({
   className
 }) {
   // DOM refs
-  const terminalContainerRef = useRef(null);
+  const containerRef = useRef(null);
   const terminalRef = useRef(null);
   const fitAddonRef = useRef(null);
+  const searchAddonRef = useRef(null);
   
-  // State
+  // State management
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [status, setStatus] = useState('initializing');
   const [error, setError] = useState(null);
@@ -78,175 +113,287 @@ export default function WebTerminal({
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
-  // Track initialization
+  // Track initialization to prevent duplicates
   const isInitializedRef = useRef(false);
-  const initPromiseRef = useRef(null);
+  const sessionIdRef = useRef(null);
+  const handlersRef = useRef({});
   
-  // Memoize callbacks to prevent recreation
-  const memoizedOnInit = useMemo(() => onInit, []);
-  const memoizedOnInput = useMemo(() => onInput, []);
-  const memoizedOnResize = useMemo(() => onResize, []);
-
-  // Initialize terminal once
+  // Make terminal instance globally accessible for debugging
   useEffect(() => {
-    if (!terminalContainerRef.current || !isEnabled || isInitializedRef.current) {
+    if (terminalRef.current) {
+      window.terminalRef = terminalRef;
+      window.sessionIdRef = sessionIdRef;
+    }
+  }, []);
+
+  /**
+   * Main terminal initialization effect
+   * Only runs when component mounts or isEnabled changes
+   */
+  useEffect(() => {
+    if (!containerRef.current || !isEnabled || isInitializedRef.current) {
       return;
     }
 
-    console.log('[WebTerminal] Starting initialization for node:', nodeReference);
+    console.log('[WebTerminal] Initializing terminal for node:', nodeReference);
     isInitializedRef.current = true;
     
-    // Create terminal
+    // Create terminal instance with production settings
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: 'Menlo, Monaco, Consolas, monospace',
+      fontFamily: 'Menlo, Monaco, Consolas, "Courier New", monospace',
       theme: THEMES.dark,
       scrollback: 10000,
-      convertEol: true
+      convertEol: true,
+      windowsMode: false,
+      macOptionIsMeta: true,
+      rightClickSelectsWord: true,
+      allowTransparency: false
     });
 
+    // Create and load addons
     const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
+    const webLinksAddon = new WebLinksAddon();
+    const searchAddon = new SearchAddon();
     
+    term.loadAddon(fitAddon);
+    term.loadAddon(webLinksAddon);
+    term.loadAddon(searchAddon);
+    
+    // Store references
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
-
-    // Open terminal
-    term.open(terminalContainerRef.current);
+    searchAddonRef.current = searchAddon;
+    
+    // Open terminal in container
+    term.open(containerRef.current);
     fitAddon.fit();
-
-    // Initialize session
+    
+    // Initialize terminal session
     const initSession = async () => {
-      if (initPromiseRef.current) {
-        return initPromiseRef.current;
-      }
-
-      setStatus('connecting');
-      
-      initPromiseRef.current = (async () => {
-        try {
-          // Set up handlers
-          const handleOutput = (data) => {
-            if (!data) return;
-            if (typeof data === 'string') {
-              term.write(data);
-            }
-          };
-
-          const handleError = (err) => {
-            console.error('[WebTerminal] Error:', err);
-            setError(err);
-            setStatus('error');
-          };
-
-          const handleClose = () => {
-            console.log('[WebTerminal] Closed');
-            setStatus('closed');
-          };
-
-          const handleReady = (data) => {
-            console.log('[WebTerminal] Ready:', data);
-            const sid = data?.session_id || propSessionId;
-            setSessionId(sid);
-            setStatus('ready');
-            term.write('\x1b[32m● Connected to ' + nodeReference + '\x1b[0m\r\n\r\n');
-          };
-
-          // Call onInit
-          if (memoizedOnInit) {
-            const result = await memoizedOnInit({
-              rows: term.rows,
-              cols: term.cols,
-              onOutput: handleOutput,
-              onError: handleError,
-              onClose: handleClose,
-              onReady: handleReady
-            });
-
-            console.log('[WebTerminal] Init result:', result);
-            
-            if (result) {
-              setSessionId(result);
-              if (!status || status === 'connecting') {
-                setStatus('ready');
-              }
-            }
+      try {
+        setStatus('connecting');
+        console.log('[WebTerminal] Starting session initialization');
+        
+        // Define output handler that will be called by parent
+        const handleOutput = (data) => {
+          console.log('[WebTerminal] Output handler called with:', typeof data, data?.length);
+          if (data && term) {
+            // Write data directly to terminal
+            term.write(data);
           }
-
-          // Set up terminal input handler
-          term.onData((data) => {
-            const sid = sessionId || propSessionId;
-            if (memoizedOnInput && sid && sid !== 'pending') {
-              memoizedOnInput(sid, data);
-            }
-          });
-
-          // Set up resize handler
-          term.onResize(({ cols, rows }) => {
-            const sid = sessionId || propSessionId;
-            if (memoizedOnResize && sid && sid !== 'pending') {
-              memoizedOnResize(sid, rows, cols);
-            }
-          });
-
-        } catch (err) {
-          console.error('[WebTerminal] Init failed:', err);
-          setError(err.message);
+        };
+        
+        // Store handler reference
+        handlersRef.current.onOutput = handleOutput;
+        
+        // Define other handlers
+        const handleError = (err) => {
+          console.error('[WebTerminal] Terminal error:', err);
+          setError(err);
           setStatus('error');
-        } finally {
-          initPromiseRef.current = null;
+          term.write(`\r\n\x1b[31m● Error: ${err}\x1b[0m\r\n`);
+        };
+        
+        const handleClose = () => {
+          console.log('[WebTerminal] Session closed');
+          setStatus('closed');
+          term.write('\r\n\x1b[33m● Session closed\x1b[0m\r\n');
+        };
+        
+        const handleReady = (info) => {
+          console.log('[WebTerminal] Session ready:', info);
+          const sid = info?.session_id || sessionIdRef.current;
+          sessionIdRef.current = sid;
+          setSessionId(sid);
+          setStatus('ready');
+          
+          // Clear screen and show connection message
+          term.write('\x1b[2J\x1b[H'); // Clear screen and move cursor to top
+          term.write('\x1b[32m● Connected to ' + nodeReference + '\x1b[0m\r\n');
+          term.write('\x1b[90mSession: ' + sid + '\x1b[0m\r\n');
+          term.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
+        };
+        
+        // Call parent's onInit with all handlers
+        if (onInit) {
+          const result = await onInit({
+            rows: term.rows,
+            cols: term.cols,
+            onOutput: handleOutput,
+            onError: handleError,
+            onClose: handleClose,
+            onReady: handleReady
+          });
+          
+          console.log('[WebTerminal] Init completed with session:', result);
+          
+          if (result && !sessionIdRef.current) {
+            sessionIdRef.current = result;
+            setSessionId(result);
+          }
         }
-      })();
-
-      return initPromiseRef.current;
+        
+      } catch (err) {
+        console.error('[WebTerminal] Session initialization failed:', err);
+        setError(err.message);
+        setStatus('error');
+        term.write(`\r\n\x1b[31m● Failed to initialize: ${err.message}\x1b[0m\r\n`);
+      }
     };
-
+    
+    // Start initialization
     initSession();
-
-    // Cleanup
+    
+    // Setup terminal input handler
+    term.onData((data) => {
+      const sid = sessionIdRef.current;
+      console.log('[WebTerminal] User input:', data.length, 'bytes, session:', sid);
+      
+      if (onInput && sid && sid !== 'pending') {
+        onInput(sid, data);
+      }
+    });
+    
+    // Setup resize handler
+    term.onResize(({ cols, rows }) => {
+      const sid = sessionIdRef.current;
+      if (onResize && sid && sid !== 'pending') {
+        console.log('[WebTerminal] Terminal resized:', cols, 'x', rows);
+        onResize(sid, rows, cols);
+      }
+    });
+    
+    // Setup keyboard shortcuts
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type === 'keydown') {
+        // Ctrl+C for copy when selection exists
+        if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
+          const selection = term.getSelection();
+          if (selection) {
+            navigator.clipboard.writeText(selection).catch(console.error);
+            return false;
+          }
+        }
+        // Ctrl+V for paste
+        if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
+          navigator.clipboard.readText().then(text => {
+            const sid = sessionIdRef.current;
+            if (text && onInput && sid && sid !== 'pending') {
+              onInput(sid, text);
+            }
+          }).catch(console.error);
+          return false;
+        }
+        // Ctrl+F for search
+        if ((event.ctrlKey || event.metaKey) && event.key === 'f') {
+          setShowSearch(prev => !prev);
+          return false;
+        }
+      }
+      return true;
+    });
+    
+    // Cleanup function
     return () => {
-      console.log('[WebTerminal] Cleanup');
+      console.log('[WebTerminal] Cleaning up terminal');
       isInitializedRef.current = false;
-      initPromiseRef.current = null;
+      sessionIdRef.current = null;
+      handlersRef.current = {};
       
       if (terminalRef.current) {
         terminalRef.current.dispose();
         terminalRef.current = null;
       }
+      
+      fitAddonRef.current = null;
+      searchAddonRef.current = null;
     };
-  }, [isEnabled]); // Only depend on isEnabled
+  }, [isEnabled, nodeReference]); // Only depend on stable values
 
-  // Window resize handler
+  /**
+   * Fallback WebSocket listener
+   * This ensures output is displayed even if the callback chain fails
+   */
+  useEffect(() => {
+    if (!isEnabled || !terminalRef.current) return;
+    
+    const handleWSMessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        
+        // Check if this is a terminal output message for our session
+        if (msg.type === 'term_output' && 
+            msg.session_id === sessionIdRef.current && 
+            msg.data) {
+          
+          console.log('[WebTerminal] Fallback handler - writing output:', msg.data.length, 'chars');
+          
+          // Write directly to terminal
+          if (terminalRef.current) {
+            terminalRef.current.write(msg.data);
+          }
+        }
+      } catch (err) {
+        // Ignore JSON parse errors for non-JSON messages
+      }
+    };
+    
+    // Add listener to global WebSocket
+    if (window.globalWebSocket) {
+      window.globalWebSocket.addEventListener('message', handleWSMessage);
+      console.log('[WebTerminal] Fallback WebSocket listener attached');
+      
+      return () => {
+        window.globalWebSocket.removeEventListener('message', handleWSMessage);
+        console.log('[WebTerminal] Fallback WebSocket listener removed');
+      };
+    }
+  }, [isEnabled]);
+
+  /**
+   * Window resize handler
+   */
   useEffect(() => {
     if (!fitAddonRef.current) return;
 
     const handleResize = () => {
-      fitAddonRef.current?.fit();
+      if (fitAddonRef.current) {
+        fitAddonRef.current.fit();
+      }
     };
 
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    
+    // Use ResizeObserver for container size changes
+    const resizeObserver = new ResizeObserver(handleResize);
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
+    }
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
+    };
   }, []);
 
-  // Update sessionId when prop changes
-  useEffect(() => {
-    if (propSessionId && propSessionId !== 'pending') {
-      setSessionId(propSessionId);
-    }
-  }, [propSessionId]);
-
-  // Actions
+  // Action handlers
   const copySelection = useCallback(() => {
     const selection = terminalRef.current?.getSelection();
     if (selection) {
-      navigator.clipboard.writeText(selection);
-      terminalRef.current.clearSelection();
+      navigator.clipboard.writeText(selection).then(() => {
+        terminalRef.current.clearSelection();
+      }).catch(console.error);
     }
   }, []);
 
   const clearTerminal = useCallback(() => {
     terminalRef.current?.clear();
+  }, []);
+
+  const resetTerminal = useCallback(() => {
+    terminalRef.current?.reset();
   }, []);
 
   const toggleFullscreen = useCallback(() => {
@@ -268,9 +415,17 @@ export default function WebTerminal({
     const a = document.createElement('a');
     a.href = url;
     a.download = `terminal-${nodeReference}-${Date.now()}.txt`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }, [nodeReference]);
+
+  const handleSearch = useCallback(() => {
+    if (searchAddonRef.current && searchQuery) {
+      searchAddonRef.current.findNext(searchQuery);
+    }
+  }, [searchQuery]);
 
   if (!isEnabled) return null;
 
@@ -278,14 +433,15 @@ export default function WebTerminal({
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
       className={clsx(
-        "flex flex-col bg-black/90 border border-white/10 rounded-xl overflow-hidden",
+        "flex flex-col bg-black/90 border border-white/10 rounded-xl overflow-hidden shadow-2xl",
         isFullscreen ? "fixed inset-4 z-50" : "h-[600px]",
         className
       )}
     >
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/10">
+      {/* Terminal Header */}
+      <div className="flex items-center justify-between px-4 py-2 bg-gradient-to-r from-gray-900 to-gray-800 border-b border-white/10">
         <div className="flex items-center gap-3">
           <TerminalIcon className="w-5 h-5 text-purple-400" />
           <span className="text-sm font-medium text-white">
@@ -300,41 +456,44 @@ export default function WebTerminal({
           {status === 'error' && (
             <AlertCircle className="w-4 h-4 text-red-400" />
           )}
+          {status === 'closed' && (
+            <div className="w-2 h-2 bg-gray-400 rounded-full" />
+          )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
           <button
             onClick={() => setShowSearch(!showSearch)}
             className="p-1.5 hover:bg-white/10 rounded transition-colors"
-            title="Search"
+            title="Search (Ctrl+F)"
           >
             <Search className="w-4 h-4 text-gray-400" />
           </button>
           <button
             onClick={copySelection}
             className="p-1.5 hover:bg-white/10 rounded transition-colors"
-            title="Copy"
+            title="Copy selection"
           >
             <Copy className="w-4 h-4 text-gray-400" />
           </button>
           <button
             onClick={downloadBuffer}
             className="p-1.5 hover:bg-white/10 rounded transition-colors"
-            title="Download"
+            title="Download buffer"
           >
             <Download className="w-4 h-4 text-gray-400" />
           </button>
           <button
             onClick={clearTerminal}
             className="p-1.5 hover:bg-white/10 rounded transition-colors"
-            title="Clear"
+            title="Clear terminal"
           >
             <RefreshCw className="w-4 h-4 text-gray-400" />
           </button>
           <button
             onClick={toggleFullscreen}
             className="p-1.5 hover:bg-white/10 rounded transition-colors"
-            title="Fullscreen"
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
           >
             {isFullscreen ? (
               <Minimize2 className="w-4 h-4 text-gray-400" />
@@ -344,15 +503,15 @@ export default function WebTerminal({
           </button>
           <button
             onClick={onClose}
-            className="p-1.5 hover:bg-white/10 rounded transition-colors"
-            title="Close"
+            className="p-1.5 hover:bg-white/10 rounded transition-colors ml-2"
+            title="Close terminal"
           >
             <X className="w-4 h-4 text-gray-400" />
           </button>
         </div>
       </div>
 
-      {/* Search */}
+      {/* Search Bar */}
       <AnimatePresence>
         {showSearch && (
           <motion.div
@@ -361,46 +520,68 @@ export default function WebTerminal({
             exit={{ height: 0 }}
             className="overflow-hidden"
           >
-            <div className="px-4 py-2 bg-white/5 border-b border-white/10">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && terminalRef.current) {
-                    // Search implementation would go here
-                  }
-                }}
-                placeholder="Search..."
-                className="w-full px-3 py-1 bg-white/10 border border-white/20 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
-              />
+            <div className="px-4 py-2 bg-gray-900/50 border-b border-white/10">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSearch();
+                    if (e.key === 'Escape') {
+                      setShowSearch(false);
+                      setSearchQuery('');
+                    }
+                  }}
+                  placeholder="Search in terminal..."
+                  className="flex-1 px-3 py-1 bg-white/10 border border-white/20 rounded text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+                  autoFocus
+                />
+                <button
+                  onClick={handleSearch}
+                  className="px-4 py-1 bg-purple-600 hover:bg-purple-700 rounded text-sm text-white transition-colors"
+                >
+                  Search
+                </button>
+              </div>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Terminal */}
-      <div className="flex-1 relative">
+      {/* Terminal Container */}
+      <div className="flex-1 relative bg-black">
         {status === 'error' && (
-          <div className="absolute inset-0 bg-black/80 backdrop-blur z-10 flex items-center justify-center">
-            <div className="text-center">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-10 flex items-center justify-center">
+            <div className="text-center p-6">
               <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
-              <p className="text-red-400">{error || 'Connection failed'}</p>
+              <p className="text-red-400 mb-2 font-semibold">Connection Error</p>
+              <p className="text-gray-400 text-sm max-w-md">
+                {error || 'Failed to establish terminal connection'}
+              </p>
             </div>
           </div>
         )}
         
         <div
-          ref={terminalContainerRef}
+          ref={containerRef}
           className="h-full w-full p-2"
-          style={{ backgroundColor: '#1e1e1e' }}
+          style={{ backgroundColor: THEMES.dark.background }}
         />
       </div>
 
-      {/* Status bar */}
-      <div className="px-4 py-1 bg-white/5 border-t border-white/10 text-xs text-gray-400 flex justify-between">
-        <span>Session: {sessionId || 'Connecting...'}</span>
-        <span>{terminalRef.current ? `${terminalRef.current.cols}×${terminalRef.current.rows}` : ''}</span>
+      {/* Status Bar */}
+      <div className="px-4 py-1 bg-gradient-to-r from-gray-900 to-gray-800 border-t border-white/10 text-xs text-gray-400 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <span>Session: {sessionId || 'Connecting...'}</span>
+          {terminalRef.current && (
+            <span>{terminalRef.current.cols}×{terminalRef.current.rows}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Command className="w-3 h-3" />
+          <span>UTF-8</span>
+        </div>
       </div>
     </motion.div>
   );
