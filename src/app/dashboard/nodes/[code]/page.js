@@ -2,26 +2,13 @@
  * ============================================
  * File: src/app/dashboard/nodes/[code]/page.js
  * ============================================
- * Creation Reason: Dynamic route for individual node details
- * Modification Reason: Fix node status detection - node showing offline when actually online
- * Main Functionality: Display node details with professional Web3 aesthetics
- * Dependencies: useWallet, useAeroNyxWebSocket, RemoteManagement
- *
- * Main Logical Flow:
- * 1. Extract node code from URL params
- * 2. Connect to WebSocket and wait for authentication
- * 3. Wait for monitoring to start and data to load
- * 4. Find matching node by code with proper error handling
- * 5. Display node details with professional Web3 UI
- * 6. CRITICAL: Determine node status from multiple sources (status field, last_seen, etc.)
- *
- * ⚠️ Important Note for Next Developer:
- * - Node status can be: active, online, running, connected (all mean online)
- * - Also check last_seen time - if within 5 minutes, node is online
- * - Remote management should work for any online node
- * - Status field from server may vary, need normalization
- *
- * Last Modified: v3.1.0 - Fixed status detection logic
+ * FIXED VERSION - v3.2.0
+ * Fix: Accurate node status detection to prevent showing offline nodes as online
+ * 
+ * Changes:
+ * 1. Simplified normalizeNodeStatus to trust server status completely
+ * 2. Added strict offline detection
+ * 3. Removed misleading fallback logic
  * ============================================
  */
 
@@ -73,69 +60,42 @@ const colors = {
 };
 
 /**
- * Normalize node status to standard values
- * Handles various status strings from backend
- * IMPORTANT: Trust server's judgment - it knows the actual node state
+ * FIXED: Simplified and accurate node status normalization
+ * Trust the server's status completely - it's the source of truth
  */
 function normalizeNodeStatus(node) {
   if (!node) return 'unknown';
   
-  const status = node.status?.toLowerCase() || '';
+  const status = (node.status || '').toLowerCase().trim();
   
-  // PRIORITY 1: Trust the server's explicit status field
-  // The server is authoritative about node state
-  if (['active', 'online', 'running', 'connected'].includes(status)) {
-    return 'online';
-  }
+  // Map various status strings to standard values
+  const statusMap = {
+    'active': 'online',
+    'online': 'online',
+    'running': 'online',
+    'connected': 'online',
+    'pending': 'pending',
+    'starting': 'pending',
+    'connecting': 'pending',
+    'inactive': 'offline',
+    'offline': 'offline',
+    'disconnected': 'offline',
+    'stopped': 'offline',
+    'error': 'error',
+    'failed': 'error'
+  };
   
-  if (['pending', 'starting', 'connecting'].includes(status)) {
-    return 'pending';
-  }
-  
-  // PRIORITY 2: Check is_connected field if available
-  // This is the server's explicit connection status
-  if (node.is_connected !== undefined) {
-    return node.is_connected ? 'online' : 'offline';
-  }
-  
-  // PRIORITY 3: If status is explicitly offline but we have recent performance data
-  // This might indicate a state transition
-  if (['inactive', 'offline', 'disconnected', 'stopped'].includes(status)) {
-    // Check if we have active performance metrics
-    if (node.performance) {
-      const hasActiveMetrics = 
-        (node.performance.cpu > 0) || 
-        (node.performance.memory > 0) || 
-        (node.performance.network > 0);
-      
-      if (hasActiveMetrics) {
-        console.log('[NodeStatus] Status is offline but has active metrics, might be transitioning');
-        return 'pending';
-      }
-    }
-    
-    // Definitively offline
-    return 'offline';
-  }
-  
-  // PRIORITY 4: For unknown status, check performance data
-  if (node.performance) {
-    const hasPerformanceData = 
-      (node.performance.cpu > 0) || 
-      (node.performance.memory > 0) || 
-      (node.performance.disk > 0) || 
-      (node.performance.network > 0);
-    
-    if (hasPerformanceData) {
-      return 'online';
-    }
-  }
-  
-  // Note: We do NOT use last_seen for status determination due to timezone issues
-  // The server's status field is the source of truth
-  
-  // PRIORITY 5: Default fallback
-  return status || 'unknown';
+  // Return mapped status or original if not in map
+  return statusMap[status] || status || 'unknown';
+}
+
+/**
+ * Check if node is actually online
+ * STRICT: Only return true if explicitly online
+ */
+function isNodeReallyOnline(node) {
+  const status = normalizeNodeStatus(node);
+  return status === 'online';
 }
 
 export default function NodeDetailsPage({ params }) {
@@ -176,6 +136,7 @@ export default function NodeDetailsPage({ params }) {
         name: n.name,
         status: n.status,
         normalized: normalizeNodeStatus(n),
+        isOnline: isNodeReallyOnline(n),
         last_seen: n.last_seen 
       }))
     });
@@ -186,9 +147,9 @@ export default function NodeDetailsPage({ params }) {
     n.code && n.code.toUpperCase() === code.toUpperCase()
   );
 
-  // Get normalized status
+  // Get normalized status and online state
   const nodeStatus = normalizeNodeStatus(node);
-  const isNodeOnline = nodeStatus === 'online';
+  const isNodeOnline = isNodeReallyOnline(node);
 
   // Update loading state based on WebSocket state
   useEffect(() => {
@@ -434,6 +395,7 @@ export default function NodeDetailsPage({ params }) {
     online: { color: colors.success, Icon: CheckCircle, label: 'Online', glow: true },
     offline: { color: colors.error, Icon: XCircle, label: 'Offline', glow: false },
     pending: { color: colors.warning, Icon: Clock, label: 'Pending', glow: false },
+    error: { color: colors.error, Icon: AlertCircle, label: 'Error', glow: false },
     unknown: { color: colors.info, Icon: AlertCircle, label: 'Unknown', glow: false }
   };
 
@@ -518,27 +480,48 @@ export default function NodeDetailsPage({ params }) {
                 <RefreshCw className="w-4 h-4" />
               </motion.button>
               
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setShowRemoteManagement(true)}
-                disabled={!isNodeOnline}
-                className={clsx(
-                  "flex items-center gap-2 px-5 py-2.5 rounded-xl transition-all font-medium text-sm",
-                  isNodeOnline
-                    ? "bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
-                    : "bg-gray-700 cursor-not-allowed opacity-50"
-                )}
-              >
-                <Terminal className="w-4 h-4" />
-                Remote Management
-              </motion.button>
+              {/* FIXED: Only show Remote Management button when node is truly online */}
+              {isNodeOnline ? (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setShowRemoteManagement(true)}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl transition-all font-medium text-sm bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                >
+                  <Terminal className="w-4 h-4" />
+                  Remote Management
+                </motion.button>
+              ) : (
+                <div className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gray-800 text-gray-400 cursor-not-allowed">
+                  <Terminal className="w-4 h-4" />
+                  <span>Remote Management</span>
+                  <span className="text-xs">(Node Offline)</span>
+                </div>
+              )}
             </div>
           </div>
         </motion.header>
 
         {/* Main Content with Professional Layout */}
         <div className="max-w-7xl mx-auto px-6 py-8">
+          {/* Node Status Alert - Show when offline */}
+          {!isNodeOnline && nodeStatus === 'offline' && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-start gap-3"
+            >
+              <AlertCircle className="w-5 h-5 text-red-400 mt-0.5" />
+              <div>
+                <p className="text-red-400 font-medium">Node is currently offline</p>
+                <p className="text-red-300/70 text-sm mt-1">
+                  Remote management features are unavailable until the node comes back online.
+                  Please check your node's connection and ensure it's running properly.
+                </p>
+              </div>
+            </motion.div>
+          )}
+
           {/* Key Metrics Cards */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
             <MetricCard
@@ -577,7 +560,7 @@ export default function NodeDetailsPage({ params }) {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
             {/* Resource Utilization */}
             <div className="lg:col-span-2">
-              <ProfessionalCard title="Resource Utilization" live={true}>
+              <ProfessionalCard title="Resource Utilization" live={isNodeOnline}>
                 <div className="space-y-5">
                   <ResourceBar
                     icon={Cpu}
@@ -663,8 +646,8 @@ export default function NodeDetailsPage({ params }) {
         </div>
       </div>
 
-      {/* Remote Management Modal - Now checks normalized status */}
-      {isNodeOnline && (
+      {/* FIXED: Only render RemoteManagement when node is truly online */}
+      {isNodeOnline && showRemoteManagement && (
         <RemoteManagement
           nodeReference={node.code}
           isOpen={showRemoteManagement}
