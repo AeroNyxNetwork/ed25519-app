@@ -253,9 +253,17 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const handleTerminalInit = useCallback(async (options) => {
     console.log('[RemoteManagement] Terminal init requested');
     
-    if (terminalInitRef.current || activeTerminalId) {
-      console.log('[RemoteManagement] Terminal already exists');
+    // 检查是否已有活动的终端会话
+    if (activeTerminalId && activeTerminalId !== 'pending') {
+      console.log('[RemoteManagement] Returning existing terminal session:', activeTerminalId);
+      // 直接返回现有的 session ID，不要返回 null
       return activeTerminalId;
+    }
+    
+    // 防止重复初始化
+    if (terminalInitRef.current) {
+      console.log('[RemoteManagement] Terminal initialization already in progress');
+      return null; // 这里可以返回 null，因为正在初始化中
     }
     
     terminalInitRef.current = true;
