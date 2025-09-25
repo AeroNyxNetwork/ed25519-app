@@ -3,7 +3,7 @@
  * File: src/hooks/useRemoteManagement.js
  * ============================================
  * Creation Reason: Hook for remote node management via WebSocket
- * Modification Reason: Fixed terminal output routing and session management
+ * Modification Reason: Fixed terminal output routing - handlers not properly stored
  * Main Functionality: Manages terminal sessions and file operations
  * Dependencies: useAeroNyxWebSocket, useGlobalSignature
  *
@@ -11,16 +11,17 @@
  * 1. Get JWT token for remote management
  * 2. Authenticate with WebSocket using JWT
  * 3. Initialize terminal sessions with proper handlers
- * 4. Route terminal messages to appropriate callbacks
+ * 4. Store handlers BEFORE sending term_init to ensure output routing
  * 5. Handle terminal lifecycle (init, output, resize, close)
  *
  * ⚠️ Important Note for Next Developer:
- * - Terminal handlers MUST be stored before sending term_init
- * - Output data needs proper decoding (base64 or raw)
- * - Session handlers are stored in terminalHandlersRef
- * - Must handle both term_ready and term_init_success messages
+ * - Terminal handlers MUST be stored with the EXACT session_id
+ * - The session_id in term_init MUST match what's stored in terminalHandlersRef
+ * - Output data is pure text string, NO decoding needed
+ * - Must handle both term_ready and term_output messages
+ * - Session ID tracking is CRITICAL for message routing
  *
- * Last Modified: v5.4.0 - Fixed terminal output routing
+ * Last Modified: v5.5.0 - Fixed handler storage and session ID tracking
  * ============================================
  */
 
@@ -36,6 +37,7 @@ let globalWsState = null;
 // Export function to set the global WebSocket (called by useAeroNyxWebSocket)
 export function setGlobalWebSocket(ws) {
   globalWebSocket = ws;
+  console.log('[useRemoteManagement] Global WebSocket updated:', !!ws);
 }
 
 // Export function to set the global WebSocket state
@@ -68,6 +70,9 @@ export function useRemoteManagement(nodeReference) {
   const jwtTokenRef = useRef(null);
   const jwtExpiryRef = useRef(null);
   const terminalTimeouts = useRef(new Map());
+  
+  // ⚠️ CRITICAL: Track active terminal session for this node
+  const activeTerminalSessionRef = useRef(null);
 
   // Check if JWT token is still valid
   const isJwtValid = useCallback(() => {
@@ -253,13 +258,15 @@ export function useRemoteManagement(nodeReference) {
       try {
         const data = JSON.parse(event.data);
         
-        // 调试日志
+        // 调试日志 - 显示所有终端相关消息
         if (data.type && data.type.includes('term')) {
-          console.log('[RemoteManagement] Terminal message:', {
+          console.log('[useRemoteManagement] Terminal message:', {
             type: data.type,
             sessionId: data.session_id,
             hasData: !!data.data,
-            dataPreview: data.data ? data.data.substring(0, 50) : null
+            dataLength: data.data ? data.data.length : 0,
+            activeSession: activeTerminalSessionRef.current,
+            handlersAvailable: Array.from(terminalHandlersRef.current.keys())
           });
         }
         
@@ -271,8 +278,11 @@ export function useRemoteManagement(nodeReference) {
         
         // 处理终端初始化成功 - term_ready 是服务端实际返回的类型
         if (data.type === 'term_ready') {
-          console.log('[RemoteManagement] Terminal ready:', data);
+          console.log('[useRemoteManagement] Terminal ready:', data);
           const sessionId = data.session_id;
+          
+          // ⚠️ CRITICAL: Update active session reference
+          activeTerminalSessionRef.current = sessionId;
           
           // 查找待处理的初始化请求
           const pendingKey = 'pending_' + nodeReference;
@@ -282,12 +292,16 @@ export function useRemoteManagement(nodeReference) {
             clearTimeout(pending.timeout);
             terminalTimeouts.current.delete(pendingKey);
             
-            // 如果 session_id 发生变化，更新 handlers
+            // ⚠️ CRITICAL: Update handlers mapping if session ID changed
             if (pending.tempSessionId !== sessionId) {
+              console.log('[useRemoteManagement] Session ID changed from', pending.tempSessionId, 'to', sessionId);
               const handlers = terminalHandlersRef.current.get(pending.tempSessionId);
               if (handlers) {
+                // Remove old mapping
                 terminalHandlersRef.current.delete(pending.tempSessionId);
+                // Add new mapping with server's session ID
                 terminalHandlersRef.current.set(sessionId, handlers);
+                console.log('[useRemoteManagement] Updated handlers mapping for new session ID');
               }
             }
             
@@ -317,43 +331,64 @@ export function useRemoteManagement(nodeReference) {
           }
         }
         
-        // 处理终端输出 - 关键修复
-        else if (data.type === 'term_output' && data.session_id) {
+        // 处理终端输出 - ⚠️ CRITICAL FIX
+        else if (data.type === 'term_output' && data.session_id && data.data) {
           const sessionId = data.session_id;
-          console.log('[RemoteManagement] Terminal output for session:', sessionId);
+          console.log('[useRemoteManagement] Terminal output for session:', sessionId, 'data:', data.data.substring(0, 50));
           
-          // 查找对应的处理器
-          let handlers = terminalHandlersRef.current.get(sessionId);
+          // ⚠️ CRITICAL: Try multiple methods to find handlers
+          let handlers = null;
           
-          // 如果没找到，尝试模糊匹配
+          // Method 1: Direct lookup
+          handlers = terminalHandlersRef.current.get(sessionId);
+          
+          // Method 2: Use active session reference
+          if (!handlers && activeTerminalSessionRef.current) {
+            handlers = terminalHandlersRef.current.get(activeTerminalSessionRef.current);
+            console.log('[useRemoteManagement] Using active session handlers');
+          }
+          
+          // Method 3: Find any handler for this node
           if (!handlers) {
             for (const [key, value] of terminalHandlersRef.current.entries()) {
-              // 检查是否是同一个节点的会话
+              // Check if this is for the same node
               if (key.includes(nodeReference) || sessionId.includes(nodeReference)) {
                 handlers = value;
-                // 更新映射
+                // Update mapping
                 terminalHandlersRef.current.delete(key);
                 terminalHandlersRef.current.set(sessionId, handlers);
-                console.log('[RemoteManagement] Found handler with fuzzy match');
+                activeTerminalSessionRef.current = sessionId;
+                console.log('[useRemoteManagement] Found handler with node reference match');
                 break;
               }
             }
           }
           
+          // Method 4: If only one handler exists, use it
+          if (!handlers && terminalHandlersRef.current.size === 1) {
+            const [key, value] = terminalHandlersRef.current.entries().next().value;
+            handlers = value;
+            // Update mapping
+            terminalHandlersRef.current.delete(key);
+            terminalHandlersRef.current.set(sessionId, handlers);
+            activeTerminalSessionRef.current = sessionId;
+            console.log('[useRemoteManagement] Using only available handler');
+          }
+          
           if (handlers?.onOutput) {
-            // 数据已经是原始文本，直接传递
-            console.log('[RemoteManagement] Passing output to terminal');
+            // ⚠️ CRITICAL: data.data is already pure text string, pass directly
+            console.log('[useRemoteManagement] Calling onOutput handler with data');
             handlers.onOutput(data.data);
           } else {
-            console.warn('[RemoteManagement] No output handler found for session:', sessionId);
-            console.log('[RemoteManagement] Available handlers:', 
-              Array.from(terminalHandlersRef.current.keys()));
+            console.error('[useRemoteManagement] ❌ No output handler found for session:', sessionId);
+            console.log('[useRemoteManagement] Available handlers:', Array.from(terminalHandlersRef.current.keys()));
+            console.log('[useRemoteManagement] Active session:', activeTerminalSessionRef.current);
           }
         }
         
         // 处理终端错误
         else if (data.type === 'term_error') {
-          console.error('[RemoteManagement] Terminal error:', data);
+          console.error('[useRemoteManagement] Terminal error:', data);
           
           const sessionId = data.session_id;
           if (sessionId) {
@@ -364,6 +399,9 @@ export function useRemoteManagement(nodeReference) {
             
             // 清理失败的会话
             terminalHandlersRef.current.delete(sessionId);
+            if (activeTerminalSessionRef.current === sessionId) {
+              activeTerminalSessionRef.current = null;
+            }
             setTerminalSessions(prev => {
               const next = new Map(prev);
               next.delete(sessionId);
@@ -384,7 +422,7 @@ export function useRemoteManagement(nodeReference) {
         
         // 处理终端关闭
         else if (data.type === 'term_closed' && data.session_id) {
-          console.log('[RemoteManagement] Terminal closed:', data.session_id);
+          console.log('[useRemoteManagement] Terminal closed:', data.session_id);
           const handlers = terminalHandlersRef.current.get(data.session_id);
           if (handlers?.onClose) {
             handlers.onClose();
@@ -392,6 +430,9 @@ export function useRemoteManagement(nodeReference) {
           
           // 清理资源
           terminalHandlersRef.current.delete(data.session_id);
+          if (activeTerminalSessionRef.current === data.session_id) {
+            activeTerminalSessionRef.current = null;
+          }
           setTerminalSessions(prev => {
             const next = new Map(prev);
             next.delete(data.session_id);
@@ -401,7 +442,7 @@ export function useRemoteManagement(nodeReference) {
         
         // 处理一般错误
         else if (data.type === 'error') {
-          console.error('[RemoteManagement] Error:', data);
+          console.error('[useRemoteManagement] Error:', data);
           
           // 特定错误代码处理
           if (['NODE_OFFLINE', 'NODE_NOT_FOUND', 'INVALID_SESSION', 
@@ -419,6 +460,9 @@ export function useRemoteManagement(nodeReference) {
             // 如果是会话错误，清理相关会话
             if (data.code === 'INVALID_SESSION' && data.session_id) {
               terminalHandlersRef.current.delete(data.session_id);
+              if (activeTerminalSessionRef.current === data.session_id) {
+                activeTerminalSessionRef.current = null;
+              }
               setTerminalSessions(prev => {
                 const next = new Map(prev);
                 next.delete(data.session_id);
@@ -451,7 +495,7 @@ export function useRemoteManagement(nodeReference) {
           }
         }
       } catch (err) {
-        console.error('[RemoteManagement] Error handling message:', err);
+        console.error('[useRemoteManagement] Error handling message:', err);
       }
     };
   
@@ -459,7 +503,7 @@ export function useRemoteManagement(nodeReference) {
     globalWebSocket.addEventListener('message', handler);
     messageHandlerRef.current = handler;
     
-    console.log('[RemoteManagement] Permanent handlers set up');
+    console.log('[useRemoteManagement] Permanent handlers set up');
   }, [nodeReference]);
 
   // Initialize terminal session
@@ -483,16 +527,25 @@ export function useRemoteManagement(nodeReference) {
       // Generate a unique session ID
       const tempSessionId = `term_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
-      // Store handlers BEFORE sending the init message
+      // ⚠️ CRITICAL: Store handlers BEFORE sending the init message
       // This ensures we can receive output even if term_ready is delayed
-      terminalHandlersRef.current.set(tempSessionId, {
+      const handlers = {
         onOutput: options.onOutput || null,
         onError: options.onError || null,
         onClose: options.onClose || null,
         onReady: options.onReady || null
-      });
+      };
+      
+      terminalHandlersRef.current.set(tempSessionId, handlers);
+      activeTerminalSessionRef.current = tempSessionId; // Track as active
       
       console.log('[useRemoteManagement] Stored handlers for session:', tempSessionId);
+      console.log('[useRemoteManagement] Handler functions:', {
+        hasOutput: !!handlers.onOutput,
+        hasError: !!handlers.onError,
+        hasClose: !!handlers.onClose,
+        hasReady: !!handlers.onReady
+      });
       
       // Set up timeout with fallback
       const timeout = setTimeout(() => {
@@ -553,7 +606,7 @@ export function useRemoteManagement(nodeReference) {
       return;
     }
 
-    console.log('[useRemoteManagement] Sending input to session:', termSessionId, 'data length:', data.length, 'data:', data);
+    console.log('[useRemoteManagement] Sending input to session:', termSessionId, 'data length:', data.length);
 
     const message = {
       type: 'term_input',
@@ -561,7 +614,7 @@ export function useRemoteManagement(nodeReference) {
       data: data // Send raw data as-is (no encoding needed)
     };
 
-    console.log('[useRemoteManagement] Sending term_input message:', message);
+    console.log('[useRemoteManagement] Sending term_input message');
     sendMessage(message);
   }, [isEnabled, sendMessage]);
 
@@ -615,6 +668,9 @@ export function useRemoteManagement(nodeReference) {
     
     // Clean up local state
     terminalHandlersRef.current.delete(termSessionId);
+    if (activeTerminalSessionRef.current === termSessionId) {
+      activeTerminalSessionRef.current = null;
+    }
     setTerminalSessions(prev => {
       const next = new Map(prev);
       next.delete(termSessionId);
@@ -762,6 +818,9 @@ export function useRemoteManagement(nodeReference) {
       
       // Clear terminal handlers
       terminalHandlersRef.current.clear();
+      
+      // Clear active session reference
+      activeTerminalSessionRef.current = null;
       
       // Clear JWT token
       jwtTokenRef.current = null;
