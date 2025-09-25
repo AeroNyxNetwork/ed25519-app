@@ -1,9 +1,9 @@
 /**
  * ============================================
- * File Creation/Modification Notes
+ * File: src/app/dashboard/nodes/[code]/page.js
  * ============================================
  * Creation Reason: Dynamic route for individual node details
- * Modification Reason: Professional Web3 UI upgrade with syntax fixes
+ * Modification Reason: Fix node status detection - node showing offline when actually online
  * Main Functionality: Display node details with professional Web3 aesthetics
  * Dependencies: useWallet, useAeroNyxWebSocket, RemoteManagement
  *
@@ -13,14 +13,15 @@
  * 3. Wait for monitoring to start and data to load
  * 4. Find matching node by code with proper error handling
  * 5. Display node details with professional Web3 UI
+ * 6. CRITICAL: Determine node status from multiple sources (status field, last_seen, etc.)
  *
  * ⚠️ Important Note for Next Developer:
- * - Maintains all original WebSocket authentication logic
- * - Enhanced UI following Web3 standards (Uniswap, dYdX, Aave)
- * - All existing functionality preserved
- * - Fixed SVG syntax issues for production build
+ * - Node status can be: active, online, running, connected (all mean online)
+ * - Also check last_seen time - if within 5 minutes, node is online
+ * - Remote management should work for any online node
+ * - Status field from server may vary, need normalization
  *
- * Last Modified: v3.0.1 - Professional Web3 UI with build fixes
+ * Last Modified: v3.1.0 - Fixed status detection logic
  * ============================================
  */
 
@@ -71,6 +72,58 @@ const colors = {
   pink: '#EC4899'
 };
 
+/**
+ * Normalize node status to standard values
+ * Handles various status strings from backend
+ */
+function normalizeNodeStatus(node) {
+  if (!node) return 'unknown';
+  
+  const status = node.status?.toLowerCase() || '';
+  
+  // Check explicit status values
+  if (['active', 'online', 'running', 'connected'].includes(status)) {
+    return 'online';
+  }
+  
+  if (['inactive', 'offline', 'disconnected', 'stopped'].includes(status)) {
+    return 'offline';
+  }
+  
+  if (['pending', 'starting', 'connecting'].includes(status)) {
+    return 'pending';
+  }
+  
+  // Check last_seen time as fallback
+  if (node.last_seen) {
+    try {
+      const lastSeenTime = new Date(node.last_seen).getTime();
+      const now = Date.now();
+      const timeDiff = now - lastSeenTime;
+      
+      // If last seen within 5 minutes, consider online
+      if (timeDiff < 5 * 60 * 1000) {
+        return 'online';
+      }
+      
+      // If last seen within 15 minutes, consider pending/unstable
+      if (timeDiff < 15 * 60 * 1000) {
+        return 'pending';
+      }
+    } catch (e) {
+      console.error('[NodeStatus] Error parsing last_seen:', e);
+    }
+  }
+  
+  // If we have performance data, node is likely online
+  if (node.performance && (node.performance.cpu > 0 || node.performance.memory > 0)) {
+    return 'online';
+  }
+  
+  // Default to the original status or offline
+  return status || 'offline';
+}
+
 export default function NodeDetailsPage({ params }) {
   const { code } = params;
   const { wallet } = useWallet();
@@ -107,7 +160,9 @@ export default function NodeDetailsPage({ params }) {
       nodes: nodes.map(n => ({ 
         code: n.code, 
         name: n.name,
-        status: n.status 
+        status: n.status,
+        normalized: normalizeNodeStatus(n),
+        last_seen: n.last_seen 
       }))
     });
   }, [code, isLoading, wsState, nodes, loadingState]);
@@ -116,6 +171,10 @@ export default function NodeDetailsPage({ params }) {
   const node = nodes.find(n => 
     n.code && n.code.toUpperCase() === code.toUpperCase()
   );
+
+  // Get normalized status
+  const nodeStatus = normalizeNodeStatus(node);
+  const isNodeOnline = nodeStatus === 'online';
 
   // Update loading state based on WebSocket state
   useEffect(() => {
@@ -322,7 +381,7 @@ export default function NodeDetailsPage({ params }) {
           <div className="mb-8 max-h-32 overflow-y-auto">
             {nodes.map(n => (
               <div key={n.code} className="text-xs text-gray-400 py-1 font-mono">
-                {n.code} - {n.name}
+                {n.code} - {n.name} - {normalizeNodeStatus(n)}
               </div>
             ))}
           </div>
@@ -356,17 +415,24 @@ export default function NodeDetailsPage({ params }) {
     dataProcessed: '2.3 PB'
   };
 
-  // Node found - render professional Web3 details
+  // Node status configuration with normalized status
   const statusConfig = {
-    active: { color: colors.success, Icon: CheckCircle, label: 'Active', glow: true },
     online: { color: colors.success, Icon: CheckCircle, label: 'Online', glow: true },
     offline: { color: colors.error, Icon: XCircle, label: 'Offline', glow: false },
     pending: { color: colors.warning, Icon: Clock, label: 'Pending', glow: false },
     unknown: { color: colors.info, Icon: AlertCircle, label: 'Unknown', glow: false }
   };
 
-  const status = statusConfig[node.status] || statusConfig.unknown;
+  const status = statusConfig[nodeStatus] || statusConfig.unknown;
   const StatusIcon = status.Icon;
+
+  console.log('[NodeDetails] Rendering node:', {
+    code: node.code,
+    originalStatus: node.status,
+    normalizedStatus: nodeStatus,
+    isOnline: isNodeOnline,
+    last_seen: node.last_seen
+  });
 
   return (
     <div className="min-h-screen bg-[#0A0A0F]">
@@ -442,10 +508,10 @@ export default function NodeDetailsPage({ params }) {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={() => setShowRemoteManagement(true)}
-                disabled={node.status !== 'active' && node.status !== 'online'}
+                disabled={!isNodeOnline}
                 className={clsx(
                   "flex items-center gap-2 px-5 py-2.5 rounded-xl transition-all font-medium text-sm",
-                  node.status === 'active' || node.status === 'online'
+                  isNodeOnline
                     ? "bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
                     : "bg-gray-700 cursor-not-allowed opacity-50"
                 )}
@@ -542,6 +608,13 @@ export default function NodeDetailsPage({ params }) {
                   <DetailRow label="Connections" value={enhancedNode.activeConnections} icon={Network} />
                   <DetailRow label="Data" value={enhancedNode.dataProcessed} icon={Database} />
                   <DetailRow label="Response" value="12ms avg" icon={Zap} />
+                  {node.last_seen && (
+                    <DetailRow 
+                      label="Last Seen" 
+                      value={new Date(node.last_seen).toLocaleString()} 
+                      icon={Clock} 
+                    />
+                  )}
                 </div>
               </ProfessionalCard>
             </div>
@@ -576,8 +649,8 @@ export default function NodeDetailsPage({ params }) {
         </div>
       </div>
 
-      {/* Remote Management Modal */}
-      {(node.status === 'active' || node.status === 'online') && (
+      {/* Remote Management Modal - Now checks normalized status */}
+      {isNodeOnline && (
         <RemoteManagement
           nodeReference={node.code}
           isOpen={showRemoteManagement}
