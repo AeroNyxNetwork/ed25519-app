@@ -1,28 +1,30 @@
 /**
  * ============================================
  * File Creation/Modification Notes
- * =========================================
+ * ============================================
  * Creation Reason: Web-based terminal interface for remote node management
- * Modification Reason: Fix output display issue where data wasn't being rendered
+ * Modification Reason: Fix terminal interaction issue - output not displaying
  * Main Functionality: 
  * - Terminal UI using xterm.js
  * - WebSocket communication for input/output
- * - Session management
+ * - Session management with proper data routing
  * 
  * Main Logical Flow:
  * 1. Initialize xterm.js terminal instance
  * 2. Connect to remote node via WebSocket
  * 3. Handle bidirectional data flow (input/output)
  * 4. Display terminal output and send user input
+ * 5. Properly decode and display WebSocket messages
  * 
  * ⚠️ Important Note for Next Developer:
  * - The core terminal instance must be preserved during component lifecycle
  * - WebSocket message handlers must be properly cleaned up
  * - Session ID management is critical for proper routing
- * - The fallback WebSocket listener ensures output is always displayed
+ * - Output data must be properly decoded before display
+ * - Global WebSocket listener ensures output is always captured
  * 
- * Last Modified: v2.1.0 - Fixed output display by adding fallback handler
- * ==========================================
+ * Last Modified: v2.2.0 - Fixed output display and interaction issues
+ * ============================================
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -117,6 +119,7 @@ export default function WebTerminal({
   const isInitializedRef = useRef(false);
   const sessionIdRef = useRef(null);
   const handlersRef = useRef({});
+  const wsListenerRef = useRef(null);
   
   // Make terminal instance globally accessible for debugging
   useEffect(() => {
@@ -180,8 +183,17 @@ export default function WebTerminal({
         const handleOutput = (data) => {
           console.log('[WebTerminal] Output handler called with:', typeof data, data?.length);
           if (data && term) {
-            // Write data directly to terminal
-            term.write(data);
+            // Ensure we're writing string data
+            if (typeof data === 'string') {
+              term.write(data);
+            } else if (data instanceof Uint8Array) {
+              // Convert Uint8Array to string
+              const decoder = new TextDecoder('utf-8');
+              term.write(decoder.decode(data));
+            } else if (typeof data === 'object' && data.data) {
+              // Handle wrapped data
+              term.write(data.data);
+            }
           }
         };
         
@@ -214,6 +226,14 @@ export default function WebTerminal({
           term.write('\x1b[32m● Connected to ' + nodeReference + '\x1b[0m\r\n');
           term.write('\x1b[90mSession: ' + sid + '\x1b[0m\r\n');
           term.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
+        };
+        
+        // Store handlers
+        handlersRef.current = {
+          onOutput: handleOutput,
+          onError: handleError,
+          onClose: handleClose,
+          onReady: handleReady
         };
         
         // Call parent's onInit with all handlers
@@ -313,7 +333,7 @@ export default function WebTerminal({
   }, [isEnabled, nodeReference]); // Only depend on stable values
 
   /**
-   * Fallback WebSocket listener
+   * Enhanced WebSocket listener with better message handling
    * This ensures output is displayed even if the callback chain fails
    */
   useEffect(() => {
@@ -323,34 +343,117 @@ export default function WebTerminal({
       try {
         const msg = JSON.parse(event.data);
         
+        // Debug logging for terminal messages
+        if (msg.type?.includes('term')) {
+          console.log('[WebTerminal] WS message:', {
+            type: msg.type,
+            sessionId: msg.session_id,
+            hasData: !!msg.data,
+            dataLength: msg.data?.length
+          });
+        }
+        
         // Check if this is a terminal output message for our session
-        if (msg.type === 'term_output' && 
-            msg.session_id === sessionIdRef.current && 
-            msg.data) {
+        if (msg.type === 'term_output' && msg.session_id && msg.data) {
+          // Try to match the session ID
+          const currentSessionId = sessionIdRef.current;
           
-          console.log('[WebTerminal] Fallback handler - writing output:', msg.data.length, 'chars');
-          
-          // Write directly to terminal
-          if (terminalRef.current) {
-            terminalRef.current.write(msg.data);
+          // Direct match or fuzzy match (for session ID changes)
+          if (msg.session_id === currentSessionId || 
+              (currentSessionId && msg.session_id.includes(nodeReference)) ||
+              (currentSessionId && currentSessionId.includes(nodeReference))) {
+            
+            console.log('[WebTerminal] Writing output from WS:', msg.data.length, 'chars');
+            
+            // Write directly to terminal, handling different data formats
+            if (terminalRef.current) {
+              const term = terminalRef.current;
+              
+              // Handle different data formats
+              if (typeof msg.data === 'string') {
+                // Direct string data
+                term.write(msg.data);
+              } else if (msg.data instanceof Uint8Array) {
+                // Binary data - convert to string
+                const decoder = new TextDecoder('utf-8');
+                term.write(decoder.decode(msg.data));
+              } else if (Array.isArray(msg.data)) {
+                // Array of bytes - convert to string
+                const uint8Array = new Uint8Array(msg.data);
+                const decoder = new TextDecoder('utf-8');
+                term.write(decoder.decode(uint8Array));
+              } else if (typeof msg.data === 'object' && msg.data.data) {
+                // Nested data object
+                term.write(msg.data.data);
+              }
+            }
           }
         }
+        
+        // Handle terminal ready message
+        else if (msg.type === 'term_ready' && msg.session_id) {
+          console.log('[WebTerminal] Terminal ready, updating session:', msg.session_id);
+          sessionIdRef.current = msg.session_id;
+          setSessionId(msg.session_id);
+          
+          // Call ready handler if available
+          if (handlersRef.current.onReady) {
+            handlersRef.current.onReady(msg);
+          }
+        }
+        
+        // Handle terminal errors
+        else if (msg.type === 'term_error' && msg.session_id === sessionIdRef.current) {
+          console.error('[WebTerminal] Terminal error from WS:', msg);
+          if (handlersRef.current.onError) {
+            handlersRef.current.onError(msg.error || msg.message || 'Unknown error');
+          }
+        }
+        
+        // Handle terminal close
+        else if (msg.type === 'term_closed' && msg.session_id === sessionIdRef.current) {
+          console.log('[WebTerminal] Terminal closed from WS');
+          if (handlersRef.current.onClose) {
+            handlersRef.current.onClose();
+          }
+        }
+        
       } catch (err) {
-        // Ignore JSON parse errors for non-JSON messages
+        // Ignore non-JSON messages
+        if (err instanceof SyntaxError) {
+          // Might be raw text data, try to display it
+          if (typeof event.data === 'string' && terminalRef.current) {
+            // Only write if it looks like terminal output
+            if (event.data.length < 10000 && !event.data.startsWith('{')) {
+              terminalRef.current.write(event.data);
+            }
+          }
+        } else {
+          console.error('[WebTerminal] Error handling WS message:', err);
+        }
       }
     };
     
+    // Clean up previous listener
+    if (wsListenerRef.current && window.globalWebSocket) {
+      window.globalWebSocket.removeEventListener('message', wsListenerRef.current);
+    }
+    
     // Add listener to global WebSocket
     if (window.globalWebSocket) {
+      wsListenerRef.current = handleWSMessage;
       window.globalWebSocket.addEventListener('message', handleWSMessage);
-      console.log('[WebTerminal] Fallback WebSocket listener attached');
+      console.log('[WebTerminal] Enhanced WebSocket listener attached');
       
       return () => {
-        window.globalWebSocket.removeEventListener('message', handleWSMessage);
-        console.log('[WebTerminal] Fallback WebSocket listener removed');
+        if (window.globalWebSocket && wsListenerRef.current) {
+          window.globalWebSocket.removeEventListener('message', wsListenerRef.current);
+          wsListenerRef.current = null;
+          console.log('[WebTerminal] Enhanced WebSocket listener removed');
+        }
       };
     }
-  }, [isEnabled]);
+  }, [isEnabled, nodeReference]);
 
   /**
    * Window resize handler
