@@ -6,7 +6,9 @@
  * Production-optimized configuration with proper build settings,
  * environment variables, and performance optimizations.
  * 
- * @version 1.0.0
+ * FIXED: Disabled reactStrictMode to prevent terminal input duplication
+ * 
+ * @version 1.0.1
  * @author AeroNyx Development Team
  * @since 2025-01-19
  */
@@ -14,7 +16,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // React configuration
-  reactStrictMode: true,
+  // ⚠️ FIX: Disabled StrictMode to prevent terminal input duplication
+  // StrictMode causes useEffect to run twice in development, which duplicates event handlers
+  reactStrictMode: false,
   swcMinify: true,
   
   // Environment variables
