@@ -4,17 +4,24 @@
  * ============================================
  * Terminal Container Component - Business Logic Layer
  * 
- * Responsibilities:
- * 1. Connect UI to business logic
- * 2. Manage terminal session lifecycle
- * 3. Handle state synchronization
- * 4. Coordinate with services and store
+ * Creation Reason: Container for terminal business logic
+ * Modification Reason: Improved error handling and lifecycle management
+ * Main Functionality: Manage terminal session lifecycle and state
+ * Dependencies: TerminalUI, terminalStore, terminalService
  * 
- * Features:
- * - Session management
- * - Error handling
- * - State synchronization
- * - Event handling
+ * Main Logical Flow:
+ * 1. Check WebSocket and node availability before initialization
+ * 2. Create or reconnect to terminal session
+ * 3. Handle input/output and terminal events
+ * 4. Properly cleanup on unmount or close
+ * 
+ * ⚠️ Important Note for Next Developer:
+ * - Must check WebSocket authentication before terminal init
+ * - Terminal UI must be ready before sending initialization
+ * - Session cleanup is critical to prevent memory leaks
+ * - Always use refs for async operations to prevent state updates on unmounted components
+ * 
+ * Last Modified: v2.0.0 - Improved initialization and error handling
  * ============================================
  */
 
@@ -77,12 +84,15 @@ export default function TerminalContainer({
   const [searchQuery, setSearchQuery] = useState('');
   const [connectionError, setConnectionError] = useState(null);
   const [sessionInfo, setSessionInfo] = useState(null);
+  const [terminalReady, setTerminalReady] = useState(false);
   
   // Refs
   const terminalUIRef = useRef(null);
   const terminalSessionRef = useRef(null);
   const outputBufferRef = useRef([]);
   const isInitializedRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const initTimeoutRef = useRef(null);
   
   // Get store state and actions
   const {
@@ -106,9 +116,18 @@ export default function TerminalContainer({
    * Initialize terminal session
    */
   const initializeSession = useCallback(async () => {
+    // Check if mounted
+    if (!isMountedRef.current) return;
+    
     // Prevent duplicate initialization
     if (isInitializedRef.current || isConnecting) {
       console.log('[TerminalContainer] Already initializing or initialized');
+      return;
+    }
+    
+    // Check if terminal UI is ready
+    if (!terminalReady) {
+      console.log('[TerminalContainer] Terminal UI not ready, waiting...');
       return;
     }
     
@@ -121,6 +140,16 @@ export default function TerminalContainer({
     // Check WebSocket connection
     if (!wsState.authenticated) {
       setConnectionError('WebSocket not authenticated. Please wait...');
+      
+      // Retry after a delay
+      if (initTimeoutRef.current) {
+        clearTimeout(initTimeoutRef.current);
+      }
+      initTimeoutRef.current = setTimeout(() => {
+        if (isMountedRef.current && wsState.authenticated) {
+          initializeSession();
+        }
+      }, 2000);
       return;
     }
     
@@ -165,41 +194,48 @@ export default function TerminalContainer({
       session.on('error', handleSessionError);
       session.on('closed', handleSessionClosed);
       
-      // Update state
-      setSessionInfo({
-        sessionId: activeSessionId,
-        nodeReference,
-        createdAt: Date.now()
-      });
-      setIsConnected(true);
-      setIsConnecting(false);
-      
-      // Write connection message
-      if (terminalUIRef.current) {
-        terminalUIRef.current.write('\x1b[32m● Connected to ' + nodeReference + '\x1b[0m\r\n');
-        terminalUIRef.current.write('\x1b[90mSession: ' + activeSessionId + '\x1b[0m\r\n');
-        terminalUIRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
+      // Update state if still mounted
+      if (isMountedRef.current) {
+        setSessionInfo({
+          sessionId: activeSessionId,
+          nodeReference,
+          createdAt: Date.now()
+        });
+        setIsConnected(true);
+        setIsConnecting(false);
+        
+        // Write connection message
+        if (terminalUIRef.current) {
+          terminalUIRef.current.write('\x1b[32m● Connected to ' + nodeReference + '\x1b[0m\r\n');
+          terminalUIRef.current.write('\x1b[90mSession: ' + activeSessionId + '\x1b[0m\r\n');
+          terminalUIRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
+        }
+        
+        // Flush any buffered output
+        flushOutputBuffer();
       }
-      
-      // Flush any buffered output
-      flushOutputBuffer();
       
     } catch (error) {
       console.error('[TerminalContainer] Failed to initialize session:', error);
-      setConnectionError(error.message);
-      setIsConnecting(false);
-      isInitializedRef.current = false;
       
-      if (onError) {
-        onError(error);
+      if (isMountedRef.current) {
+        setConnectionError(error.message || 'Failed to initialize terminal session');
+        setIsConnecting(false);
+        isInitializedRef.current = false;
+        
+        if (onError) {
+          onError(error);
+        }
       }
     }
-  }, [nodeReference, sessionId, isNodeOnline, wsState.authenticated, createSession, getSession, onError]);
+  }, [nodeReference, sessionId, isNodeOnline, wsState.authenticated, terminalReady, createSession, getSession, onError]);
   
   /**
    * Handle session output
    */
   const handleSessionOutput = useCallback((data) => {
+    if (!isMountedRef.current) return;
+    
     console.log('[TerminalContainer] Received output:', data.length, 'bytes');
     
     if (terminalUIRef.current) {
@@ -214,6 +250,8 @@ export default function TerminalContainer({
    * Handle session error
    */
   const handleSessionError = useCallback((error) => {
+    if (!isMountedRef.current) return;
+    
     console.error('[TerminalContainer] Session error:', error);
     setConnectionError(error.message || error);
     
@@ -230,6 +268,8 @@ export default function TerminalContainer({
    * Handle session closed
    */
   const handleSessionClosed = useCallback(() => {
+    if (!isMountedRef.current) return;
+    
     console.log('[TerminalContainer] Session closed');
     setIsConnected(false);
     
@@ -288,12 +328,19 @@ export default function TerminalContainer({
   const handleTerminalReady = useCallback(() => {
     console.log('[TerminalContainer] Terminal UI ready');
     
+    setTerminalReady(true);
+    
     // Flush any buffered output
     flushOutputBuffer();
     
     // Initialize session if auto-connect is enabled
     if (autoConnect && !isConnected && !isConnecting) {
-      initializeSession();
+      // Small delay to ensure everything is ready
+      setTimeout(() => {
+        if (isMountedRef.current) {
+          initializeSession();
+        }
+      }, 100);
     }
   }, [autoConnect, isConnected, isConnecting, initializeSession, flushOutputBuffer]);
   
@@ -334,10 +381,14 @@ export default function TerminalContainer({
     
     // Extract buffer content
     const lines = [];
-    for (let i = 0; i < terminal.buffer.active.length; i++) {
-      const line = terminal.buffer.active.getLine(i);
-      if (line) {
-        lines.push(line.translateToString(true));
+    const buffer = terminal.buffer;
+    
+    if (buffer && buffer.active) {
+      for (let i = 0; i < buffer.active.length; i++) {
+        const line = buffer.active.getLine(i);
+        if (line) {
+          lines.push(line.translateToString(true));
+        }
       }
     }
     
@@ -402,16 +453,43 @@ export default function TerminalContainer({
     }
   }, [sessionInfo, closeSession, onClose]);
   
+  /**
+   * Retry connection
+   */
+  const retryConnection = useCallback(() => {
+    setConnectionError(null);
+    isInitializedRef.current = false;
+    setIsConnecting(false);
+    
+    // Reset and try again
+    setTimeout(() => {
+      if (isMountedRef.current) {
+        initializeSession();
+      }
+    }, 100);
+  }, [initializeSession]);
+  
   // ==================== Effects ====================
   
   /**
-   * Auto-connect on mount if enabled
+   * Set mounted ref
    */
   useEffect(() => {
-    if (autoConnect && !isConnected && !isConnecting && isNodeOnline && wsState.authenticated) {
+    isMountedRef.current = true;
+    
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+  
+  /**
+   * Auto-connect when conditions are met
+   */
+  useEffect(() => {
+    if (autoConnect && terminalReady && !isConnected && !isConnecting && isNodeOnline && wsState.authenticated) {
       initializeSession();
     }
-  }, [autoConnect, isNodeOnline, wsState.authenticated]);
+  }, [autoConnect, terminalReady, isNodeOnline, wsState.authenticated, isConnected, isConnecting, initializeSession]);
   
   /**
    * Cleanup on unmount
@@ -419,6 +497,11 @@ export default function TerminalContainer({
   useEffect(() => {
     return () => {
       console.log('[TerminalContainer] Unmounting, cleaning up');
+      
+      // Clear timeout
+      if (initTimeoutRef.current) {
+        clearTimeout(initTimeoutRef.current);
+      }
       
       // Clean up session
       if (sessionInfo && terminalSessionRef.current) {
@@ -573,11 +656,7 @@ export default function TerminalContainer({
               )}
               {isNodeOnline && (
                 <button
-                  onClick={() => {
-                    setConnectionError(null);
-                    isInitializedRef.current = false;
-                    initializeSession();
-                  }}
+                  onClick={retryConnection}
                   className="mt-4 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded text-white transition-colors"
                 >
                   Retry Connection
