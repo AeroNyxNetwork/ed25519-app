@@ -2,32 +2,11 @@
  * ============================================
  * File: src/hooks/useAeroNyxWebSocket.js
  * ============================================
- * Creation Reason: WebSocket hook for real-time node monitoring
- * Modification Reason: Fixed terminal message forwarding - messages were not being passed to listeners
- * Main Functionality: Singleton WebSocket connection management with proper auth and message forwarding
- * Dependencies: useWallet, nodeRegistrationService, useRemoteManagement
- *
- * Main Logical Flow:
- * 1. Connect to WebSocket server
- * 2. Share WebSocket instance globally for RemoteManagement
- * 3. Request signature message using get_message
- * 4. Receive signature_message from server
- * 5. Sign message with wallet
- * 6. Send auth with signature (using 'message' field, NOT 'signature_message')
- * 7. Start monitoring after successful auth
- * 8. CRITICAL: Forward ALL messages to listeners, including terminal messages
- *
- * ⚠️ Important Note for Next Developer:
- * - Backend expects get_message -> signature_message -> auth flow
- * - Auth message MUST use 'message' field, NOT 'signature_message'
- * - Auth message MUST use 'ethereum' as wallet_type
- * - Must authenticate BEFORE sending any other messages
- * - Session tokens are stored for 30 minutes
- * - This uses singleton pattern - only ONE connection
- * - CRITICAL: Must share WebSocket with RemoteManagement via setGlobalWebSocket
- * - CRITICAL: Must forward ALL messages to listeners, not just known types
- *
- * Last Modified: v7.1.0 - Fixed terminal message forwarding
+ * UPDATED VERSION - Integrates with new WebSocket Service
+ * Changes:
+ * 1. Added integration with centralized WebSocketService
+ * 2. Sync WebSocket instance with the service layer
+ * 3. Share authentication state with terminal system
  * ============================================
  */
 
@@ -39,6 +18,9 @@ import nodeRegistrationService from '../lib/api/nodeRegistration';
 
 // Import the setter functions from useRemoteManagement to share WebSocket
 import { setGlobalWebSocket, setGlobalWsState } from './useRemoteManagement';
+
+// Import the new WebSocket service for integration
+import webSocketService from '../services/WebSocketService';
 
 /**
  * WebSocket connection states
@@ -103,6 +85,31 @@ class WebSocketManager {
   }
 
   /**
+   * Sync with centralized WebSocket service
+   * This is the KEY integration point with the new terminal system
+   */
+  syncWithService() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      // Update the centralized service with current connection
+      webSocketService.ws = this.ws;
+      webSocketService.walletAddress = this.walletAddress;
+      webSocketService.walletProvider = this.walletProvider;
+      webSocketService.isConnected = true;
+      webSocketService.isAuthenticated = this.sessionToken ? true : false;
+      webSocketService.sessionToken = this.sessionToken;
+      
+      // Sync state
+      webSocketService.updateState({
+        connected: true,
+        authenticated: this.sessionToken ? true : false,
+        monitoring: globalState.wsState.monitoring
+      });
+      
+      console.log('[WebSocketManager] Synced with centralized WebSocket service');
+    }
+  }
+
+  /**
    * Get stored session if valid
    */
   getStoredSession(walletAddress) {
@@ -144,6 +151,10 @@ class WebSocketManager {
       };
       
       sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+      
+      // Also store in centralized service
+      webSocketService.storeSession(sessionToken);
+      
       console.log('[WebSocketManager] Session stored for 30 minutes');
     } catch (error) {
       console.error('[WebSocketManager] Error storing session:', error);
@@ -152,7 +163,7 @@ class WebSocketManager {
 
   /**
    * Update global state and notify listeners
-   * CRITICAL: Also share state with RemoteManagement
+   * CRITICAL: Also share state with RemoteManagement and WebSocketService
    */
   updateState(updates) {
     if (updates.wsState) {
@@ -162,10 +173,20 @@ class WebSocketManager {
       if (typeof setGlobalWsState === 'function') {
         setGlobalWsState(globalState.wsState);
       }
+      
+      // Sync with centralized service
+      if (webSocketService) {
+        webSocketService.updateState(globalState.wsState);
+      }
     }
     
     if (updates.data) {
       globalState.data = { ...globalState.data, ...updates.data };
+      
+      // Update nodes in centralized service
+      if (updates.data.nodes && webSocketService) {
+        webSocketService.emit('statusUpdate', { nodes: updates.data.nodes });
+      }
     }
     
     // Notify all listeners
@@ -181,6 +202,12 @@ class WebSocketManager {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       console.log('[WebSocketManager] Sending message:', messageData.type);
       this.ws.send(JSON.stringify(messageData));
+      
+      // Also send through centralized service if it's a terminal message
+      if (messageData.type && messageData.type.startsWith('term_')) {
+        webSocketService.send(messageData);
+      }
+      
       return true;
     }
     console.warn('[WebSocketManager] Cannot send message - WebSocket not open');
@@ -323,8 +350,26 @@ class WebSocketManager {
       const messageData = JSON.parse(event.data);
       console.log('[WebSocketManager] Received:', messageData.type, messageData);
       
-      // ⚠️ CRITICAL: Forward message to all listeners FIRST
-      // This ensures terminal messages reach useRemoteManagement
+      // ⚠️ CRITICAL: Forward message to centralized service for terminal handling
+      if (messageData.type && messageData.type.startsWith('term_')) {
+        // Emit through centralized service
+        switch (messageData.type) {
+          case 'term_ready':
+            webSocketService.emit('terminalReady', messageData);
+            break;
+          case 'term_output':
+            webSocketService.emit('terminalOutput', messageData);
+            break;
+          case 'term_error':
+            webSocketService.emit('terminalError', messageData);
+            break;
+          case 'term_closed':
+            webSocketService.emit('terminalClosed', messageData);
+            break;
+        }
+      }
+      
+      // Forward message to all listeners
       globalListeners.forEach(listener => {
         if (listener.onMessage) {
           try {
@@ -340,6 +385,9 @@ class WebSocketManager {
         case 'connected':
           // WebSocket connected, wait before starting auth
           this.updateState({ wsState: { connected: true, authState: 'connected' }});
+          
+          // Sync with service
+          this.syncWithService();
           
           // Start authentication after a small delay
           setTimeout(() => {
@@ -403,6 +451,9 @@ class WebSocketManager {
             }
           });
           
+          // Sync with service after auth
+          this.syncWithService();
+          
           // Setup ping interval now that we're authenticated
           this.setupPingInterval();
           
@@ -419,6 +470,9 @@ class WebSocketManager {
         case 'monitor_started':
           console.log('[WebSocketManager] Monitoring started');
           this.updateState({ wsState: { monitoring: true }});
+          
+          // Sync with service
+          this.syncWithService();
           break;
           
         case 'status_update':
@@ -439,6 +493,9 @@ class WebSocketManager {
             sessionStorage.removeItem(SESSION_STORAGE_KEY);
             this.sessionToken = null;
             this.authenticationInProgress = false;
+            
+            // Clear in centralized service too
+            webSocketService.clearStoredSession();
             
             // Retry authentication with signature
             console.log('[WebSocketManager] Session invalid, retrying authentication');
@@ -480,16 +537,6 @@ class WebSocketManager {
           // Handle heartbeat acknowledgment
           this.lastPong = Date.now();
           console.log('[WebSocketManager] Heartbeat acknowledged');
-          break;
-          
-        // ⚠️ CRITICAL: Terminal messages are handled by listeners, not here
-        // We only log them for debugging
-        case 'term_ready':
-        case 'term_output':
-        case 'term_error':
-        case 'term_closed':
-          console.log('[WebSocketManager] Terminal message:', messageData.type, 'for session:', messageData.session_id);
-          // These are handled by useRemoteManagement through the listener
           break;
           
         default:
@@ -550,19 +597,22 @@ class WebSocketManager {
 
   /**
    * Connect to WebSocket
-   * CRITICAL: Must share WebSocket instance with RemoteManagement
+   * CRITICAL: Must share WebSocket instance with RemoteManagement and WebSocketService
    */
   async connect(wallet) {
     // Check if already connected
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       console.log('[WebSocketManager] Already connected or connecting');
       
-      // CRITICAL: Still share the existing WebSocket with RemoteManagement
+      // CRITICAL: Still share the existing WebSocket with RemoteManagement and Service
       if (typeof setGlobalWebSocket === 'function') {
         setGlobalWebSocket(this.ws);
         setGlobalWsState(globalState.wsState);
         console.log('[WebSocketManager] Shared existing WebSocket with RemoteManagement');
       }
+      
+      // Sync with service
+      this.syncWithService();
       return;
     }
 
@@ -607,6 +657,9 @@ class WebSocketManager {
         console.log('[WebSocketManager] Shared WebSocket with RemoteManagement');
       }
       
+      // Sync with centralized service
+      this.syncWithService();
+      
       // Make it globally accessible for debugging
       window.globalWebSocket = this.ws;
       
@@ -640,6 +693,9 @@ class WebSocketManager {
         this.updateState({ 
           wsState: { connected: true, error: null }
         });
+        
+        // Sync with service
+        this.syncWithService();
       };
       
       this.ws.onmessage = (event) => this.handleMessage(event);
@@ -671,11 +727,16 @@ class WebSocketManager {
         this.isConnecting = false;
         this.authenticationInProgress = false;
         
-        // CRITICAL: Clear global WebSocket in RemoteManagement
+        // CRITICAL: Clear global WebSocket in RemoteManagement and Service
         if (typeof setGlobalWebSocket === 'function') {
           setGlobalWebSocket(null);
           console.log('[WebSocketManager] Cleared global WebSocket in RemoteManagement');
         }
+        
+        // Clear in centralized service
+        webSocketService.ws = null;
+        webSocketService.isConnected = false;
+        webSocketService.isAuthenticated = false;
         
         if (this.pingInterval) {
           clearInterval(this.pingInterval);
@@ -711,10 +772,13 @@ class WebSocketManager {
       this.isConnecting = false;
       this.authenticationInProgress = false;
       
-      // Clear global WebSocket in RemoteManagement
+      // Clear global WebSocket in RemoteManagement and Service
       if (typeof setGlobalWebSocket === 'function') {
         setGlobalWebSocket(null);
       }
+      
+      webSocketService.ws = null;
+      webSocketService.isConnected = false;
       
       this.updateState({ 
         wsState: { 
@@ -796,10 +860,14 @@ class WebSocketManager {
       globalWebSocketInstance = null;
       window.globalWebSocket = null;
       
-      // Clear global WebSocket in RemoteManagement
+      // Clear global WebSocket in RemoteManagement and Service
       if (typeof setGlobalWebSocket === 'function') {
         setGlobalWebSocket(null);
       }
+      
+      webSocketService.ws = null;
+      webSocketService.isConnected = false;
+      webSocketService.isAuthenticated = false;
     }
     
     this.authenticationInProgress = false;
@@ -811,6 +879,7 @@ class WebSocketManager {
   clearSession() {
     sessionStorage.removeItem(SESSION_STORAGE_KEY);
     this.sessionToken = null;
+    webSocketService.clearStoredSession();
     console.log('[WebSocketManager] Session cleared');
   }
 }
