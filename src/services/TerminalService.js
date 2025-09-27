@@ -21,7 +21,7 @@ import webSocketService from './WebSocketService';
 import EventEmitter from 'events';
 
 // Terminal session states
-export const TERMINAL_STATE = {
+const TERMINAL_STATE = {
   IDLE: 'idle',
   INITIALIZING: 'initializing',
   READY: 'ready',
@@ -485,6 +485,6 @@ setInterval(() => {
   terminalService.cleanupIdleSessions();
 }, 5 * 60 * 1000); // Check every 5 minutes
 
-// Export service
+// Export service and related items
 export default terminalService;
 export { TerminalSession, TERMINAL_STATE };
