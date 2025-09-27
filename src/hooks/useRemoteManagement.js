@@ -266,6 +266,48 @@ export function useRemoteManagement(nodeReference) {
     return initializeTerminal();
   }, [closeTerminal, initializeTerminal]);
   
+  // ==================== WebSocket Error Handling ====================
+  
+  /**
+   * Listen for WebSocket errors related to remote management
+   */
+  useEffect(() => {
+    const handleWebSocketError = (message) => {
+      console.log('[useRemoteManagement] WebSocket error received:', message);
+      
+      // Check for remote management specific errors
+      if (message.code === 'REMOTE_NOT_ENABLED') {
+        if (isMountedRef.current) {
+          setError('Remote management is not enabled for this node. Please enable it in your node configuration.');
+          setIsConnecting(false);
+          setTerminalReady(false);
+          isInitializedRef.current = false;
+        }
+      } else if (message.code === 'NODE_NOT_FOUND') {
+        if (isMountedRef.current) {
+          setError('Node not found or not accessible.');
+          setIsConnecting(false);
+          setTerminalReady(false);
+          isInitializedRef.current = false;
+        }
+      } else if (message.code === 'PERMISSION_DENIED') {
+        if (isMountedRef.current) {
+          setError('You do not have permission to access this node remotely.');
+          setIsConnecting(false);
+          setTerminalReady(false);
+          isInitializedRef.current = false;
+        }
+      }
+    };
+    
+    // Listen to WebSocket service errors
+    webSocketService.on('error', handleWebSocketError);
+    
+    return () => {
+      webSocketService.off('error', handleWebSocketError);
+    };
+  }, []);
+  
   // ==================== Effects ====================
   
   /**
