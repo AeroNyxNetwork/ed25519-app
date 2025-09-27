@@ -16,11 +16,13 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWallet } from '../components/wallet/WalletProvider';
 import nodeRegistrationService from '../lib/api/nodeRegistration';
 
-// Import the setter functions from useRemoteManagement to share WebSocket
-import { setGlobalWebSocket, setGlobalWsState } from './useRemoteManagement';
-
 // Import the new WebSocket service for integration
 import webSocketService from '../services/WebSocketService';
+
+// Global setter functions (previously from useRemoteManagement)
+// These are now defined locally since RemoteManagement uses the service directly
+let setGlobalWebSocket = null;
+let setGlobalWsState = null;
 
 /**
  * WebSocket connection states
@@ -169,8 +171,9 @@ class WebSocketManager {
     if (updates.wsState) {
       globalState.wsState = { ...globalState.wsState, ...updates.wsState };
       
-      // CRITICAL: Share WebSocket state with RemoteManagement
-      if (typeof setGlobalWsState === 'function') {
+      // Share WebSocket state globally if setter is available
+      // (RemoteManagement now uses the service directly, so this is optional)
+      if (setGlobalWsState && typeof setGlobalWsState === 'function') {
         setGlobalWsState(globalState.wsState);
       }
       
@@ -648,13 +651,14 @@ class WebSocketManager {
       console.log('[WebSocketManager] Connecting to WebSocket:', wsUrl);
       this.ws = new WebSocket(wsUrl);
       
+      
       // Store as global
       globalWebSocketInstance = this.ws;
       
-      // CRITICAL: Share WebSocket with RemoteManagement immediately
-      if (typeof setGlobalWebSocket === 'function') {
+      // Share WebSocket instance globally if setter is available
+      if (setGlobalWebSocket && typeof setGlobalWebSocket === 'function') {
         setGlobalWebSocket(this.ws);
-        console.log('[WebSocketManager] Shared WebSocket with RemoteManagement');
+        console.log('[WebSocketManager] Shared WebSocket with global state');
       }
       
       // Sync with centralized service
@@ -727,10 +731,10 @@ class WebSocketManager {
         this.isConnecting = false;
         this.authenticationInProgress = false;
         
-        // CRITICAL: Clear global WebSocket in RemoteManagement and Service
-        if (typeof setGlobalWebSocket === 'function') {
+        // Clear global WebSocket if setter is available
+        if (setGlobalWebSocket && typeof setGlobalWebSocket === 'function') {
           setGlobalWebSocket(null);
-          console.log('[WebSocketManager] Cleared global WebSocket in RemoteManagement');
+          console.log('[WebSocketManager] Cleared global WebSocket');
         }
         
         // Clear in centralized service
@@ -772,8 +776,8 @@ class WebSocketManager {
       this.isConnecting = false;
       this.authenticationInProgress = false;
       
-      // Clear global WebSocket in RemoteManagement and Service
-      if (typeof setGlobalWebSocket === 'function') {
+      // Clear global WebSocket if setter is available
+      if (setGlobalWebSocket && typeof setGlobalWebSocket === 'function') {
         setGlobalWebSocket(null);
       }
       
@@ -860,8 +864,8 @@ class WebSocketManager {
       globalWebSocketInstance = null;
       window.globalWebSocket = null;
       
-      // Clear global WebSocket in RemoteManagement and Service
-      if (typeof setGlobalWebSocket === 'function') {
+      // Clear global WebSocket if setter is available
+      if (setGlobalWebSocket && typeof setGlobalWebSocket === 'function') {
         setGlobalWebSocket(null);
       }
       
