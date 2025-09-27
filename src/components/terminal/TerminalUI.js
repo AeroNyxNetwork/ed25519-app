@@ -2,7 +2,7 @@
  * ============================================
  * File: src/components/terminal/TerminalUI.js
  * ============================================
- * Pure display terminal UI component
+ * Pure display terminal UI component - FIXED VERSION
  * 
  * Responsibilities:
  * 1. Render terminal interface
@@ -113,10 +113,7 @@ const TerminalUI = forwardRef(({
   const terminalRef = useRef(null);
   const fitAddonRef = useRef(null);
   const searchAddonRef = useRef(null);
-  
-  // Input deduplication (to prevent React StrictMode issues)
-  const lastInputRef = useRef({ data: '', timestamp: 0 });
-  const INPUT_DEBOUNCE_MS = 5;
+  const isInitialized = useRef(false);
   
   /**
    * Methods exposed to parent component
@@ -127,8 +124,12 @@ const TerminalUI = forwardRef(({
      * @param {string} data - Data to display
      */
     write: (data) => {
-      if (terminalRef.current && !terminalRef.current.disposed) {
-        terminalRef.current.write(data);
+      if (terminalRef.current) {
+        try {
+          terminalRef.current.write(data);
+        } catch (e) {
+          console.error('[TerminalUI] Write error:', e);
+        }
       }
     },
     
@@ -136,8 +137,12 @@ const TerminalUI = forwardRef(({
      * Clear terminal content
      */
     clear: () => {
-      if (terminalRef.current && !terminalRef.current.disposed) {
-        terminalRef.current.clear();
+      if (terminalRef.current) {
+        try {
+          terminalRef.current.clear();
+        } catch (e) {
+          console.error('[TerminalUI] Clear error:', e);
+        }
       }
     },
     
@@ -145,8 +150,12 @@ const TerminalUI = forwardRef(({
      * Reset terminal
      */
     reset: () => {
-      if (terminalRef.current && !terminalRef.current.disposed) {
-        terminalRef.current.reset();
+      if (terminalRef.current) {
+        try {
+          terminalRef.current.reset();
+        } catch (e) {
+          console.error('[TerminalUI] Reset error:', e);
+        }
       }
     },
     
@@ -154,8 +163,12 @@ const TerminalUI = forwardRef(({
      * Resize terminal
      */
     fit: () => {
-      if (fitAddonRef.current) {
-        fitAddonRef.current.fit();
+      if (fitAddonRef.current && terminalRef.current) {
+        try {
+          fitAddonRef.current.fit();
+        } catch (e) {
+          console.error('[TerminalUI] Fit error:', e);
+        }
       }
     },
     
@@ -163,8 +176,12 @@ const TerminalUI = forwardRef(({
      * Get selected text
      */
     getSelection: () => {
-      if (terminalRef.current && !terminalRef.current.disposed) {
-        return terminalRef.current.getSelection();
+      if (terminalRef.current) {
+        try {
+          return terminalRef.current.getSelection();
+        } catch (e) {
+          console.error('[TerminalUI] Get selection error:', e);
+        }
       }
       return '';
     },
@@ -175,7 +192,11 @@ const TerminalUI = forwardRef(({
      */
     search: (query) => {
       if (searchAddonRef.current) {
-        searchAddonRef.current.findNext(query);
+        try {
+          searchAddonRef.current.findNext(query);
+        } catch (e) {
+          console.error('[TerminalUI] Search error:', e);
+        }
       }
     },
     
@@ -189,184 +210,189 @@ const TerminalUI = forwardRef(({
    * Initialize terminal
    */
   useEffect(() => {
-    if (!containerRef.current) return;
+    // Prevent double initialization
+    if (isInitialized.current || !containerRef.current) return;
     
     console.log('[TerminalUI] Initializing terminal');
+    isInitialized.current = true;
     
-    // Create terminal instance
-    const term = new Terminal({
-      theme: TERMINAL_THEMES[theme],
-      fontSize,
-      fontFamily,
-      rows,
-      cols,
-      cursorBlink: true,
-      scrollback: 10000,
-      convertEol: true,
-      windowsMode: false,
-      macOptionIsMeta: true,
-      rightClickSelectsWord: true,
-      allowTransparency: false
-    });
+    let term = null;
+    let fitAddon = null;
+    let searchAddon = null;
+    let disposables = [];
     
-    // Create addons
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    fitAddonRef.current = fitAddon;
-    
-    if (enableLinks) {
-      const webLinksAddon = new WebLinksAddon();
-      term.loadAddon(webLinksAddon);
-    }
-    
-    if (enableSearch) {
-      const searchAddon = new SearchAddon();
-      term.loadAddon(searchAddon);
-      searchAddonRef.current = searchAddon;
-    }
-    
-    // Save reference
-    terminalRef.current = term;
-    
-    // Open terminal
-    term.open(containerRef.current);
-    fitAddon.fit();
-    
-    // Set input handler (with deduplication)
-    const inputDisposable = term.onData((data) => {
-      const now = Date.now();
+    try {
+      // Create terminal instance
+      term = new Terminal({
+        theme: TERMINAL_THEMES[theme],
+        fontSize,
+        fontFamily,
+        rows,
+        cols,
+        cursorBlink: true,
+        scrollback: 10000,
+        convertEol: true,
+        windowsMode: false,
+        macOptionIsMeta: true,
+        rightClickSelectsWord: true,
+        allowTransparency: false
+      });
       
-      // Check for duplicate input
-      if (data === lastInputRef.current.data && 
-          (now - lastInputRef.current.timestamp) < INPUT_DEBOUNCE_MS) {
-        console.log('[TerminalUI] Blocked duplicate input');
-        return;
+      // Store reference
+      terminalRef.current = term;
+      
+      // Create and load addons
+      fitAddon = new FitAddon();
+      term.loadAddon(fitAddon);
+      fitAddonRef.current = fitAddon;
+      
+      if (enableLinks) {
+        const webLinksAddon = new WebLinksAddon();
+        term.loadAddon(webLinksAddon);
       }
       
-      lastInputRef.current = { data, timestamp: now };
+      if (enableSearch) {
+        searchAddon = new SearchAddon();
+        term.loadAddon(searchAddon);
+        searchAddonRef.current = searchAddon;
+      }
       
+      // Open terminal in container
+      term.open(containerRef.current);
+      
+      // Initial fit
+      setTimeout(() => {
+        if (fitAddon) {
+          try {
+            fitAddon.fit();
+          } catch (e) {
+            console.error('[TerminalUI] Initial fit error:', e);
+          }
+        }
+      }, 10);
+      
+      // Set up event handlers
       if (onInput) {
-        onInput(data);
+        const inputDisposable = term.onData(onInput);
+        disposables.push(inputDisposable);
       }
-    });
-    
-    // Set resize handler
-    const resizeDisposable = term.onResize(({ rows, cols }) => {
+      
       if (onResize) {
-        onResize(rows, cols);
+        const resizeDisposable = term.onResize(({ rows, cols }) => {
+          onResize(rows, cols);
+        });
+        disposables.push(resizeDisposable);
       }
-    });
-    
-    // Set keyboard shortcuts
-    if (enableClipboard) {
-      term.attachCustomKeyEventHandler((event) => {
-        if (event.type === 'keydown') {
-          // Ctrl+C copy
-          if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
-            const selection = term.getSelection();
-            if (selection) {
-              navigator.clipboard.writeText(selection).catch(console.error);
+      
+      // Handle clipboard
+      if (enableClipboard) {
+        term.attachCustomKeyEventHandler((event) => {
+          if (event.type === 'keydown') {
+            // Ctrl+C copy
+            if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
+              const selection = term.getSelection();
+              if (selection) {
+                navigator.clipboard.writeText(selection).catch(console.error);
+                return false;
+              }
+            }
+            
+            // Ctrl+V paste
+            if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
+              event.preventDefault();
+              navigator.clipboard.readText().then(text => {
+                if (text && onInput) {
+                  onInput(text);
+                }
+              }).catch(console.error);
               return false;
             }
           }
-          
-          // Ctrl+V paste
-          if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
-            event.preventDefault();
-            navigator.clipboard.readText().then(text => {
-              if (text && onInput) {
-                // Use deduplication logic
-                const now = Date.now();
-                if (text !== lastInputRef.current.data || 
-                    (now - lastInputRef.current.timestamp) >= INPUT_DEBOUNCE_MS) {
-                  lastInputRef.current = { data: text, timestamp: now };
-                  onInput(text);
-                }
-              }
-            }).catch(console.error);
-            return false;
-          }
-        }
-        return true;
-      });
-    }
-    
-    // Notify ready
-    if (onReady) {
-      onReady();
+          return true;
+        });
+      }
+      
+      // Notify ready
+      if (onReady) {
+        setTimeout(onReady, 50);
+      }
+      
+    } catch (error) {
+      console.error('[TerminalUI] Initialization error:', error);
+      isInitialized.current = false;
     }
     
     // Cleanup function
     return () => {
-      console.log('[TerminalUI] Disposing terminal');
+      console.log('[TerminalUI] Cleaning up terminal');
+      isInitialized.current = false;
       
-      // Notify disposal
-      if (onDispose) {
-        onDispose();
-      }
-      
-      // Clean up event listeners
-      inputDisposable.dispose();
-      resizeDisposable.dispose();
-      
-      // Dispose terminal
-      if (!term.disposed) {
-        term.dispose();
-      }
+      // Dispose event listeners
+      disposables.forEach(d => {
+        try {
+          d.dispose();
+        } catch (e) {
+          console.error('[TerminalUI] Dispose listener error:', e);
+        }
+      });
       
       // Clear references
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
-      lastInputRef.current = { data: '', timestamp: 0 };
-    };
-  }, []); // Only initialize on component mount
-  
-  /**
-   * Handle theme changes
-   */
-  useEffect(() => {
-    if (terminalRef.current && !terminalRef.current.disposed) {
-      terminalRef.current.setOption('theme', TERMINAL_THEMES[theme]);
-    }
-  }, [theme]);
-  
-  /**
-   * Handle font size changes
-   */
-  useEffect(() => {
-    if (terminalRef.current && !terminalRef.current.disposed) {
-      terminalRef.current.setOption('fontSize', fontSize);
-      if (fitAddonRef.current) {
-        setTimeout(() => fitAddonRef.current.fit(), 100);
+      
+      // Dispose terminal
+      if (term) {
+        try {
+          term.dispose();
+        } catch (e) {
+          console.error('[TerminalUI] Dispose terminal error:', e);
+        }
       }
-    }
-  }, [fontSize]);
+      
+      // Notify disposal
+      if (onDispose) {
+        onDispose();
+      }
+    };
+  }, []); // Empty deps - only run once
   
   /**
-   * Window resize handler
+   * Handle window resize
    */
   useEffect(() => {
-    if (!fitAddonRef.current) return;
-    
     const handleResize = () => {
-      if (fitAddonRef.current) {
-        fitAddonRef.current.fit();
+      if (fitAddonRef.current && terminalRef.current) {
+        try {
+          fitAddonRef.current.fit();
+        } catch (e) {
+          console.error('[TerminalUI] Resize error:', e);
+        }
       }
     };
     
-    // Use ResizeObserver to monitor container size changes
-    const resizeObserver = new ResizeObserver(handleResize);
-    if (containerRef.current) {
+    // Debounce resize
+    let resizeTimer;
+    const debouncedResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(handleResize, 100);
+    };
+    
+    window.addEventListener('resize', debouncedResize);
+    
+    // Also observe container size changes
+    let resizeObserver;
+    if (containerRef.current && window.ResizeObserver) {
+      resizeObserver = new ResizeObserver(debouncedResize);
       resizeObserver.observe(containerRef.current);
     }
     
-    // Monitor window size changes
-    window.addEventListener('resize', handleResize);
-    
     return () => {
-      resizeObserver.disconnect();
-      window.removeEventListener('resize', handleResize);
+      clearTimeout(resizeTimer);
+      window.removeEventListener('resize', debouncedResize);
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
     };
   }, []);
   
