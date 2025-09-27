@@ -575,8 +575,41 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
           {/* Terminal Content */}
           <div className="flex-1 relative bg-black">
-            {/* Error State */}
-            {hookError && (
+            {/* Remote Management Not Enabled Error */}
+            {hookError && hookError.includes('not enabled') && (
+              <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-10">
+                <div className="text-center p-6 max-w-md">
+                  <AlertCircle className="w-12 h-12 text-yellow-400 mx-auto mb-3" />
+                  <p className="text-white mb-2 font-semibold">Remote Management Not Enabled</p>
+                  <p className="text-sm text-gray-400 mb-4">
+                    Remote terminal access is not enabled for this node. To enable it:
+                  </p>
+                  <ol className="text-left text-sm text-gray-300 mb-4 space-y-1">
+                    <li>1. SSH into your node server</li>
+                    <li>2. Edit the node configuration file</li>
+                    <li>3. Set <code className="bg-gray-800 px-1 rounded">enable_remote_management: true</code></li>
+                    <li>4. Restart the node service</li>
+                  </ol>
+                  <div className="flex gap-2 justify-center">
+                    <button
+                      onClick={handleRetryConnection}
+                      className="px-4 py-2 bg-purple-500/20 hover:bg-purple-500/30 rounded-lg transition-colors text-sm text-purple-400 border border-purple-500/30"
+                    >
+                      Try Again
+                    </button>
+                    <button
+                      onClick={onClose}
+                      className="px-4 py-2 bg-gray-500/20 hover:bg-gray-500/30 rounded-lg transition-colors text-sm text-gray-400 border border-gray-500/30"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Other Error States */}
+            {hookError && !hookError.includes('not enabled') && (
               <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="text-center p-6">
                   <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
