@@ -19,9 +19,9 @@
  * - This hook only manages terminal sessions
  * - Requires remote_auth_success before terminal operations
  * - Session cleanup is automatic on unmount
- * - FIXED: Added reactive auth state monitoring
+ * - FIXED: Removed excessive polling that caused performance issues
  * 
- * Last Modified: v3.1.0 - Fixed auth state reactivity
+ * Last Modified: v3.2.0 - Fixed excessive polling and timeout issues
  * ============================================
  */
 
@@ -48,7 +48,6 @@ export function useRemoteManagement(nodeReference) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState(null);
   const [isRemoteAuthenticated, setIsRemoteAuthenticated] = useState(false);
-  const [authVersion, setAuthVersion] = useState(0); // Force re-render on auth changes
   
   // Refs for cleanup and session management
   const sessionRef = useRef(null);
@@ -59,6 +58,7 @@ export function useRemoteManagement(nodeReference) {
   const closedHandlerRef = useRef(null);
   const readyHandlerRef = useRef(null);
   const authListenerRef = useRef(null);
+  const lastAuthCheckRef = useRef(0);
   
   // Get store state
   const { 
@@ -112,11 +112,6 @@ export function useRemoteManagement(nodeReference) {
       node.normalizedStatus === 'online' ||
       node.isOnline === true
     );
-    
-    console.log('[useRemoteManagement] Node found:', node);
-    console.log('[useRemoteManagement] Node online status:', isNodeOnline);
-  } else {
-    console.log('[useRemoteManagement] Node not found in nodes data:', nodeReference);
   }
   
   // ==================== Authentication State Management ====================
@@ -135,7 +130,6 @@ export function useRemoteManagement(nodeReference) {
       console.log('[useRemoteManagement] Node authenticated:', nodeReference);
       if (isMountedRef.current) {
         setIsRemoteAuthenticated(true);
-        setAuthVersion(v => v + 1); // Force re-render
         setError(null);
       }
     };
@@ -164,23 +158,32 @@ export function useRemoteManagement(nodeReference) {
     
     authListenerRef.current = { handleAuthenticated, handleError, handleExpired };
     
-    // Also poll auth state periodically to catch any missed updates
-    const authCheckInterval = setInterval(() => {
-      const currentAuth = remoteAuthService.isAuthenticated(nodeReference);
-      if (currentAuth !== isRemoteAuthenticated) {
-        console.log('[useRemoteManagement] Auth state changed from polling:', currentAuth);
-        setIsRemoteAuthenticated(currentAuth);
-        setAuthVersion(v => v + 1);
-      }
-    }, 1000); // Check every second
-    
     return () => {
       remoteAuthService.off(nodeReference, 'authenticated', handleAuthenticated);
       remoteAuthService.off(nodeReference, 'error', handleError);
       remoteAuthService.off(nodeReference, 'expired', handleExpired);
-      clearInterval(authCheckInterval);
     };
   }, [nodeReference]);
+  
+  // FIXED: Removed excessive polling - only check auth state when needed
+  useEffect(() => {
+    // Only check auth state if significant time has passed or on specific events
+    const checkAuthState = () => {
+      const now = Date.now();
+      // Only check if more than 5 seconds have passed since last check
+      if (now - lastAuthCheckRef.current > 5000) {
+        const currentAuth = remoteAuthService.isAuthenticated(nodeReference);
+        if (currentAuth !== isRemoteAuthenticated) {
+          console.log('[useRemoteManagement] Auth state changed:', currentAuth);
+          setIsRemoteAuthenticated(currentAuth);
+        }
+        lastAuthCheckRef.current = now;
+      }
+    };
+    
+    // Check on mount and when terminal session changes
+    checkAuthState();
+  }, [nodeReference, terminalSession]);
   
   // ==================== Terminal Management ====================
   
@@ -208,13 +211,11 @@ export function useRemoteManagement(nodeReference) {
     }
     
     // CRITICAL: Check if JWT authenticated
-    // Force a fresh check from the service
     const currentAuthState = remoteAuthService.isAuthenticated(nodeReference);
     console.log('[useRemoteManagement] Current auth state for', nodeReference, ':', currentAuthState);
     
     if (!currentAuthState) {
       console.log('[useRemoteManagement] Not JWT authenticated for node:', nodeReference);
-      console.log('[useRemoteManagement] Auth service state:', remoteAuthService.getAuthState(nodeReference));
       setError('Remote authentication required. Please authenticate first.');
       return null;
     }
@@ -225,9 +226,6 @@ export function useRemoteManagement(nodeReference) {
     
     try {
       console.log('[useRemoteManagement] Creating terminal session for:', nodeReference);
-      
-      // Wait a moment to ensure auth state is fully propagated
-      await new Promise(resolve => setTimeout(resolve, 500));
       
       // Create new session through store
       const sessionId = await createSession(nodeReference, {
@@ -378,8 +376,7 @@ export function useRemoteManagement(nodeReference) {
     // Wait a bit before reconnecting
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    // Force refresh auth state
-    remoteAuthService.refreshAuthState(nodeReference);
+    // Force refresh auth state once
     const authState = remoteAuthService.isAuthenticated(nodeReference);
     setIsRemoteAuthenticated(authState);
     
@@ -416,7 +413,10 @@ export function useRemoteManagement(nodeReference) {
    */
   useEffect(() => {
     const handleWebSocketError = (message) => {
-      console.log('[useRemoteManagement] WebSocket message received:', message.type);
+      // Only log important messages, not every message
+      if (message.type === 'error' || message.type?.startsWith('term_')) {
+        console.log('[useRemoteManagement] WebSocket message received:', message.type);
+      }
       
       // Check for remote management specific errors
       if (message.type === 'error') {
@@ -530,6 +530,18 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== Return API ====================
   
+  // Reduced logging to prevent performance issues
+  useEffect(() => {
+    const logInterval = setInterval(() => {
+      if (node && isNodeOnline) {
+        console.log('[useRemoteManagement] Node found:', node);
+        console.log('[useRemoteManagement] Node online status:', isNodeOnline);
+      }
+    }, 10000); // Log every 10 seconds instead of continuously
+    
+    return () => clearInterval(logInterval);
+  }, [node, isNodeOnline]);
+  
   return {
     // State
     terminalSession,
@@ -559,9 +571,9 @@ export function useRemoteManagement(nodeReference) {
     
     // Force refresh auth state (for debugging)
     refreshAuthState: () => {
-      const newAuth = remoteAuthService.refreshAuthState(nodeReference);
+      const newAuth = remoteAuthService.isAuthenticated(nodeReference);
       setIsRemoteAuthenticated(newAuth);
-      setAuthVersion(v => v + 1);
+      lastAuthCheckRef.current = Date.now();
       return newAuth;
     }
   };
