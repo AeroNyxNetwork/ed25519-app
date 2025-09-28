@@ -5,7 +5,7 @@
  * Remote Management Hook - Terminal Session Management
  * 
  * Creation Reason: Provide terminal management logic for RemoteManagement component
- * Modification Reason: Fix terminal state not updating after successful initialization
+ * Modification Reason: Fix duplicate session retrieval and early terminal close issue
  * Main Functionality: Manage terminal sessions with proper state updates
  * Dependencies: terminalStore, webSocketService, terminalService, remoteAuthService
  * 
@@ -16,12 +16,13 @@
  * 4. Handle bi-directional terminal communication
  * 
  * ⚠️ Important Note for Next Developer:
- * - CRITICAL FIX: Ensure terminalSession state is updated after creation
+ * - CRITICAL FIX: Removed duplicate session retrieval that was causing errors
  * - Session ready state must be tracked properly
  * - JWT authentication is handled by RemoteAuthService
- * - Session cleanup is automatic on unmount
+ * - sendTerminalInput uses WebSocket directly to avoid terminalService issues
+ * - Session cleanup is handled by RemoteManagement component
  * 
- * Last Modified: v4.0.0 - Fixed terminal state management
+ * Last Modified: v5.0.0 - Fixed duplicate session retrieval and early close issue
  * ============================================
  */
 
@@ -147,7 +148,7 @@ export function useRemoteManagement(nodeReference) {
       if (isMountedRef.current) {
         setIsRemoteAuthenticated(false);
         setError('Authentication token expired');
-        closeTerminal();
+        // Don't automatically close terminal here - let component decide
       }
     };
     
@@ -217,7 +218,7 @@ export function useRemoteManagement(nodeReference) {
       console.log('[useRemoteManagement] Creating terminal session for:', nodeReference);
       
       // Create new session through store
-      const sessionId = await createSession(nodeReference, {
+      let sessionId = await createSession(nodeReference, {
         rows: 24,
         cols: 80
       });
@@ -228,12 +229,6 @@ export function useRemoteManagement(nodeReference) {
       
       console.log('[useRemoteManagement] Terminal session created:', sessionId);
       
-      // Get the session from service
-      const session = terminalService.getSession(sessionId);
-      if (!session) {
-        throw new Error('Failed to get terminal session from service');
-      }
-      
       // Store session ID immediately
       sessionRef.current = sessionId;
       
@@ -243,67 +238,117 @@ export function useRemoteManagement(nodeReference) {
         console.log('[useRemoteManagement] Terminal session state updated:', sessionId);
       }
       
-      // Set up event listeners on the session
-      outputHandlerRef.current = (data) => {
-        console.log('[useRemoteManagement] Terminal output received:', data?.length || 0, 'bytes');
-        // Output is handled by the component listening to WebSocket messages
-      };
+      // Try to get session from service (but don't fail if it doesn't exist)
+      let session = terminalService.getSession(sessionId);
       
-      errorHandlerRef.current = (error) => {
-        console.error('[useRemoteManagement] Terminal error:', error);
-        if (isMountedRef.current) {
-          setError(error?.message || error);
-          setTerminalReady(false);
+      if (!session) {
+        console.warn('[useRemoteManagement] Session not found in service after creation');
+        console.log('[useRemoteManagement] All sessions:', terminalService.getAllSessionsInfo());
+        
+        // Try to manually create it in the service
+        console.log('[useRemoteManagement] Attempting manual session creation in service');
+        try {
+          const manualSession = await terminalService.createSession(nodeReference, {
+            rows: 24,
+            cols: 80,
+            sessionId: sessionId  // Pass the sessionId to maintain consistency
+          });
+          
+          if (manualSession && manualSession.sessionId) {
+            session = terminalService.getSession(manualSession.sessionId);
+            if (manualSession.sessionId !== sessionId) {
+              // Update to the new session ID if different
+              sessionId = manualSession.sessionId;
+              sessionRef.current = sessionId;
+              if (isMountedRef.current) {
+                setTerminalSession(sessionId);
+              }
+            }
+          }
+        } catch (manualError) {
+          console.warn('[useRemoteManagement] Manual session creation failed:', manualError);
+          // Continue anyway - we can still use WebSocket directly
         }
-      };
+      }
       
-      closedHandlerRef.current = () => {
-        console.log('[useRemoteManagement] Terminal session closed');
-        if (isMountedRef.current) {
-          setTerminalReady(false);
-          setTerminalSession(null);
-          sessionRef.current = null;
-          isInitializedRef.current = false;
-        }
-      };
-      
-      readyHandlerRef.current = () => {
-        console.log('[useRemoteManagement] Terminal session ready');
-        if (isMountedRef.current) {
-          setTerminalReady(true);
-          console.log('[useRemoteManagement] Terminal ready state updated to true');
-        }
-      };
-      
-      // Attach listeners
-      session.on('output', outputHandlerRef.current);
-      session.on('error', errorHandlerRef.current);
-      session.on('closed', closedHandlerRef.current);
-      session.on('ready', readyHandlerRef.current);
-      
-      // Wait for session to be ready
-      await new Promise((resolve, reject) => {
-        const readyTimeout = setTimeout(() => {
-          // If session is initialized but not marked ready, mark it ready anyway
+      if (session) {
+        console.log('[useRemoteManagement] Session verified in service:', session.getInfo());
+        
+        // Set up event listeners on the session
+        const handlers = {
+          output: (data) => {
+            console.log('[useRemoteManagement] Terminal output received:', data?.length || 0, 'bytes');
+            // Output is handled by the component listening to WebSocket messages
+          },
+          error: (error) => {
+            console.error('[useRemoteManagement] Terminal error:', error);
+            if (isMountedRef.current) {
+              setError(error?.message || error);
+              setTerminalReady(false);
+            }
+          },
+          closed: () => {
+            console.log('[useRemoteManagement] Terminal session closed');
+            if (isMountedRef.current) {
+              setTerminalReady(false);
+              setTerminalSession(null);
+              sessionRef.current = null;
+              isInitializedRef.current = false;
+            }
+          },
+          ready: () => {
+            console.log('[useRemoteManagement] Terminal session ready');
+            if (isMountedRef.current) {
+              setTerminalReady(true);
+              console.log('[useRemoteManagement] Terminal ready state updated to true');
+            }
+          }
+        };
+        
+        // Store handlers for cleanup
+        outputHandlerRef.current = handlers.output;
+        errorHandlerRef.current = handlers.error;
+        closedHandlerRef.current = handlers.closed;
+        readyHandlerRef.current = handlers.ready;
+        
+        // Attach listeners
+        Object.entries(handlers).forEach(([event, handler]) => {
+          session.on(event, handler);
+        });
+        
+        // Wait for session to be ready (with timeout)
+        await new Promise((resolve) => {
+          const readyTimeout = setTimeout(() => {
+            // If session is initialized but not marked ready, mark it ready anyway
+            if (isMountedRef.current && sessionId) {
+              setTerminalReady(true);
+              console.log('[useRemoteManagement] Marking terminal ready after timeout');
+            }
+            resolve();
+          }, 2000); // 2 second timeout for ready state
+          
+          // Listen for ready event
+          session.once('ready', () => {
+            clearTimeout(readyTimeout);
+            if (isMountedRef.current) {
+              setTerminalReady(true);
+              console.log('[useRemoteManagement] Terminal marked ready from event');
+            }
+            resolve();
+          });
+        });
+      } else {
+        // No session object, but we can still work with WebSocket directly
+        console.log('[useRemoteManagement] Working without terminalService session object');
+        
+        // Mark as ready after a short delay
+        setTimeout(() => {
           if (isMountedRef.current && sessionId) {
             setTerminalReady(true);
-            console.log('[useRemoteManagement] Marking terminal ready after timeout');
-            resolve();
-          } else {
-            reject(new Error('Terminal ready timeout'));
+            console.log('[useRemoteManagement] Terminal marked ready (WebSocket mode)');
           }
-        }, 2000); // 2 second timeout for ready state
-        
-        // Listen for ready event
-        session.once('ready', () => {
-          clearTimeout(readyTimeout);
-          if (isMountedRef.current) {
-            setTerminalReady(true);
-            console.log('[useRemoteManagement] Terminal marked ready from event');
-          }
-          resolve();
-        });
-      });
+        }, 500);
+      }
       
       // Final state update
       if (isMountedRef.current) {
@@ -344,24 +389,38 @@ export function useRemoteManagement(nodeReference) {
   }, [terminalSession, terminalReady]);
   
   /**
-   * Send input to terminal - Fixed to use ref to avoid closure issues
+   * Send input to terminal - Fixed to use WebSocket directly
+   * This bypasses terminalService to avoid session lookup issues
    */
   const sendTerminalInput = useCallback((data) => {
     // Get current state from ref instead of closure
     const { session: currentSession, ready: currentReady } = terminalStateRef.current;
     
-    if (!currentSession || !currentReady) {
-      console.warn('[useRemoteManagement] Cannot send input - terminal not ready. Session:', currentSession, 'Ready:', currentReady);
+    if (!currentSession) {
+      console.warn('[useRemoteManagement] Cannot send input - no session. Session:', currentSession);
       return false;
+    }
+    
+    if (!currentReady) {
+      console.warn('[useRemoteManagement] Terminal not ready yet, but sending anyway. Ready:', currentReady);
+      // Continue anyway - the terminal might still accept input
     }
     
     console.log('[useRemoteManagement] Sending terminal input to session:', currentSession, 'Data length:', data?.length || 0);
     
-    // Send through store which handles the service layer
-    sendInput(currentSession, data);
+    // Send directly via WebSocket to avoid issues with terminalService
+    const success = webSocketService.send({
+      type: 'term_input',
+      session_id: currentSession,
+      data: data
+    });
     
-    return true;
-  }, [sendInput]); // Only depend on sendInput function
+    if (!success) {
+      console.error('[useRemoteManagement] Failed to send input via WebSocket');
+    }
+    
+    return success;
+  }, []); // No dependencies needed since we use ref
   
   /**
    * Execute command (convenience method)
@@ -376,12 +435,12 @@ export function useRemoteManagement(nodeReference) {
   }, [sendTerminalInput]);
   
   /**
-   * Close terminal session
+   * Close terminal session - with logging to debug early close issue
    */
   const closeTerminal = useCallback(() => {
-    console.log('[useRemoteManagement] Closing terminal session');
-    
     const currentSession = terminalSession || sessionRef.current;
+    
+    console.log('[useRemoteManagement] closeTerminal called, session:', currentSession);
     
     if (currentSession) {
       // Get session from service for cleanup
@@ -395,8 +454,10 @@ export function useRemoteManagement(nodeReference) {
         if (readyHandlerRef.current) session.off('ready', readyHandlerRef.current);
       }
       
-      // Close through store
+      // Close through store (which sends term_close via WebSocket)
       closeSession(currentSession);
+      
+      console.log('[useRemoteManagement] Terminal session closed:', currentSession);
     }
     
     // Reset state
@@ -510,34 +571,25 @@ export function useRemoteManagement(nodeReference) {
   }, []);
   
   /**
-   * Cleanup on unmount
+   * Cleanup on unmount - FIXED to prevent early cleanup
    */
   useEffect(() => {
+    // Store current session in cleanup closure
+    const currentSession = terminalSession || sessionRef.current;
+    
     return () => {
-      console.log('[useRemoteManagement] Unmounting, cleaning up');
+      console.log('[useRemoteManagement] Hook unmounting');
       
-      // Clean up session if exists
-      const currentSession = sessionRef.current || terminalSession;
+      // Only cleanup if hook is unmounting with an active session
       if (currentSession) {
-        const session = terminalService.getSession(currentSession);
-        
-        if (session) {
-          // Remove listeners
-          if (outputHandlerRef.current) session.off('output', outputHandlerRef.current);
-          if (errorHandlerRef.current) session.off('error', errorHandlerRef.current);
-          if (closedHandlerRef.current) session.off('closed', closedHandlerRef.current);
-          if (readyHandlerRef.current) session.off('ready', readyHandlerRef.current);
-        }
-        
-        // Close session
-        if (terminalService.getSession(currentSession)) {
-          closeSession(currentSession);
-        }
+        console.log('[useRemoteManagement] Hook unmounting with session, will be cleaned by RemoteManagement');
+        // Don't close here - let RemoteManagement component decide
       }
       
+      // Just clean up refs
       isInitializedRef.current = false;
     };
-  }, [closeSession, terminalSession]);
+  }, []); // Empty deps - only run on mount/unmount
   
   /**
    * Monitor node status changes
