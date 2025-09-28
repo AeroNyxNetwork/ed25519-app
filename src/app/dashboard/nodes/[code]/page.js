@@ -2,13 +2,24 @@
  * ============================================
  * File: src/app/dashboard/nodes/[code]/page.js
  * ============================================
- * FIXED VERSION - v3.2.0
- * Fix: Accurate node status detection to prevent showing offline nodes as online
+ * FIXED VERSION - v3.3.0
+ * Fix: Prevent redirect on page refresh by checking wallet initialization state
  * 
  * Changes:
- * 1. Simplified normalizeNodeStatus to trust server status completely
- * 2. Added strict offline detection
- * 3. Removed misleading fallback logic
+ * 1. Added check for wallet.isInitializing to prevent premature redirects
+ * 2. Show loading state while wallet is reconnecting
+ * 3. Only redirect after wallet initialization is complete
+ * 
+ * Main Logical Flow:
+ * 1. Check if wallet is still initializing (restoring from localStorage)
+ * 2. Wait for initialization to complete before checking authentication
+ * 3. If not connected after initialization, then redirect
+ * 4. Otherwise, proceed with loading node data
+ * 
+ * ⚠️ Important Note for Next Developer:
+ * - The isInitializing check is CRITICAL - removing it will break refresh functionality
+ * - Always wait for wallet initialization before authentication checks
+ * - The wallet restoration process is async and takes ~1 second
  * ============================================
  */
 
@@ -100,7 +111,7 @@ function isNodeReallyOnline(node) {
 
 export default function NodeDetailsPage({ params }) {
   const { code } = params;
-  const { wallet } = useWallet();
+  const { wallet, isInitializing } = useWallet();
   const router = useRouter();
   const [showRemoteManagement, setShowRemoteManagement] = useState(false);
   const [loadingState, setLoadingState] = useState('initializing');
@@ -126,6 +137,8 @@ export default function NodeDetailsPage({ params }) {
   useEffect(() => {
     console.log('[NodeDetails] Current state:', {
       code,
+      isInitializing,
+      walletConnected: wallet.connected,
       isLoading,
       wsState,
       nodesCount: nodes.length,
@@ -140,7 +153,7 @@ export default function NodeDetailsPage({ params }) {
         last_seen: n.last_seen 
       }))
     });
-  }, [code, isLoading, wsState, nodes, loadingState]);
+  }, [code, isInitializing, wallet.connected, isLoading, wsState, nodes, loadingState]);
 
   // Find the specific node (case-insensitive)
   const node = nodes.find(n => 
@@ -151,8 +164,29 @@ export default function NodeDetailsPage({ params }) {
   const nodeStatus = normalizeNodeStatus(node);
   const isNodeOnline = isNodeReallyOnline(node);
 
+  // FIXED: Handle wallet initialization state
+  useEffect(() => {
+    // Don't redirect while wallet is still initializing
+    if (isInitializing) {
+      console.log('[NodeDetails] Wallet is initializing, waiting...');
+      setLoadingState('wallet_initializing');
+      return;
+    }
+
+    // Only redirect after initialization is complete and wallet is not connected
+    if (!isInitializing && !wallet.connected) {
+      console.log('[NodeDetails] Wallet not connected after initialization, redirecting to home');
+      router.push('/');
+    }
+  }, [isInitializing, wallet.connected, router]);
+
   // Update loading state based on WebSocket state
   useEffect(() => {
+    // Skip if wallet is still initializing
+    if (isInitializing) {
+      return;
+    }
+
     if (!wsState.connected) {
       setLoadingState('connecting');
     } else if (!wsState.authenticated) {
@@ -167,15 +201,7 @@ export default function NodeDetailsPage({ params }) {
       setLoadingState('ready');
       setErrorDetails(null);
     }
-  }, [wsState, nodes.length, node]);
-
-  // Redirect if not authenticated
-  useEffect(() => {
-    if (!wallet.connected) {
-      console.log('[NodeDetails] Wallet not connected, redirecting to home');
-      router.push('/');
-    }
-  }, [wallet.connected, router]);
+  }, [isInitializing, wsState, nodes.length, node]);
 
   // Handle retry logic
   const handleRetry = useCallback(() => {
@@ -190,6 +216,11 @@ export default function NodeDetailsPage({ params }) {
     // Clear any existing timeout
     if (checkTimeoutRef.current) {
       clearTimeout(checkTimeoutRef.current);
+    }
+
+    // Skip if wallet is still initializing
+    if (isInitializing) {
+      return;
     }
 
     // Only set timeout if we're in a state where we should be finding the node
@@ -216,7 +247,7 @@ export default function NodeDetailsPage({ params }) {
         clearTimeout(checkTimeoutRef.current);
       }
     };
-  }, [wsState.authenticated, wsState.monitoring, nodes.length, node, code, handleRetry]);
+  }, [isInitializing, wsState.authenticated, wsState.monitoring, nodes.length, node, code, handleRetry]);
 
   // Handle WebSocket errors
   useEffect(() => {
@@ -234,6 +265,7 @@ export default function NodeDetailsPage({ params }) {
   // Render loading states with professional Web3 design
   if (loadingState !== 'ready' && loadingState !== 'error') {
     const loadingMessages = {
+      'wallet_initializing': 'Restoring Wallet Connection...',
       'initializing': 'Initializing Protocol...',
       'connecting': 'Connecting to AeroNyx Network...',
       'authenticating': 'Verifying Wallet Signature...',
@@ -276,11 +308,24 @@ export default function NodeDetailsPage({ params }) {
             <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
           </motion.div>
           
+          {/* Show wallet initialization message */}
+          {loadingState === 'wallet_initializing' && (
+            <motion.p
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.5 }}
+              className="mt-4 text-sm text-gray-400"
+            >
+              Please wait while we restore your wallet connection...
+            </motion.p>
+          )}
+          
           {/* Show debug info in development */}
           {process.env.NODE_ENV === 'development' && (
             <div className="mt-8 p-4 bg-white/5 backdrop-blur rounded-xl text-left border border-white/10">
               <p className="text-xs text-gray-500 font-mono">
                 State: {loadingState}<br/>
+                Wallet Init: {isInitializing ? 'Yes' : 'No'}<br/>
                 Connected: {wsState.connected ? 'Yes' : 'No'}<br/>
                 Authenticated: {wsState.authenticated ? 'Yes' : 'No'}<br/>
                 Monitoring: {wsState.monitoring ? 'Yes' : 'No'}<br/>
