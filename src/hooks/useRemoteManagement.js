@@ -59,7 +59,7 @@ export function useRemoteManagement(nodeReference) {
   // Get store state
   const { 
     wsState, 
-    nodes: storeNodes,  // Get nodes from store
+    nodes: storeNodes,
     createSession,
     sendInput,
     closeSession,
@@ -69,18 +69,7 @@ export function useRemoteManagement(nodeReference) {
   // Get WebSocket state and nodes data
   const { 
     wsState: wsConnectionState,
-    nodes: wsNodes  // Also get nodes from WebSocket hook
-  } = useAeroNyxWebSocket({
-    autoConnect: true,
-    autoMonitor: true
-  });
-  
-  // Use nodes from WebSocket hook as primary source (it's more up-to-date)
-  const nodes = wsNodes || storeNodes || {};
-  
-  // Get WebSocket state
-  const { 
-    wsState: wsConnectionState 
+    nodes: wsNodes  // Get nodes array from WebSocket hook
   } = useAeroNyxWebSocket({
     autoConnect: true,
     autoMonitor: true
@@ -92,15 +81,43 @@ export function useRemoteManagement(nodeReference) {
   // Check if JWT authenticated for this node
   const isRemoteAuthenticated = remoteAuthService.isAuthenticated(nodeReference);
   
-  // Get node status - check from multiple sources
-  const node = nodes[nodeReference];
-  const isNodeOnline = node && (
-    node.status === 'online' || 
-    node.status === 'active' ||
-    node.status === 'running' ||
-    node.originalStatus === 'active' ||
-    node.normalizedStatus === 'online'
-  );
+  // Get node status - nodes might be an array or object
+  let node = null;
+  let isNodeOnline = false;
+  
+  // Try to find node in wsNodes array first (more up-to-date)
+  if (Array.isArray(wsNodes)) {
+    node = wsNodes.find(n => n.code === nodeReference || n.reference === nodeReference);
+  } else if (wsNodes && typeof wsNodes === 'object') {
+    node = wsNodes[nodeReference];
+  }
+  
+  // If not found in wsNodes, try store nodes
+  if (!node) {
+    if (Array.isArray(storeNodes)) {
+      node = storeNodes.find(n => n.code === nodeReference || n.reference === nodeReference);
+    } else if (storeNodes && typeof storeNodes === 'object') {
+      node = storeNodes[nodeReference];
+    }
+  }
+  
+  // Check if node is online using multiple possible status fields
+  if (node) {
+    isNodeOnline = (
+      node.status === 'online' || 
+      node.status === 'active' ||
+      node.status === 'running' ||
+      node.originalStatus === 'active' ||
+      node.normalizedStatus === 'online' ||
+      node.isOnline === true
+    );
+    
+    console.log('[useRemoteManagement] Node found:', node);
+    console.log('[useRemoteManagement] Node online status:', isNodeOnline);
+  } else {
+    console.log('[useRemoteManagement] Node not found in nodes data:', nodeReference);
+    console.log('[useRemoteManagement] Available nodes:', wsNodes || storeNodes);
+  }
   
   // ==================== Terminal Management ====================
   
@@ -452,7 +469,7 @@ export function useRemoteManagement(nodeReference) {
     
     // Store state (for debugging)
     wsState,
-    nodes,
+    nodes: wsNodes || storeNodes,
     
     // JWT token info
     tokenExpiry: remoteAuthService.getFormattedExpiry(nodeReference)
