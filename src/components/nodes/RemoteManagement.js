@@ -123,9 +123,30 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const initializingRef = useRef(false);
   const initializedRef = useRef(false);
   const abortControllerRef = useRef(null);
+  
+  // CRITICAL FIX: Use ref to store current terminal state to avoid closure issues
+  const terminalStateRef = useRef({
+    session: null,
+    ready: false,
+    hookReady: false,
+    localReady: false,
+    uiReady: false
+  });
 
   // Combine terminal ready states
   const terminalReady = terminalSession && hookTerminalReady && localTerminalReady && terminalUIReady;
+  
+  // Update ref whenever states change to avoid closure issues
+  useEffect(() => {
+    terminalStateRef.current = {
+      session: terminalSession,
+      ready: terminalReady,
+      hookReady: hookTerminalReady,
+      localReady: localTerminalReady,
+      uiReady: terminalUIReady
+    };
+    console.log('[RemoteManagement] Terminal state ref updated:', terminalStateRef.current);
+  }, [terminalSession, hookTerminalReady, localTerminalReady, terminalUIReady, terminalReady]);
 
   // ==================== Authentication ====================
   
@@ -448,11 +469,14 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     console.log('[RemoteManagement] Terminal UI is ready');
     setTerminalUIReady(true);
     
+    // Get current state from ref
+    const currentState = terminalStateRef.current;
+    
     // Write welcome message when UI is ready and we have a session
-    if (terminalSession && terminalRef.current) {
+    if (currentState.session && terminalRef.current) {
       terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
       terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
-      terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
+      terminalRef.current.write('\x1b[90mSession: ' + currentState.session + '\x1b[0m\r\n');
       terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
       
       // Flush any buffered output
@@ -465,25 +489,24 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         }
       }
     }
-  }, [terminalSession, nodeReference]);
+  }, [nodeReference]);
 
-  // Handle terminal input
+  // Handle terminal input - Fixed to avoid closure issues
   const handleTerminalInput = useCallback((data) => {
-    console.log('[RemoteManagement] handleTerminalInput called, terminalReady:', terminalReady);
-    console.log('[RemoteManagement] States:', {
-      terminalSession,
-      hookTerminalReady,
-      localTerminalReady,
-      terminalUIReady
-    });
+    // Use ref to get current state instead of closure values
+    const currentState = terminalStateRef.current;
     
-    if (terminalSession && hookTerminalReady) {
+    console.log('[RemoteManagement] handleTerminalInput called');
+    console.log('[RemoteManagement] Current states from ref:', currentState);
+    
+    if (currentState.session && currentState.hookReady) {
       console.log('[RemoteManagement] Sending input:', data.length, 'bytes');
       sendTerminalInput(data);
     } else {
       console.warn('[RemoteManagement] Cannot send input - terminal not ready');
+      console.log('[RemoteManagement] Debug - session:', currentState.session, 'hookReady:', currentState.hookReady);
     }
-  }, [terminalSession, hookTerminalReady, sendTerminalInput, terminalReady, localTerminalReady, terminalUIReady]);
+  }, [sendTerminalInput]); // Only depend on sendTerminalInput
 
   // ==================== Terminal Actions ====================
   
