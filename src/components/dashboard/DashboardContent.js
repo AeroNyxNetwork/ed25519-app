@@ -3,21 +3,22 @@
  * File Creation/Modification Notes
  * ============================================
  * Creation Reason: Main Dashboard Content Component
- * Modification Reason: Remove monetization/earnings displays, keep only functional features
- * Main Functionality: Display node status, resource usage, and management controls
+ * Modification Reason: Complete redesign based on user-centric product thinking
+ * Main Functionality: Actionable dashboard focused on individual node status
  * Dependencies: useAeroNyxWebSocket, useWallet, node management components
  *
- * Main Logical Flow:
- * 1. Connect to WebSocket for real-time node monitoring
- * 2. Display node operational status and resource metrics
- * 3. Provide quick actions for node management
+ * Design Philosophy:
+ * 1. Show what matters: Individual node health, not aggregated metrics
+ * 2. Enable quick actions: Problems should be immediately actionable
+ * 3. Progressive disclosure: Details available on demand, not forced
+ * 4. Zero state guidance: Clear next steps when no nodes exist
  *
  * ⚠️ Important Note for Next Developer:
- * - This file focuses on functional node management only
- * - Monetization features have been intentionally removed
- * - WebSocket connection is critical for real-time updates
+ * - This design prioritizes actionable information over vanity metrics
+ * - Each element should answer "So what?" and "Now what?"
+ * - Maintain focus on individual node management, not system-wide stats
  *
- * Last Modified: v13.0.0 - Removed earnings displays, kept functional features
+ * Last Modified: v14.0.0 - Complete redesign with user-centric approach
  * ============================================
  */
 
@@ -29,15 +30,21 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Server, 
   Activity, 
-  Zap,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  Clock,
   Cpu,
   HardDrive,
-  RefreshCw,
+  Wifi,
   Plus,
   ChevronRight,
   AlertCircle,
-  CheckCircle,
-  XCircle,
+  Settings,
+  Zap,
+  Shield,
+  RefreshCw,
+  ArrowRight,
   Loader2
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -69,14 +76,14 @@ const itemVariants = {
 };
 
 /**
- * Dashboard Content Component
+ * Dashboard Content Component - User-Centric Redesign
  * 
- * Focuses on functional node management without monetization displays
+ * Focus: Individual node status and actionable insights
  */
 export default function DashboardContent() {
   const { wallet } = useWallet();
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
   
-  // Use unified WebSocket hook with auto-connect and auto-monitor
   const {
     nodes,
     stats,
@@ -90,22 +97,100 @@ export default function DashboardContent() {
     autoMonitor: true
   });
 
-  // Calculate uptime percentage
-  const calculateUptime = useCallback((nodeStats) => {
-    if (nodeStats.totalNodes === 0) return 0;
-    return Math.round((nodeStats.activeNodes / nodeStats.totalNodes) * 100);
-  }, []);
+  // Categorize nodes by status for quick overview
+  const nodesByStatus = useMemo(() => {
+    const categorized = {
+      healthy: [],
+      warning: [],
+      critical: [],
+      offline: []
+    };
 
-  // Get status message based on WebSocket state
-  const getStatusMessage = useCallback((state) => {
-    if (state.monitoring) return 'Real-time monitoring active';
-    if (state.authenticated) return 'Authenticated, starting monitor...';
-    if (state.authState === 'authenticating') return 'Authenticating with network...';
-    if (state.authState === 'signing') return 'Signing authentication message...';
-    if (state.authState === 'requesting_message') return 'Requesting authentication...';
-    if (state.connected) return 'Connecting to network...';
-    return 'Connect your wallet to view nodes';
-  }, []);
+    nodes.forEach(node => {
+      const status = (node.status || '').toLowerCase();
+      const cpu = node.performance?.cpu || 0;
+      const memory = node.performance?.memory || 0;
+
+      if (status === 'offline' || status === 'disconnected') {
+        categorized.offline.push(node);
+      } else if (cpu > 90 || memory > 90) {
+        categorized.critical.push(node);
+      } else if (cpu > 70 || memory > 70 || status === 'pending') {
+        categorized.warning.push(node);
+      } else {
+        categorized.healthy.push(node);
+      }
+    });
+
+    return categorized;
+  }, [nodes]);
+
+  // Calculate actionable insights
+  const insights = useMemo(() => {
+    const totalNodes = nodes.length;
+    const healthyCount = nodesByStatus.healthy.length;
+    const issueCount = nodesByStatus.warning.length + nodesByStatus.critical.length + nodesByStatus.offline.length;
+
+    return {
+      hasIssues: issueCount > 0,
+      healthPercentage: totalNodes > 0 ? Math.round((healthyCount / totalNodes) * 100) : 0,
+      primaryAction: nodesByStatus.offline.length > 0 ? 'reconnect' : 
+                     nodesByStatus.critical.length > 0 ? 'investigate' :
+                     nodesByStatus.warning.length > 0 ? 'monitor' : 
+                     totalNodes === 0 ? 'register' : 'maintain'
+    };
+  }, [nodes.length, nodesByStatus]);
+
+  // Get primary action message
+  const getPrimaryMessage = useCallback(() => {
+    if (nodes.length === 0) {
+      return {
+        title: "Welcome to AeroNyx",
+        message: "Get started by registering your first node",
+        action: "Register Node",
+        href: "/dashboard/register",
+        icon: Plus
+      };
+    }
+
+    if (nodesByStatus.offline.length > 0) {
+      return {
+        title: `${nodesByStatus.offline.length} node${nodesByStatus.offline.length > 1 ? 's' : ''} offline`,
+        message: "Immediate attention required to restore service",
+        action: "View Offline Nodes",
+        icon: AlertTriangle,
+        severity: 'critical'
+      };
+    }
+
+    if (nodesByStatus.critical.length > 0) {
+      return {
+        title: `${nodesByStatus.critical.length} node${nodesByStatus.critical.length > 1 ? 's' : ''} under heavy load`,
+        message: "Resource usage exceeding safe thresholds",
+        action: "View Details",
+        icon: AlertCircle,
+        severity: 'warning'
+      };
+    }
+
+    if (nodesByStatus.healthy.length === nodes.length) {
+      return {
+        title: "All systems operational",
+        message: `${nodes.length} node${nodes.length > 1 ? 's' : ''} running smoothly`,
+        icon: CheckCircle2,
+        severity: 'success'
+      };
+    }
+
+    return {
+      title: "Network Overview",
+      message: `${nodesByStatus.healthy.length} healthy, ${insights.hasIssues ? `${nodesByStatus.warning.length + nodesByStatus.critical.length + nodesByStatus.offline.length} need attention` : 'all good'}`,
+      icon: Activity,
+      severity: 'info'
+    };
+  }, [nodes, nodesByStatus, insights]);
+
+  const primaryMessage = getPrimaryMessage();
 
   if (!wallet.connected) {
     return <WalletConnectionPrompt />;
@@ -130,15 +215,15 @@ export default function DashboardContent() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
-                Node Dashboard
+                Dashboard
               </h1>
               <p className="text-gray-400 mt-1">
-                {getStatusMessage(wsState)}
+                {wsState.monitoring ? 'Real-time monitoring active' : 'Connecting...'}
               </p>
             </div>
             
             <div className="flex items-center gap-4">
-              <ConnectionBadge status={wsState} />
+              <ConnectionStatus wsState={wsState} />
               
               <motion.button
                 whileHover={{ scale: 1.05 }}
@@ -157,10 +242,10 @@ export default function DashboardContent() {
             </div>
           </div>
         </motion.div>
-        
+
         {/* Loading State */}
         <AnimatePresence mode="wait">
-          {isLoading ? (
+          {isLoading && nodes.length === 0 ? (
             <LoadingState key="loading" />
           ) : error && nodes.length === 0 ? (
             <ErrorState key="error" error={error} onRetry={refresh} />
@@ -171,129 +256,131 @@ export default function DashboardContent() {
               initial="hidden"
               animate="visible"
             >
-              {/* Stats Grid - Focus on operational metrics only */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <StatsCard
-                  icon={Server}
-                  title="Total Nodes"
-                  value={stats.totalNodes}
-                  subtitle={`${stats.activeNodes} active`}
-                  trend="neutral"
+              {/* Primary Status Card - The Most Important Thing */}
+              <motion.div variants={itemVariants} className="mb-8">
+                <StatusCard 
+                  message={primaryMessage}
+                  nodesByStatus={nodesByStatus}
+                  totalNodes={nodes.length}
                 />
-                
-                <StatsCard
-                  icon={Activity}
-                  title="Network Status"
-                  value={stats.activeNodes > 0 ? 'Online' : 'Offline'}
-                  subtitle={`${calculateUptime(stats)}% uptime`}
-                  trend={stats.activeNodes > 0 ? 'up' : 'down'}
-                />
-                
-                <StatsCard
-                  icon={Cpu}
-                  title="CPU Usage"
-                  value={`${stats.resourceUtilization || 0}%`}
-                  subtitle="Average across nodes"
-                  trend="neutral"
-                />
-                
-                <StatsCard
-                  icon={HardDrive}
-                  title="Storage Used"
-                  value={`${Math.round(stats.storageUsed || 0)}%`}
-                  subtitle="Total capacity"
-                  trend="neutral"
-                />
-              </div>
-              
-              {/* Main Content */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Nodes Section */}
-                <motion.div variants={itemVariants} className="lg:col-span-2">
-                  <GlassCard>
-                    <div className="flex items-center justify-between mb-6">
-                      <h2 className="text-xl font-semibold text-white">Active Nodes</h2>
-                      {nodes.length > 4 && (
-                        <Link 
-                          href="/dashboard/nodes"
-                          className="text-sm text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-all hover:translate-x-1"
-                        >
-                          View all
-                          <ChevronRight className="w-4 h-4" />
-                        </Link>
-                      )}
+              </motion.div>
+
+              {nodes.length > 0 ? (
+                <>
+                  {/* Quick Status Overview - Visual Priority */}
+                  {insights.hasIssues && (
+                    <motion.div variants={itemVariants} className="mb-8">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {nodesByStatus.offline.length > 0 && (
+                          <IssueCard
+                            type="offline"
+                            nodes={nodesByStatus.offline}
+                            onView={() => setSelectedNodeId(nodesByStatus.offline[0].code)}
+                          />
+                        )}
+                        {nodesByStatus.critical.length > 0 && (
+                          <IssueCard
+                            type="critical"
+                            nodes={nodesByStatus.critical}
+                            onView={() => setSelectedNodeId(nodesByStatus.critical[0].code)}
+                          />
+                        )}
+                        {nodesByStatus.warning.length > 0 && (
+                          <IssueCard
+                            type="warning"
+                            nodes={nodesByStatus.warning}
+                            onView={() => setSelectedNodeId(nodesByStatus.warning[0].code)}
+                          />
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* Node List - Individual Focus */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <motion.div variants={itemVariants} className="lg:col-span-2">
+                      <GlassCard>
+                        <div className="flex items-center justify-between mb-6">
+                          <h2 className="text-xl font-semibold text-white">Your Nodes</h2>
+                          {nodes.length > 3 && (
+                            <Link 
+                              href="/dashboard/nodes"
+                              className="text-sm text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-all hover:translate-x-1"
+                            >
+                              Manage all {nodes.length} nodes
+                              <ChevronRight className="w-4 h-4" />
+                            </Link>
+                          )}
+                        </div>
+                        
+                        <div className="space-y-3">
+                          <AnimatePresence>
+                            {nodes.slice(0, 5).map((node) => (
+                              <NodeStatusCard key={node.code} node={node} />
+                            ))}
+                          </AnimatePresence>
+                        </div>
+                      </GlassCard>
+                    </motion.div>
+
+                    {/* Actions & Resources */}
+                    <div className="space-y-6">
+                      {/* Quick Actions */}
+                      <motion.div variants={itemVariants}>
+                        <GlassCard>
+                          <h3 className="text-lg font-semibold text-white mb-4">Quick Actions</h3>
+                          <div className="space-y-3">
+                            <ActionButton
+                              icon={Plus}
+                              title="Add New Node"
+                              description="Expand your network"
+                              href="/dashboard/register"
+                              primary
+                            />
+                            <ActionButton
+                              icon={Settings}
+                              title="Manage Nodes"
+                              description="Configure and optimize"
+                              href="/dashboard/nodes"
+                            />
+                            <ActionButton
+                              icon={Zap}
+                              title="Blockchain Setup"
+                              description="Enable Web3 features"
+                              href="/dashboard/blockchain-integration"
+                            />
+                          </div>
+                        </GlassCard>
+                      </motion.div>
+
+                      {/* Help & Resources */}
+                      <motion.div variants={itemVariants}>
+                        <GlassCard>
+                          <h3 className="text-lg font-semibold text-white mb-4">Resources</h3>
+                          <div className="space-y-3">
+                            <a
+                              href="https://docs.aeronyx.network/troubleshooting"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all text-gray-300"
+                            >
+                              <Shield className="w-5 h-5 text-gray-400" />
+                              <div className="flex-1">
+                                <div className="text-sm font-medium">Troubleshooting Guide</div>
+                                <div className="text-xs text-gray-500">Fix common issues</div>
+                              </div>
+                              <ArrowRight className="w-4 h-4 opacity-50" />
+                            </a>
+                          </div>
+                        </GlassCard>
+                      </motion.div>
                     </div>
-                    
-                    {nodes.length > 0 ? (
-                      <div className="space-y-4">
-                        <AnimatePresence>
-                          {nodes.slice(0, 4).map((node) => (
-                            <NodeCard key={node.code} node={node} />
-                          ))}
-                        </AnimatePresence>
-                      </div>
-                    ) : (
-                      <EmptyNodes isMonitoring={wsState.monitoring} />
-                    )}
-                  </GlassCard>
-                </motion.div>
-                
-                {/* Sidebar */}
-                <div className="space-y-6">
-                  {/* Quick Actions */}
-                  <motion.div variants={itemVariants}>
-                    <GlassCard>
-                      <h3 className="text-lg font-semibold text-white mb-4">Quick Actions</h3>
-                      <div className="space-y-3">
-                        <QuickAction
-                          icon={Plus}
-                          title="Register Node"
-                          href="/dashboard/register"
-                          primary
-                        />
-                        <QuickAction
-                          icon={Server}
-                          title="Manage Nodes"
-                          href="/dashboard/nodes"
-                        />
-                        <QuickAction
-                          icon={Activity}
-                          title="Blockchain Integration"
-                          href="/dashboard/blockchain-integration"
-                        />
-                      </div>
-                    </GlassCard>
-                  </motion.div>
-                  
-                  {/* Network Health */}
-                  <motion.div variants={itemVariants}>
-                    <GlassCard>
-                      <h3 className="text-lg font-semibold text-white mb-4">Network Health</h3>
-                      <div className="space-y-4">
-                        <HealthMetric
-                          label="Active Nodes"
-                          value={stats.activeNodes}
-                          max={stats.totalNodes || 1}
-                          color="green"
-                        />
-                        <HealthMetric
-                          label="Resource Usage"
-                          value={stats.resourceUtilization}
-                          max={100}
-                          color="purple"
-                        />
-                        <HealthMetric
-                          label="Network Latency"
-                          value={25}
-                          max={100}
-                          color="blue"
-                          suffix="ms"
-                        />
-                      </div>
-                    </GlassCard>
-                  </motion.div>
-                </div>
-              </div>
+                  </div>
+                </>
+              ) : (
+                // Empty State - Clear Call to Action
+                <EmptyState />
+              )}
             </motion.div>
           )}
         </AnimatePresence>
@@ -302,219 +389,322 @@ export default function DashboardContent() {
   );
 }
 
-// Sub Components
+// Status Card - Primary Information Display
+function StatusCard({ message, nodesByStatus, totalNodes }) {
+  const getSeverityStyles = (severity) => {
+    switch (severity) {
+      case 'critical':
+        return 'from-red-600/20 to-red-700/20 border-red-500/30';
+      case 'warning':
+        return 'from-yellow-600/20 to-yellow-700/20 border-yellow-500/30';
+      case 'success':
+        return 'from-green-600/20 to-green-700/20 border-green-500/30';
+      default:
+        return 'from-purple-600/20 to-blue-600/20 border-white/10';
+    }
+  };
 
+  const Icon = message.icon;
+
+  return (
+    <div className={clsx(
+      "relative overflow-hidden rounded-2xl p-8",
+      "bg-gradient-to-br backdrop-blur-md border",
+      getSeverityStyles(message.severity)
+    )}>
+      <div className="flex items-start justify-between">
+        <div className="flex-1">
+          <div className="flex items-center gap-3 mb-3">
+            <Icon className={clsx(
+              "w-8 h-8",
+              message.severity === 'critical' ? 'text-red-400' :
+              message.severity === 'warning' ? 'text-yellow-400' :
+              message.severity === 'success' ? 'text-green-400' :
+              'text-white'
+            )} />
+            <h2 className="text-2xl font-bold text-white">{message.title}</h2>
+          </div>
+          <p className="text-gray-300 mb-6">{message.message}</p>
+          
+          {message.action && (
+            <Link href={message.href || '#'}>
+              <motion.a
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className="inline-flex items-center gap-2 px-6 py-3 bg-white/10 hover:bg-white/20 backdrop-blur rounded-xl text-white font-medium transition-all"
+              >
+                {message.action}
+                <ArrowRight className="w-4 h-4" />
+              </motion.a>
+            </Link>
+          )}
+        </div>
+
+        {totalNodes > 0 && (
+          <div className="text-right">
+            <div className="text-4xl font-bold text-white">{totalNodes}</div>
+            <div className="text-sm text-gray-400">Total Nodes</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Issue Card - Highlight Problems
+function IssueCard({ type, nodes, onView }) {
+  const config = {
+    offline: {
+      title: 'Offline',
+      icon: XCircle,
+      color: 'red',
+      message: 'Nodes disconnected'
+    },
+    critical: {
+      title: 'Critical',
+      icon: AlertTriangle,
+      color: 'orange',
+      message: 'High resource usage'
+    },
+    warning: {
+      title: 'Warning',
+      icon: AlertCircle,
+      color: 'yellow',
+      message: 'Needs attention'
+    }
+  };
+
+  const { title, icon: Icon, color, message } = config[type];
+
+  return (
+    <motion.div
+      whileHover={{ y: -2 }}
+      className={clsx(
+        "p-4 rounded-xl border cursor-pointer transition-all",
+        `bg-${color}-500/10 border-${color}-500/30 hover:bg-${color}-500/20`
+      )}
+      onClick={onView}
+    >
+      <div className="flex items-start justify-between mb-3">
+        <Icon className={`w-6 h-6 text-${color}-400`} />
+        <span className={`text-2xl font-bold text-${color}-400`}>{nodes.length}</span>
+      </div>
+      <h3 className="font-semibold text-white mb-1">{title}</h3>
+      <p className="text-sm text-gray-400">{message}</p>
+      <div className="mt-3 text-xs text-gray-500">
+        {nodes.slice(0, 2).map(node => node.name).join(', ')}
+        {nodes.length > 2 && ` +${nodes.length - 2} more`}
+      </div>
+    </motion.div>
+  );
+}
+
+// Node Status Card - Individual Node Focus
+function NodeStatusCard({ node }) {
+  const getNodeStatus = () => {
+    const status = (node.status || '').toLowerCase();
+    const cpu = node.performance?.cpu || 0;
+    const memory = node.performance?.memory || 0;
+
+    if (status === 'offline' || status === 'disconnected') {
+      return { label: 'Offline', color: 'red', icon: XCircle };
+    }
+    if (cpu > 90 || memory > 90) {
+      return { label: 'Critical', color: 'orange', icon: AlertTriangle };
+    }
+    if (cpu > 70 || memory > 70) {
+      return { label: 'High Load', color: 'yellow', icon: AlertCircle };
+    }
+    if (status === 'pending') {
+      return { label: 'Pending', color: 'blue', icon: Clock };
+    }
+    return { label: 'Healthy', color: 'green', icon: CheckCircle2 };
+  };
+
+  const status = getNodeStatus();
+  const StatusIcon = status.icon;
+
+  return (
+    <Link href={`/dashboard/nodes/${node.code}`}>
+      <motion.div
+        whileHover={{ x: 4 }}
+        className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-transparent hover:border-white/10 transition-all cursor-pointer"
+      >
+        <div className="flex items-center gap-4">
+          <div className={clsx(
+            "p-2 rounded-lg",
+            `bg-${status.color}-500/10`
+          )}>
+            <StatusIcon className={`w-5 h-5 text-${status.color}-400`} />
+          </div>
+          <div>
+            <h4 className="font-medium text-white">{node.name}</h4>
+            <div className="flex items-center gap-4 text-xs text-gray-400 mt-1">
+              <span>{node.code}</span>
+              {node.performance && (
+                <>
+                  <span>CPU: {node.performance.cpu || 0}%</span>
+                  <span>MEM: {node.performance.memory || 0}%</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={clsx(
+            "text-xs px-2 py-1 rounded-full",
+            `bg-${status.color}-500/20 text-${status.color}-400`
+          )}>
+            {status.label}
+          </span>
+          <ChevronRight className="w-4 h-4 text-gray-500" />
+        </div>
+      </motion.div>
+    </Link>
+  );
+}
+
+// Connection Status Badge
+function ConnectionStatus({ wsState }) {
+  if (!wsState.connected) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-500/10 border border-red-500/20">
+        <div className="w-2 h-2 bg-red-500 rounded-full" />
+        <span className="text-xs text-red-400">Offline</span>
+      </div>
+    );
+  }
+
+  if (wsState.monitoring) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-500/10 border border-green-500/20">
+        <div className="relative">
+          <div className="w-2 h-2 bg-green-500 rounded-full" />
+          <div className="absolute inset-0 w-2 h-2 bg-green-500 rounded-full animate-ping" />
+        </div>
+        <span className="text-xs text-green-400">Live</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-500/10 border border-yellow-500/20">
+      <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />
+      <span className="text-xs text-yellow-400">Connecting</span>
+    </div>
+  );
+}
+
+// Empty State
+function EmptyState() {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="text-center py-16"
+    >
+      <div className="w-24 h-24 bg-gradient-to-br from-purple-500/20 to-blue-500/20 rounded-3xl flex items-center justify-center mx-auto mb-6">
+        <Server className="w-12 h-12 text-white" />
+      </div>
+      <h2 className="text-3xl font-bold text-white mb-3">Start Your Network</h2>
+      <p className="text-gray-400 mb-8 max-w-md mx-auto">
+        Register your first node to begin building your decentralized infrastructure
+      </p>
+      <Link href="/dashboard/register">
+        <motion.a
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          className="inline-flex items-center gap-3 px-8 py-4 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all text-lg"
+        >
+          <Plus className="w-6 h-6" />
+          Register Your First Node
+        </motion.a>
+      </Link>
+      
+      <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6 max-w-3xl mx-auto">
+        <div className="text-left">
+          <div className="w-12 h-12 bg-purple-500/10 rounded-xl flex items-center justify-center mb-3">
+            <Zap className="w-6 h-6 text-purple-400" />
+          </div>
+          <h3 className="font-semibold text-white mb-1">Quick Setup</h3>
+          <p className="text-sm text-gray-400">Get online in minutes with our simple registration process</p>
+        </div>
+        <div className="text-left">
+          <div className="w-12 h-12 bg-blue-500/10 rounded-xl flex items-center justify-center mb-3">
+            <Shield className="w-6 h-6 text-blue-400" />
+          </div>
+          <h3 className="font-semibold text-white mb-1">Secure Network</h3>
+          <p className="text-sm text-gray-400">Enterprise-grade security with end-to-end encryption</p>
+        </div>
+        <div className="text-left">
+          <div className="w-12 h-12 bg-green-500/10 rounded-xl flex items-center justify-center mb-3">
+            <Activity className="w-6 h-6 text-green-400" />
+          </div>
+          <h3 className="font-semibold text-white mb-1">Real-time Monitoring</h3>
+          <p className="text-sm text-gray-400">Track performance and health metrics instantly</p>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// Action Button Component
+function ActionButton({ icon: Icon, title, description, href, primary, onClick }) {
+  const content = (
+    <>
+      <Icon className="w-5 h-5" />
+      <div className="flex-1 text-left">
+        <div className="font-medium">{title}</div>
+        <div className="text-xs text-gray-400">{description}</div>
+      </div>
+      <ChevronRight className="w-4 h-4 opacity-50" />
+    </>
+  );
+
+  const className = clsx(
+    "flex items-center gap-3 p-3 rounded-xl transition-all",
+    primary 
+      ? "bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white" 
+      : "bg-white/5 hover:bg-white/10 text-gray-300"
+  );
+
+  if (href) {
+    return (
+      <Link href={href}>
+        <motion.a
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          className={className}
+        >
+          {content}
+        </motion.a>
+      </Link>
+    );
+  }
+
+  return (
+    <motion.button
+      whileHover={{ scale: 1.02 }}
+      whileTap={{ scale: 0.98 }}
+      onClick={onClick}
+      className={className}
+    >
+      {content}
+    </motion.button>
+  );
+}
+
+// Shared Components
 function GlassCard({ children, className }) {
   return (
     <div className={clsx(
       "bg-white/5 backdrop-blur-md rounded-2xl border border-white/10",
       "shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]",
-      "hover:bg-white/[0.07] hover:border-white/20",
-      "transition-all duration-300",
       className
     )}>
       <div className="p-6">
         {children}
       </div>
-    </div>
-  );
-}
-
-function ConnectionBadge({ status }) {
-  const config = {
-    monitoring: { color: 'green', label: 'Live', Icon: Activity, pulse: true },
-    authenticated: { color: 'blue', label: 'Connected', Icon: CheckCircle },
-    connected: { color: 'yellow', label: 'Connecting', Icon: Loader2, spin: true },
-    idle: { color: 'gray', label: 'Offline', Icon: XCircle }
-  };
-  
-  const state = status.monitoring ? 'monitoring' : 
-                status.authenticated ? 'authenticated' :
-                status.connected ? 'connected' : 'idle';
-  
-  const { color, label, Icon, pulse, spin } = config[state];
-  
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.9 }}
-      animate={{ opacity: 1, scale: 1 }}
-      className={clsx(
-        "flex items-center gap-2 px-4 py-2 rounded-full",
-        `bg-${color}-500/10 border border-${color}-500/20`
-      )}
-    >
-      <Icon className={clsx(
-        `w-4 h-4 text-${color}-400`,
-        pulse && "animate-pulse",
-        spin && "animate-spin"
-      )} />
-      <span className={`text-xs font-medium text-${color}-400`}>{label}</span>
-    </motion.div>
-  );
-}
-
-function StatsCard({ icon: Icon, title, value, subtitle, trend }) {
-  const trendConfig = {
-    up: { color: 'green', gradient: 'from-green-500/20 to-green-600/20' },
-    down: { color: 'red', gradient: 'from-red-500/20 to-red-600/20' },
-    neutral: { color: 'purple', gradient: 'from-purple-500/20 to-blue-600/20' }
-  };
-  
-  const { gradient } = trendConfig[trend];
-  
-  return (
-    <motion.div
-      variants={itemVariants}
-      whileHover={{ y: -5, transition: { type: "spring", stiffness: 300 } }}
-      className="relative group"
-    >
-      <div className="absolute inset-0 bg-gradient-to-r from-purple-600/20 to-blue-600/20 rounded-2xl blur-xl group-hover:blur-2xl transition-all opacity-0 group-hover:opacity-100" />
-      <GlassCard className="relative">
-        <div className="flex items-start justify-between mb-4">
-          <div className={clsx(
-            "p-3 rounded-xl bg-gradient-to-br",
-            gradient
-          )}>
-            <Icon className="w-6 h-6 text-white" />
-          </div>
-        </div>
-        <h3 className="text-sm font-medium text-gray-400 mb-1">{title}</h3>
-        <p className="text-2xl font-bold text-white mb-1">{value}</p>
-        <p className="text-xs text-gray-500">{subtitle}</p>
-      </GlassCard>
-    </motion.div>
-  );
-}
-
-function NodeCard({ node }) {
-  const statusConfig = {
-    active: { color: 'green', Icon: CheckCircle, label: 'Active' },
-    online: { color: 'green', Icon: CheckCircle, label: 'Online' },
-    offline: { color: 'red', Icon: XCircle, label: 'Offline' },
-    pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending' }
-  };
-  
-  const normalizedStatus = node.status?.toLowerCase() || 'offline';
-  const config = statusConfig[normalizedStatus] || statusConfig.offline;
-  const { Icon } = config;
-  
-  // Calculate resource usage
-  const cpuUsage = node.performance?.cpu || 0;
-  const memoryUsage = node.performance?.memory || 0;
-  
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, x: -20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 20 }}
-      whileHover={{ x: 5 }}
-      className={clsx(
-        "flex items-center justify-between p-4 rounded-xl",
-        "bg-white/5 hover:bg-white/10",
-        "border border-transparent hover:border-white/10",
-        "transition-all cursor-pointer"
-      )}
-    >
-      <div className="flex items-center gap-4">
-        <div className={clsx(
-          "p-2 rounded-lg",
-          `bg-${config.color}-500/10`
-        )}>
-          <Server className={`w-5 h-5 text-${config.color}-400`} />
-        </div>
-        <div>
-          <h4 className="font-medium text-white">{node.name}</h4>
-          <p className="text-sm text-gray-400">{node.code}</p>
-        </div>
-      </div>
-      <div className="flex items-center gap-3">
-        <div className="text-right">
-          <p className="text-sm font-medium text-white">CPU: {cpuUsage}%</p>
-          <p className="text-xs text-gray-500">MEM: {memoryUsage}%</p>
-        </div>
-        <Icon className={`w-5 h-5 text-${config.color}-400`} />
-      </div>
-    </motion.div>
-  );
-}
-
-function QuickAction({ icon: Icon, title, href, primary }) {
-  return (
-    <Link href={href}>
-      <motion.a
-        whileHover={{ scale: 1.02 }}
-        whileTap={{ scale: 0.98 }}
-        className={clsx(
-          "flex items-center gap-3 p-3 rounded-xl transition-all",
-          primary 
-            ? "bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white" 
-            : "bg-white/5 hover:bg-white/10 text-gray-300"
-        )}
-      >
-        <Icon className="w-5 h-5" />
-        <span className="font-medium">{title}</span>
-        <ChevronRight className="w-4 h-4 ml-auto opacity-50" />
-      </motion.a>
-    </Link>
-  );
-}
-
-function HealthMetric({ label, value, max, color, suffix = '' }) {
-  const percentage = (value / max) * 100;
-  
-  return (
-    <div>
-      <div className="flex justify-between text-sm mb-2">
-        <span className="text-gray-400">{label}</span>
-        <span className="text-white font-medium">
-          {value}{suffix}{max > 1 && `/${max}`}
-        </span>
-      </div>
-      <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-        <motion.div
-          initial={{ width: 0 }}
-          animate={{ width: `${percentage}%` }}
-          transition={{ duration: 1, ease: "easeOut" }}
-          className={clsx(
-            "h-full bg-gradient-to-r",
-            color === 'green' && "from-green-500 to-green-400",
-            color === 'purple' && "from-purple-500 to-purple-400",
-            color === 'blue' && "from-blue-500 to-blue-400"
-          )}
-        />
-      </div>
-    </div>
-  );
-}
-
-function EmptyNodes({ isMonitoring }) {
-  return (
-    <div className="text-center py-12">
-      <motion.div
-        initial={{ scale: 0 }}
-        animate={{ scale: 1 }}
-        transition={{ type: "spring", stiffness: 200 }}
-        className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-4"
-      >
-        <Server className="w-8 h-8 text-gray-600" />
-      </motion.div>
-      <h3 className="text-lg font-medium text-white mb-2">No nodes yet</h3>
-      <p className="text-gray-400 mb-6">
-        {isMonitoring ? 'Register your first node to get started' : 'Connecting to network...'}
-      </p>
-      {isMonitoring && (
-        <Link href="/dashboard/register">
-          <motion.a
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
-          >
-            <Plus className="w-5 h-5" />
-            Register Node
-          </motion.a>
-        </Link>
-      )}
     </div>
   );
 }
@@ -532,7 +722,7 @@ function LoadingState() {
         transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
         className="w-16 h-16 border-4 border-purple-500/20 border-t-purple-500 rounded-full"
       />
-      <p className="mt-4 text-gray-400">Connecting to network...</p>
+      <p className="mt-4 text-gray-400">Loading your network...</p>
     </motion.div>
   );
 }
@@ -575,8 +765,7 @@ function WalletConnectionPrompt() {
             <Server className="w-10 h-10 text-white" />
           </div>
           <h2 className="text-2xl font-bold text-white mb-4">Connect Your Wallet</h2>
-          <p className="text-gray-400 mb-8">Connect your wallet to access the node dashboard and start monitoring your network.</p>
-          <div className="text-sm text-gray-500">Use the wallet button in the navigation bar to connect.</div>
+          <p className="text-gray-400 mb-8">Connect your wallet to access your node network.</p>
         </GlassCard>
       </motion.div>
     </div>
