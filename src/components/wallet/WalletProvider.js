@@ -1,95 +1,389 @@
 /**
  * ============================================
- * File Creation/Modification Notes
+ * File: src/components/wallet/WalletProvider.js
  * ============================================
- * Creation Reason: Core wallet management for Web3 integration
- * Modification Reason: Fix page refresh redirect issue by implementing persistent wallet connection
- * Main Functionality: Manages Solana wallet connection state across the application
- * Dependencies: @solana/wallet-adapter-react, localStorage for persistence
- *
+ * Ethereum/OKX Wallet Provider for AeroNyx Platform
+ * 
+ * Purpose: Manage Ethereum-compatible wallet connections (OKX, MetaMask)
+ * Main Functionality: Handle wallet connection, disconnection, and state persistence
+ * Dependencies: No external wallet libraries needed - uses browser wallet APIs
+ * 
  * Main Logical Flow:
  * 1. Check localStorage for previous wallet connection on mount
  * 2. Auto-reconnect if wallet was previously connected
  * 3. Maintain loading state during reconnection to prevent premature redirects
  * 4. Persist wallet state to localStorage on connection/disconnection
- *
- * ⚠️ Important Note for Next Developer:
- * - The isInitializing state is critical - it prevents redirects during wallet restoration
- * - localStorage keys must remain consistent for persistence to work
+ * 
+ * ⚠️ Important Notes:
+ * - Works with OKX Wallet and MetaMask via window.okxwallet/window.ethereum
+ * - The isInitializing state prevents redirects during wallet restoration
+ * - localStorage keys must remain consistent for persistence
  * - Auto-reconnect logic must complete before authentication checks
- * - DO NOT remove the loading states as they prevent race conditions
- *
- * Last Modified: v3.0.0 - Added persistent connection with isInitializing state
+ * 
+ * Last Modified: v4.0.0 - Ethereum/OKX wallet implementation without external dependencies
  * ============================================
  */
 
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { 
-  ConnectionProvider, 
-  WalletProvider as SolanaWalletProvider,
-  useWallet as useSolanaWallet,
-  useConnection
-} from '@solana/wallet-adapter-react';
-import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
-import {
-  PhantomWalletAdapter,
-  SolflareWalletAdapter,
-  TorusWalletAdapter,
-  LedgerWalletAdapter
-} from '@solana/wallet-adapter-wallets';
-import { clusterApiUrl } from '@solana/web3.js';
-
-// Import wallet adapter styles
-import '@solana/wallet-adapter-react-ui/styles.css';
 
 // Constants for localStorage keys
 const STORAGE_KEYS = {
   WALLET_NAME: 'aeronyx_wallet_name',
   WALLET_ADDRESS: 'aeronyx_wallet_address',
   WALLET_CONNECTED: 'aeronyx_wallet_connected',
+  WALLET_TYPE: 'aeronyx_wallet_type',
   LAST_CONNECTION: 'aeronyx_last_connection'
 };
 
 // Create the context
 const WalletContext = createContext(null);
 
-// Inner component that uses the Solana wallet hooks
-function WalletContextProvider({ children }) {
-  const solanaWallet = useSolanaWallet();
-  const { connection } = useConnection();
+/**
+ * Detect available wallet provider
+ */
+function detectWalletProvider() {
+  if (typeof window === 'undefined') return null;
   
-  // Local state for wallet info with initialization tracking
+  if (window.okxwallet) {
+    console.log('[WalletProvider] OKX Wallet detected');
+    return { provider: window.okxwallet, type: 'okx', name: 'OKX Wallet' };
+  }
+  
+  if (window.ethereum) {
+    if (window.ethereum.isMetaMask) {
+      console.log('[WalletProvider] MetaMask detected');
+      return { provider: window.ethereum, type: 'metamask', name: 'MetaMask' };
+    }
+    console.log('[WalletProvider] Generic Ethereum wallet detected');
+    return { provider: window.ethereum, type: 'ethereum', name: 'Ethereum Wallet' };
+  }
+  
+  return null;
+}
+
+/**
+ * Main Wallet Provider Component
+ */
+export function WalletProvider({ children }) {
+  // Wallet state
   const [wallet, setWallet] = useState({
     connected: false,
     address: null,
     balance: null,
-    network: 'mainnet-beta',
-    isInitializing: true, // Critical: tracks if we're still checking for previous connection
-    isReconnecting: false // Tracks active reconnection attempts
+    network: null,
+    chainId: null,
+    type: null,
+    name: null,
+    provider: null,
+    isInitializing: true,
+    isReconnecting: false
   });
 
-  // Check for previous wallet connection on mount
+  // Error state
+  const [error, setError] = useState(null);
+
+  /**
+   * Clear stored wallet data
+   */
+  const clearStoredWalletData = useCallback(() => {
+    Object.values(STORAGE_KEYS).forEach(key => {
+      localStorage.removeItem(key);
+    });
+    console.log('[WalletProvider] Cleared stored wallet data');
+  }, []);
+
+  /**
+   * Get wallet balance
+   */
+  const fetchBalance = useCallback(async (address, provider) => {
+    if (!address || !provider) return;
+    
+    try {
+      const balance = await provider.request({
+        method: 'eth_getBalance',
+        params: [address, 'latest']
+      });
+      
+      // Convert from hex wei to ether
+      const balanceInWei = parseInt(balance, 16);
+      const balanceInEther = balanceInWei / 1e18;
+      
+      setWallet(prev => ({
+        ...prev,
+        balance: balanceInEther.toFixed(4)
+      }));
+    } catch (error) {
+      console.error('[WalletProvider] Error fetching balance:', error);
+    }
+  }, []);
+
+  /**
+   * Get network information
+   */
+  const fetchNetworkInfo = useCallback(async (provider) => {
+    if (!provider) return;
+    
+    try {
+      const chainId = await provider.request({ method: 'eth_chainId' });
+      const chainIdNum = parseInt(chainId, 16);
+      
+      let networkName = 'Unknown';
+      switch (chainIdNum) {
+        case 1:
+          networkName = 'Ethereum Mainnet';
+          break;
+        case 5:
+          networkName = 'Goerli Testnet';
+          break;
+        case 11155111:
+          networkName = 'Sepolia Testnet';
+          break;
+        case 137:
+          networkName = 'Polygon Mainnet';
+          break;
+        case 80001:
+          networkName = 'Polygon Mumbai';
+          break;
+        case 56:
+          networkName = 'BSC Mainnet';
+          break;
+        case 97:
+          networkName = 'BSC Testnet';
+          break;
+        default:
+          networkName = `Chain ID: ${chainIdNum}`;
+      }
+      
+      setWallet(prev => ({
+        ...prev,
+        chainId: chainIdNum,
+        network: networkName
+      }));
+    } catch (error) {
+      console.error('[WalletProvider] Error fetching network info:', error);
+    }
+  }, []);
+
+  /**
+   * Handle account changes
+   */
+  const handleAccountsChanged = useCallback((accounts) => {
+    console.log('[WalletProvider] Accounts changed:', accounts);
+    
+    if (accounts.length === 0) {
+      // User disconnected wallet
+      console.log('[WalletProvider] Wallet disconnected by user');
+      clearStoredWalletData();
+      setWallet(prev => ({
+        ...prev,
+        connected: false,
+        address: null,
+        balance: null,
+        isInitializing: false,
+        isReconnecting: false
+      }));
+    } else {
+      // Account changed
+      const newAddress = accounts[0].toLowerCase();
+      console.log('[WalletProvider] Account changed to:', newAddress);
+      
+      setWallet(prev => ({
+        ...prev,
+        address: newAddress,
+        connected: true
+      }));
+      
+      // Update stored address
+      localStorage.setItem(STORAGE_KEYS.WALLET_ADDRESS, newAddress);
+      
+      // Fetch new balance
+      const walletInfo = detectWalletProvider();
+      if (walletInfo) {
+        fetchBalance(newAddress, walletInfo.provider);
+      }
+    }
+  }, [clearStoredWalletData, fetchBalance]);
+
+  /**
+   * Handle chain changes
+   */
+  const handleChainChanged = useCallback((chainId) => {
+    console.log('[WalletProvider] Chain changed:', chainId);
+    // Reload the page as recommended by MetaMask
+    window.location.reload();
+  }, []);
+
+  /**
+   * Setup wallet event listeners
+   */
+  const setupEventListeners = useCallback((provider) => {
+    if (!provider) return;
+    
+    // Remove existing listeners first
+    if (provider.removeListener) {
+      provider.removeListener('accountsChanged', handleAccountsChanged);
+      provider.removeListener('chainChanged', handleChainChanged);
+    }
+    
+    // Add new listeners
+    provider.on('accountsChanged', handleAccountsChanged);
+    provider.on('chainChanged', handleChainChanged);
+    
+    console.log('[WalletProvider] Event listeners setup');
+  }, [handleAccountsChanged, handleChainChanged]);
+
+  /**
+   * Connect wallet
+   */
+  const connectWallet = useCallback(async () => {
+    try {
+      setError(null);
+      console.log('[WalletProvider] Connecting wallet...');
+      
+      const walletInfo = detectWalletProvider();
+      
+      if (!walletInfo) {
+        throw new Error('No wallet detected. Please install OKX Wallet or MetaMask.');
+      }
+      
+      const { provider, type, name } = walletInfo;
+      
+      // Request account access
+      const accounts = await provider.request({ method: 'eth_requestAccounts' });
+      
+      if (accounts.length === 0) {
+        throw new Error('No accounts found. Please unlock your wallet.');
+      }
+      
+      const address = accounts[0].toLowerCase();
+      console.log('[WalletProvider] Connected to:', address);
+      
+      // Store connection info
+      localStorage.setItem(STORAGE_KEYS.WALLET_NAME, name);
+      localStorage.setItem(STORAGE_KEYS.WALLET_ADDRESS, address);
+      localStorage.setItem(STORAGE_KEYS.WALLET_CONNECTED, 'true');
+      localStorage.setItem(STORAGE_KEYS.WALLET_TYPE, type);
+      localStorage.setItem(STORAGE_KEYS.LAST_CONNECTION, new Date().toISOString());
+      
+      // Update state
+      setWallet({
+        connected: true,
+        address,
+        balance: null,
+        network: null,
+        chainId: null,
+        type,
+        name,
+        provider,
+        isInitializing: false,
+        isReconnecting: false
+      });
+      
+      // Setup event listeners
+      setupEventListeners(provider);
+      
+      // Fetch additional info
+      await fetchBalance(address, provider);
+      await fetchNetworkInfo(provider);
+      
+      return address;
+      
+    } catch (error) {
+      console.error('[WalletProvider] Connection error:', error);
+      setError(error.message || 'Failed to connect wallet');
+      
+      setWallet(prev => ({
+        ...prev,
+        connected: false,
+        isInitializing: false,
+        isReconnecting: false
+      }));
+      
+      throw error;
+    }
+  }, [setupEventListeners, fetchBalance, fetchNetworkInfo]);
+
+  /**
+   * Disconnect wallet
+   */
+  const disconnectWallet = useCallback(async () => {
+    try {
+      console.log('[WalletProvider] Disconnecting wallet...');
+      
+      // Clear stored data
+      clearStoredWalletData();
+      
+      // Remove event listeners
+      if (wallet.provider && wallet.provider.removeListener) {
+        wallet.provider.removeListener('accountsChanged', handleAccountsChanged);
+        wallet.provider.removeListener('chainChanged', handleChainChanged);
+      }
+      
+      // Reset state
+      setWallet({
+        connected: false,
+        address: null,
+        balance: null,
+        network: null,
+        chainId: null,
+        type: null,
+        name: null,
+        provider: null,
+        isInitializing: false,
+        isReconnecting: false
+      });
+      
+      setError(null);
+      
+    } catch (error) {
+      console.error('[WalletProvider] Disconnect error:', error);
+    }
+  }, [wallet.provider, clearStoredWalletData, handleAccountsChanged, handleChainChanged]);
+
+  /**
+   * Sign message
+   */
+  const signMessage = useCallback(async (message) => {
+    if (!wallet.connected || !wallet.address || !wallet.provider) {
+      throw new Error('Wallet not connected');
+    }
+    
+    try {
+      const signature = await wallet.provider.request({
+        method: 'personal_sign',
+        params: [message, wallet.address]
+      });
+      
+      return signature;
+    } catch (error) {
+      console.error('[WalletProvider] Sign message error:', error);
+      throw error;
+    }
+  }, [wallet]);
+
+  /**
+   * Check for previous connection on mount
+   */
   useEffect(() => {
     const checkPreviousConnection = async () => {
-      console.log('[WalletProvider] Checking for previous wallet connection...');
+      console.log('[WalletProvider] Checking for previous connection...');
       
       try {
-        const storedWalletName = localStorage.getItem(STORAGE_KEYS.WALLET_NAME);
+        const storedType = localStorage.getItem(STORAGE_KEYS.WALLET_TYPE);
         const storedAddress = localStorage.getItem(STORAGE_KEYS.WALLET_ADDRESS);
         const wasConnected = localStorage.getItem(STORAGE_KEYS.WALLET_CONNECTED) === 'true';
         const lastConnection = localStorage.getItem(STORAGE_KEYS.LAST_CONNECTION);
         
         console.log('[WalletProvider] Stored wallet data:', {
-          walletName: storedWalletName,
+          type: storedType,
           address: storedAddress,
           wasConnected,
           lastConnection
         });
-
-        // Check if we should attempt auto-reconnect
-        if (wasConnected && storedWalletName && !solanaWallet.connected) {
+        
+        if (wasConnected && storedType && storedAddress) {
           const lastConnectionTime = lastConnection ? new Date(lastConnection).getTime() : 0;
           const hoursSinceLastConnection = (Date.now() - lastConnectionTime) / (1000 * 60 * 60);
           
@@ -101,26 +395,49 @@ function WalletContextProvider({ children }) {
               ...prev,
               isReconnecting: true
             }));
-
-            // Find the wallet adapter
-            const walletToConnect = solanaWallet.wallets.find(
-              w => w.adapter.name === storedWalletName
-            );
             
-            if (walletToConnect) {
+            const walletInfo = detectWalletProvider();
+            
+            if (walletInfo && walletInfo.type === storedType) {
               try {
-                await solanaWallet.select(walletToConnect.adapter.name);
-                // Give the wallet adapter time to initialize
-                await new Promise(resolve => setTimeout(resolve, 500));
+                const { provider, type, name } = walletInfo;
                 
-                if (solanaWallet.publicKey) {
+                // Check if already connected
+                const accounts = await provider.request({ method: 'eth_accounts' });
+                
+                if (accounts.length > 0 && accounts[0].toLowerCase() === storedAddress) {
                   console.log('[WalletProvider] Auto-reconnect successful');
+                  
+                  setWallet({
+                    connected: true,
+                    address: storedAddress,
+                    balance: null,
+                    network: null,
+                    chainId: null,
+                    type,
+                    name,
+                    provider,
+                    isInitializing: false,
+                    isReconnecting: false
+                  });
+                  
+                  // Setup event listeners
+                  setupEventListeners(provider);
+                  
+                  // Fetch additional info
+                  await fetchBalance(storedAddress, provider);
+                  await fetchNetworkInfo(provider);
+                } else {
+                  console.log('[WalletProvider] Wallet not connected or address mismatch');
+                  clearStoredWalletData();
                 }
               } catch (error) {
                 console.error('[WalletProvider] Auto-reconnect failed:', error);
-                // Clear stored data if reconnection fails
                 clearStoredWalletData();
               }
+            } else {
+              console.log('[WalletProvider] Wallet type mismatch or not found');
+              clearStoredWalletData();
             }
           } else {
             console.log('[WalletProvider] Last connection too old, clearing stored data');
@@ -130,8 +447,7 @@ function WalletContextProvider({ children }) {
       } catch (error) {
         console.error('[WalletProvider] Error checking previous connection:', error);
       } finally {
-        // Mark initialization as complete after a short delay
-        // This ensures wallet adapters have time to initialize
+        // Mark initialization as complete
         setTimeout(() => {
           setWallet(prev => ({
             ...prev,
@@ -139,141 +455,12 @@ function WalletContextProvider({ children }) {
             isReconnecting: false
           }));
           console.log('[WalletProvider] Initialization complete');
-        }, 1000);
+        }, 500);
       }
     };
-
-    checkPreviousConnection();
-  }, []); // Only run once on mount
-
-  // Update wallet state when Solana wallet changes
-  useEffect(() => {
-    if (solanaWallet.publicKey) {
-      const address = solanaWallet.publicKey.toString();
-      
-      console.log('[WalletProvider] Wallet connected:', address);
-      
-      // Store wallet data for persistence
-      localStorage.setItem(STORAGE_KEYS.WALLET_NAME, solanaWallet.wallet?.adapter.name || '');
-      localStorage.setItem(STORAGE_KEYS.WALLET_ADDRESS, address);
-      localStorage.setItem(STORAGE_KEYS.WALLET_CONNECTED, 'true');
-      localStorage.setItem(STORAGE_KEYS.LAST_CONNECTION, new Date().toISOString());
-      
-      setWallet(prev => ({
-        ...prev,
-        connected: true,
-        address: address,
-        isInitializing: false,
-        isReconnecting: false
-      }));
-      
-      // Fetch balance
-      fetchBalance(address);
-    } else if (!wallet.isInitializing && !wallet.isReconnecting) {
-      // Only clear if we're not in the middle of initialization or reconnection
-      console.log('[WalletProvider] Wallet disconnected');
-      
-      clearStoredWalletData();
-      
-      setWallet(prev => ({
-        ...prev,
-        connected: false,
-        address: null,
-        balance: null,
-        isInitializing: false,
-        isReconnecting: false
-      }));
-    }
-  }, [solanaWallet.publicKey, wallet.isInitializing, wallet.isReconnecting]);
-
-  // Clear stored wallet data
-  const clearStoredWalletData = () => {
-    localStorage.removeItem(STORAGE_KEYS.WALLET_NAME);
-    localStorage.removeItem(STORAGE_KEYS.WALLET_ADDRESS);
-    localStorage.removeItem(STORAGE_KEYS.WALLET_CONNECTED);
-    localStorage.removeItem(STORAGE_KEYS.LAST_CONNECTION);
-  };
-
-  // Fetch wallet balance
-  const fetchBalance = async (address) => {
-    try {
-      const publicKey = solanaWallet.publicKey;
-      if (publicKey && connection) {
-        const balance = await connection.getBalance(publicKey);
-        const solBalance = balance / 1e9; // Convert lamports to SOL
-        
-        setWallet(prev => ({
-          ...prev,
-          balance: solBalance.toFixed(4)
-        }));
-      }
-    } catch (error) {
-      console.error('[WalletProvider] Error fetching balance:', error);
-    }
-  };
-
-  // Connect wallet function
-  const connectWallet = useCallback(async () => {
-    try {
-      console.log('[WalletProvider] Connecting wallet...');
-      
-      if (!solanaWallet.wallet) {
-        // If no wallet is selected, select Phantom by default
-        const phantomWallet = solanaWallet.wallets.find(
-          w => w.adapter.name === 'Phantom'
-        );
-        
-        if (phantomWallet) {
-          await solanaWallet.select(phantomWallet.adapter.name);
-        } else {
-          throw new Error('No wallet found. Please install Phantom wallet.');
-        }
-      }
-      
-      await solanaWallet.connect();
-    } catch (error) {
-      console.error('[WalletProvider] Error connecting wallet:', error);
-      clearStoredWalletData();
-      throw error;
-    }
-  }, [solanaWallet]);
-
-  // Disconnect wallet function
-  const disconnectWallet = useCallback(async () => {
-    try {
-      console.log('[WalletProvider] Disconnecting wallet...');
-      
-      await solanaWallet.disconnect();
-      clearStoredWalletData();
-      
-      setWallet({
-        connected: false,
-        address: null,
-        balance: null,
-        network: 'mainnet-beta',
-        isInitializing: false,
-        isReconnecting: false
-      });
-    } catch (error) {
-      console.error('[WalletProvider] Error disconnecting wallet:', error);
-    }
-  }, [solanaWallet]);
-
-  // Sign message function
-  const signMessage = useCallback(async (message) => {
-    if (!solanaWallet.signMessage) {
-      throw new Error('Wallet does not support message signing');
-    }
     
-    try {
-      const encodedMessage = new TextEncoder().encode(message);
-      const signature = await solanaWallet.signMessage(encodedMessage);
-      return Buffer.from(signature).toString('base64');
-    } catch (error) {
-      console.error('[WalletProvider] Error signing message:', error);
-      throw error;
-    }
-  }, [solanaWallet]);
+    checkPreviousConnection();
+  }, [clearStoredWalletData, setupEventListeners, fetchBalance, fetchNetworkInfo]);
 
   // Context value
   const value = useMemo(() => ({
@@ -281,54 +468,15 @@ function WalletContextProvider({ children }) {
     connectWallet,
     disconnectWallet,
     signMessage,
+    error,
     isInitializing: wallet.isInitializing,
-    isReconnecting: wallet.isReconnecting,
-    solanaWallet // Expose the underlying Solana wallet for advanced usage
-  }), [wallet, connectWallet, disconnectWallet, signMessage, solanaWallet]);
+    isReconnecting: wallet.isReconnecting
+  }), [wallet, connectWallet, disconnectWallet, signMessage, error]);
 
   return (
     <WalletContext.Provider value={value}>
       {children}
     </WalletContext.Provider>
-  );
-}
-
-// Main provider component
-export function WalletProvider({ children }) {
-  // Configure wallets
-  const wallets = useMemo(
-    () => [
-      new PhantomWalletAdapter(),
-      new SolflareWalletAdapter(),
-      new TorusWalletAdapter(),
-      new LedgerWalletAdapter()
-    ],
-    []
-  );
-
-  // Use mainnet-beta by default
-  const endpoint = useMemo(() => {
-    const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK || 'mainnet-beta';
-    
-    // Use custom RPC if provided
-    if (process.env.NEXT_PUBLIC_SOLANA_RPC_URL) {
-      return process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
-    }
-    
-    // Otherwise use default endpoints
-    return clusterApiUrl(network);
-  }, []);
-
-  return (
-    <ConnectionProvider endpoint={endpoint}>
-      <SolanaWalletProvider wallets={wallets} autoConnect={false}>
-        <WalletModalProvider>
-          <WalletContextProvider>
-            {children}
-          </WalletContextProvider>
-        </WalletModalProvider>
-      </SolanaWalletProvider>
-    </ConnectionProvider>
   );
 }
 
@@ -345,3 +493,6 @@ export function useWallet() {
 
 // Export storage keys for use in other components if needed
 export { STORAGE_KEYS };
+
+// Export default for compatibility
+export default WalletProvider;
