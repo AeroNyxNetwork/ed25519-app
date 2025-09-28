@@ -160,6 +160,11 @@ class WebSocketService extends EventEmitter {
           this.reconnectAttempts = 0;
           this.updateState(WS_STATE.CONNECTED);
           
+          // Update global WebSocket reference
+          if (typeof window !== 'undefined') {
+            window.globalWebSocket = this.ws;
+          }
+          
           // Start ping loop
           this.startPingInterval();
           
@@ -718,14 +723,17 @@ class WebSocketService extends EventEmitter {
 // Create singleton instance
 const webSocketService = new WebSocketService();
 
-// ADDED: Attach to window for global access and debugging
+// Attach to window for global access and debugging
 if (typeof window !== 'undefined') {
   window.webSocketService = webSocketService;
-  // Also update globalWebSocket reference when connection changes
-  Object.defineProperty(window, 'globalWebSocket', {
-    get: function() { return webSocketService.ws; },
-    configurable: true
-  });
+  
+  // Create a function to update globalWebSocket safely
+  window.updateGlobalWebSocket = function() {
+    window.globalWebSocket = webSocketService.ws;
+  };
+  
+  // Initial set
+  window.globalWebSocket = webSocketService.ws;
 }
 
 // Export singleton
