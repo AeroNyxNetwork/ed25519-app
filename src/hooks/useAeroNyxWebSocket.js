@@ -681,20 +681,9 @@ class WebSocketManager {
       return;
     }
     
-    // Check if connecting - but allow override if connection is actually closed
+    // Check if connecting - wait for result instead of aborting
     if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
-      console.log('[WebSocketManager] Connection in progress, checking state...');
-      
-      // Wait a bit to see if connection succeeds
-      setTimeout(() => {
-        if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
-          console.log('[WebSocketManager] Still connecting after check, aborting old connection');
-          this.ws.close();
-          this.isConnecting = false;
-          // Retry connection
-          this.connect(wallet);
-        }
-      }, 2000);
+      console.log('[WebSocketManager] Connection already in progress, waiting...');
       return;
     }
 
@@ -705,16 +694,19 @@ class WebSocketManager {
       return;
     }
     
-    // Force reset if previous connection failed
+    // Clean up any dead connection
+    if (this.ws && (this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING)) {
+      console.log('[WebSocketManager] Cleaning up dead connection');
+      this.ws = null;
+      globalWebSocketInstance = null;
+      window.globalWebSocket = null;
+      this.isConnecting = false;
+    }
+    
+    // Check if already trying to connect
     if (this.isConnecting) {
-      // Check if we have a dead connection
-      if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
-        console.log('[WebSocketManager] Previous connection dead, resetting state');
-        this.isConnecting = false;
-      } else {
-        console.log('[WebSocketManager] Already attempting connection');
-        return;
-      }
+      console.log('[WebSocketManager] Already attempting connection');
+      return;
     }
 
     this.isConnecting = true;
@@ -749,16 +741,16 @@ class WebSocketManager {
       
       // Connection timeout - shorter for better UX
       this.connectionTimeout = setTimeout(() => {
-        if (this.ws.readyState === WebSocket.CONNECTING) {
+        if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
           console.error('[WebSocketManager] Connection timeout');
           this.ws.close();
+          this.isConnecting = false;
           this.updateState({ 
             wsState: { 
               authState: 'error',
               error: 'Connection timeout' 
             }
           });
-          this.isConnecting = false;
           // Will trigger reconnect in onclose handler
         }
       }, CONNECTION_CONFIG.CONNECTION_TIMEOUT);
@@ -782,14 +774,9 @@ class WebSocketManager {
         // Sync with service
         this.syncWithService();
         
-        // CRITICAL: Start authentication immediately after connection
-        // The server expects authentication right after connection
-        console.log('[WebSocketManager] Starting authentication flow immediately');
-        setTimeout(() => {
-          if (this.ws && this.ws.readyState === WebSocket.OPEN && !this.authenticationInProgress) {
-            this.startAuthentication();
-          }
-        }, 100);
+        // The server should send a 'connected' message after connection
+        // We'll start authentication when we receive that message
+        console.log('[WebSocketManager] Waiting for server connected message');
       };
       
       this.ws.onmessage = (event) => this.handleMessage(event);
@@ -902,6 +889,12 @@ class WebSocketManager {
    * IMPROVED: Better retry strategy with quick initial retries
    */
   scheduleReconnect() {
+    // Clear any existing reconnect timeout to prevent duplicates
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    
     // Optional: Check max consecutive failures
     if (CONNECTION_CONFIG.MAX_CONSECUTIVE_FAILURES && 
         this.consecutiveFailures >= CONNECTION_CONFIG.MAX_CONSECUTIVE_FAILURES) {
@@ -931,11 +924,6 @@ class WebSocketManager {
     }
     
     console.log(`[WebSocketManager] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-    
-    // Clear any existing timeout
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-    }
     
     this.reconnectTimeout = setTimeout(() => {
       if (this.walletAddress && this.shouldReconnect) {
@@ -1135,10 +1123,14 @@ export function useAeroNyxWebSocket(options = {}) {
     mountedRef.current = true;
     
     if (autoConnect && wallet.connected && wallet.address) {
-      // Small delay to ensure wallet is ready
+      // Small delay to ensure wallet is fully initialized
       const timeout = setTimeout(() => {
         if (mountedRef.current) {
-          wsManager.connect(wallet);
+          // Check if we're not already connected or connecting
+          if (!wsManager.ws || (wsManager.ws.readyState !== WebSocket.OPEN && wsManager.ws.readyState !== WebSocket.CONNECTING)) {
+            console.log('[useAeroNyxWebSocket] Auto-connecting with wallet:', wallet.address);
+            wsManager.connect(wallet);
+          }
         }
       }, 500);
       
