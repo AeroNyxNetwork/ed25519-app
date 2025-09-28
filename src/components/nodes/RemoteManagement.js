@@ -4,24 +4,24 @@
  * ============================================
  * Remote Management Component with Centralized JWT Authentication
  * 
- * Purpose: Provide terminal interface for remote nodes
- * Main Functionality: Terminal UI with JWT authentication via RemoteAuthService
+ * Creation Reason: Provide terminal interface for remote nodes
+ * Modification Reason: Fix component unmounting during initialization
+ * Main Functionality: Terminal UI with stable initialization
  * Dependencies: TerminalUI, useRemoteManagement hook, remoteAuthService
  * 
  * Main Logical Flow:
  * 1. Get signature from wallet (via useGlobalSignature)
  * 2. Authenticate via RemoteAuthService
- * 3. Initialize terminal session via useRemoteManagement
+ * 3. Initialize terminal session ONCE with proper cleanup
  * 4. Handle terminal I/O
  * 
  * ⚠️ Important Notes:
- * - JWT authentication is centralized in RemoteAuthService
- * - Hook only manages terminal, not authentication
- * - Token is valid for 59 minutes with auto-cleanup
+ * - CRITICAL FIX: Prevent duplicate initialization and premature cleanup
+ * - Use abort controller for cleanup
+ * - Track initialization state properly
  * - Terminal output comes through WebSocket messages
- * - FIXED: Terminal ready state synchronization issue
  * 
- * Last Modified: v4.1.0 - Fixed terminal ready state and duplicate output
+ * Last Modified: v5.0.0 - Fixed initialization and unmounting issues
  * ============================================
  */
 
@@ -54,7 +54,7 @@ import clsx from 'clsx';
 // Import the terminal UI component
 import TerminalUI from '../terminal/TerminalUI';
 
-// Import the hook (no longer handles JWT)
+// Import the hook
 import { useRemoteManagement } from '../../hooks/useRemoteManagement';
 
 // Import services
@@ -79,13 +79,13 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     walletAddress
   } = useGlobalSignature();
   
-  // Use the remote management hook (no longer handles JWT)
+  // Use the remote management hook
   const {
     terminalSession,
     terminalReady: hookTerminalReady,
     isConnecting: hookIsConnecting,
     error: hookError,
-    isNodeOnline: hookIsNodeOnline,  // Use hook's node status
+    isNodeOnline: hookIsNodeOnline,
     isWebSocketReady,
     isRemoteAuthenticated,
     initializeTerminal,
@@ -94,7 +94,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     executeCommand,
     reconnectTerminal,
     tokenExpiry,
-    nodes  // Get nodes from hook
+    nodes
   } = useRemoteManagement(nodeReference);
   
   // Use hook's determination of node status
@@ -107,7 +107,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const [localTerminalReady, setLocalTerminalReady] = useState(false);
   const [initRetryCount, setInitRetryCount] = useState(0);
   
-  // FIXED: Track if terminal UI has been initialized to prevent duplicate writes
+  // Track if terminal UI has been initialized
   const [terminalUIReady, setTerminalUIReady] = useState(false);
 
   // Refs
@@ -117,10 +117,14 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const authTimeoutRef = useRef(null);
   const isMountedRef = useRef(true);
   const messageListenerRef = useRef(null);
-  const initializationRef = useRef(false);
-  const lastOutputRef = useRef(''); // Track last output to prevent duplicates
+  const lastOutputRef = useRef('');
+  
+  // CRITICAL FIX: Track initialization state properly
+  const initializingRef = useRef(false);
+  const initializedRef = useRef(false);
+  const abortControllerRef = useRef(null);
 
-  // FIXED: Combine terminal ready states
+  // Combine terminal ready states
   const terminalReady = terminalSession && hookTerminalReady && localTerminalReady && terminalUIReady;
 
   // ==================== Authentication ====================
@@ -129,7 +133,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
    * Perform JWT authentication via centralized service
    */
   const performAuthentication = useCallback(async () => {
-    // Check if already authenticated
     if (remoteAuthService.isAuthenticated(nodeReference)) {
       console.log('[RemoteManagement] Already authenticated for node:', nodeReference);
       return true;
@@ -146,7 +149,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     try {
       console.log('[RemoteManagement] Starting authentication for node:', nodeReference);
       
-      // Step 1: Ensure we have a valid signature
       const signatureData = await ensureSignature();
       
       if (!signatureData || !signatureData.signature || !signatureData.message) {
@@ -155,7 +157,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       
       console.log('[RemoteManagement] Got signature, authenticating with RemoteAuthService');
       
-      // Step 2: Authenticate via centralized service
       const authResult = await remoteAuthService.authenticate({
         nodeReference,
         walletAddress,
@@ -179,14 +180,14 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       setAuthError(error.message);
       setIsAuthenticating(false);
       
-      // Increment retry count
       setAuthRetryCount(prev => prev + 1);
       
-      // Auto-retry for certain errors
       if (authRetryCount < 3 && error.message.includes('WebSocket not authenticated')) {
         console.log('[RemoteManagement] Will retry authentication in 2 seconds...');
         authTimeoutRef.current = setTimeout(() => {
-          performAuthentication();
+          if (isMountedRef.current) {
+            performAuthentication();
+          }
         }, 2000);
       }
       
@@ -197,13 +198,34 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   // ==================== Initialization ====================
   
   /**
-   * Initialize terminal after authentication
+   * Initialize terminal after authentication - FIXED VERSION
    */
   const initializeTerminalWithAuth = useCallback(async () => {
-    if (!isMountedRef.current) return null;
+    // Prevent duplicate initialization
+    if (initializingRef.current || initializedRef.current) {
+      console.log('[RemoteManagement] Already initializing or initialized');
+      return null;
+    }
+    
+    if (!isMountedRef.current) {
+      console.log('[RemoteManagement] Component not mounted');
+      return null;
+    }
+    
+    initializingRef.current = true;
+    
+    // Create abort controller for this initialization
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
     
     try {
       console.log('[RemoteManagement] Initializing terminal with auth check');
+      
+      // Check if aborted
+      if (signal.aborted) {
+        console.log('[RemoteManagement] Initialization aborted');
+        return null;
+      }
       
       // Step 1: Ensure authenticated
       const authSuccess = await performAuthentication();
@@ -212,18 +234,29 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         return null;
       }
       
+      // Check if aborted
+      if (signal.aborted) {
+        console.log('[RemoteManagement] Initialization aborted after auth');
+        return null;
+      }
+      
       // Step 2: Wait for auth to propagate
       await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Check if aborted
+      if (signal.aborted) {
+        console.log('[RemoteManagement] Initialization aborted after wait');
+        return null;
+      }
       
       // Step 3: Initialize terminal
       const result = await initializeTerminal();
       
-      if (result && result.sessionId) {
+      if (result && result.sessionId && !signal.aborted) {
         console.log('[RemoteManagement] Terminal initialized:', result.sessionId);
         setLocalTerminalReady(true);
         setInitRetryCount(0);
-        
-        // Don't write welcome message here - wait for terminal UI to be ready
+        initializedRef.current = true;
         
         return result;
       }
@@ -235,58 +268,70 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       setAuthError(error.message);
       
       // Retry logic
-      if (initRetryCount < 5 && isMountedRef.current) {
+      if (initRetryCount < 5 && isMountedRef.current && !signal.aborted) {
         setInitRetryCount(prev => prev + 1);
         initTimeoutRef.current = setTimeout(() => {
-          initializeTerminalWithAuth();
+          if (isMountedRef.current) {
+            initializingRef.current = false;
+            initializeTerminalWithAuth();
+          }
         }, 3000);
       }
       
       return null;
+    } finally {
+      initializingRef.current = false;
     }
-  }, [performAuthentication, initializeTerminal, nodeReference, initRetryCount]);
+  }, [performAuthentication, initializeTerminal, initRetryCount]);
 
   // ==================== Effects ====================
   
-  // Initialize when modal opens
+  // Initialize when modal opens - FIXED VERSION
   useEffect(() => {
-    if (!isOpen || initializationRef.current) return;
+    if (!isOpen) return;
     
-    initializationRef.current = true;
-    let mounted = true;
-
-    const init = async () => {
-      if (!mounted) return;
+    // Reset state when opening
+    if (!initializedRef.current) {
+      console.log('[RemoteManagement] Modal opened, starting initialization');
       
-      console.log('[RemoteManagement] Starting initialization');
-      
-      // Check prerequisites
-      if (!isNodeOnline) {
-        console.log('[RemoteManagement] Node is offline');
-        setAuthError('Node is offline');
-        return;
-      }
-      
-      if (!isWebSocketReady) {
-        console.log('[RemoteManagement] WebSocket not ready, waiting...');
-        if (mounted && initRetryCount < 10) {
-          initTimeoutRef.current = setTimeout(() => {
-            setInitRetryCount(prev => prev + 1);
-            init();
-          }, 2000);
+      const init = async () => {
+        // Check prerequisites
+        if (!isNodeOnline) {
+          console.log('[RemoteManagement] Node is offline');
+          setAuthError('Node is offline');
+          return;
         }
-        return;
+        
+        if (!isWebSocketReady) {
+          console.log('[RemoteManagement] WebSocket not ready, waiting...');
+          if (initRetryCount < 10) {
+            initTimeoutRef.current = setTimeout(() => {
+              setInitRetryCount(prev => prev + 1);
+              init();
+            }, 2000);
+          }
+          return;
+        }
+        
+        // Initialize terminal with authentication
+        await initializeTerminalWithAuth();
+      };
+      
+      // Delay initialization slightly to ensure component is stable
+      setTimeout(init, 100);
+    }
+    
+    return () => {
+      // Don't cleanup if modal is still open
+      if (isOpen) return;
+      
+      // Abort any pending initialization
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
       }
       
-      // Initialize terminal with authentication
-      await initializeTerminalWithAuth();
-    };
-
-    // Start initialization
-    init();
-
-    return () => {
-      mounted = false;
+      // Clear timeouts
       if (initTimeoutRef.current) {
         clearTimeout(initTimeoutRef.current);
       }
@@ -459,7 +504,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const clearTerminal = useCallback(() => {
     if (terminalRef.current) {
       terminalRef.current.clear();
-      lastOutputRef.current = ''; // Reset duplicate tracking
+      lastOutputRef.current = '';
     }
   }, []);
 
@@ -467,7 +512,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const resetTerminal = useCallback(() => {
     if (terminalRef.current) {
       terminalRef.current.reset();
-      lastOutputRef.current = ''; // Reset duplicate tracking
+      lastOutputRef.current = '';
     }
   }, []);
 
@@ -483,7 +528,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     setAuthError(null);
     outputBufferRef.current = '';
     lastOutputRef.current = '';
-    initializationRef.current = false;
+    initializedRef.current = false;
+    initializingRef.current = false;
     
     // Clear auth token for this node
     remoteAuthService.clearToken(nodeReference);
@@ -554,25 +600,33 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     
     return () => {
       isMountedRef.current = false;
+      
+      // Abort any pending initialization
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
     };
   }, []);
 
-  // Cleanup on close
+  // Cleanup on close - FIXED VERSION
   useEffect(() => {
-    if (!isOpen) {
+    if (!isOpen && initializedRef.current) {
+      console.log('[RemoteManagement] Modal closed, cleaning up');
+      
       if (terminalSession) {
-        console.log('[RemoteManagement] Closing terminal session');
         closeTerminal();
       }
       
-      // Reset state
+      // Reset state for next open
       setLocalTerminalReady(false);
       setTerminalUIReady(false);
       setInitRetryCount(0);
       setAuthRetryCount(0);
       outputBufferRef.current = '';
       lastOutputRef.current = '';
-      initializationRef.current = false;
+      initializedRef.current = false;
+      initializingRef.current = false;
       
       // Note: Keep JWT token for reuse within validity period
     }
