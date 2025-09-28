@@ -2,28 +2,25 @@
  * ============================================
  * File: src/components/nodes/RemoteManagement.js
  * ============================================
- * Fixed Remote Management Component with JWT Authentication
+ * Remote Management Component with Centralized JWT Authentication
  * 
- * Creation Reason: Provide terminal interface for remote nodes
- * Modification Reason: Added JWT authentication flow based on UpdatedRemoteManagement
- * Main Functionality: Terminal UI with proper JWT authentication
- * Dependencies: TerminalUI, useRemoteManagement hook, nodeRegistrationService
+ * Purpose: Provide terminal interface for remote nodes
+ * Main Functionality: Terminal UI with JWT authentication via RemoteAuthService
+ * Dependencies: TerminalUI, useRemoteManagement hook, remoteAuthService
  * 
  * Main Logical Flow:
- * 1. Get signature from wallet
- * 2. Obtain JWT token from API
- * 3. Send remote_auth message with JWT
- * 4. Wait for remote_auth_success
- * 5. Initialize terminal session
- * 6. Handle terminal I/O
+ * 1. Get signature from wallet (via useGlobalSignature)
+ * 2. Authenticate via RemoteAuthService
+ * 3. Initialize terminal session via useRemoteManagement
+ * 4. Handle terminal I/O
  * 
- * ⚠️ Important Note for Next Developer:
- * - JWT authentication is REQUIRED before terminal access
- * - Token is valid for 59 minutes and auto-refreshes
- * - Uses existing useRemoteManagement hook
+ * ⚠️ Important Notes:
+ * - JWT authentication is centralized in RemoteAuthService
+ * - Hook only manages terminal, not authentication
+ * - Token is valid for 59 minutes with auto-cleanup
  * - Terminal output comes through WebSocket messages
  * 
- * Last Modified: v3.0.0 - Integrated JWT authentication from UpdatedRemoteManagement
+ * Last Modified: v4.0.0 - Uses centralized RemoteAuthService
  * ============================================
  */
 
@@ -48,28 +45,27 @@ import {
   ChevronRight,
   Trash2,
   Key,
-  Shield
+  Shield,
+  Clock
 } from 'lucide-react';
 import clsx from 'clsx';
 
 // Import the terminal UI component
 import TerminalUI from '../terminal/TerminalUI';
 
-// Import the hook with JWT support
+// Import the hook (no longer handles JWT)
 import { useRemoteManagement } from '../../hooks/useRemoteManagement';
 
 // Import services
-import nodeRegistrationService from '../../lib/api/nodeRegistration';
+import remoteAuthService from '../../services/RemoteAuthService';
 import webSocketService from '../../services/WebSocketService';
 import { useGlobalSignature } from '../../hooks/useGlobalSignature';
 
 export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
-  // ==================== JWT Authentication State ====================
-  const [isJwtAuthenticated, setIsJwtAuthenticated] = useState(false);
+  // ==================== Authentication State ====================
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [authError, setAuthError] = useState(null);
-  const jwtTokenRef = useRef(null);
-  const jwtExpiryRef = useRef(null);
+  const [authRetryCount, setAuthRetryCount] = useState(0);
   
   // Get signature for JWT
   const {
@@ -82,7 +78,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     walletAddress
   } = useGlobalSignature();
   
-  // Use the remote management hook
+  // Use the remote management hook (no longer handles JWT)
   const {
     terminalSession,
     terminalReady,
@@ -90,153 +86,167 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     error: hookError,
     isNodeOnline,
     isWebSocketReady,
-    isRemoteAuthenticated: hookIsRemoteAuthenticated,
+    isRemoteAuthenticated,
     initializeTerminal,
     sendTerminalInput,
     closeTerminal,
     executeCommand,
     reconnectTerminal,
-    setRemoteAuthenticatedState
+    tokenExpiry
   } = useRemoteManagement(nodeReference);
 
-  // Local state
+  // ==================== Local State ====================
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [localTerminalReady, setLocalTerminalReady] = useState(false);
-  const [retryCount, setRetryCount] = useState(0);
+  const [initRetryCount, setInitRetryCount] = useState(0);
 
   // Refs
   const terminalRef = useRef(null);
   const outputBufferRef = useRef('');
   const initTimeoutRef = useRef(null);
+  const authTimeoutRef = useRef(null);
   const isMountedRef = useRef(true);
   const messageListenerRef = useRef(null);
   const initializationRef = useRef(false);
 
-  // ==================== JWT Authentication ====================
+  // ==================== Authentication ====================
   
   /**
-   * Check if JWT token is still valid
+   * Perform JWT authentication via centralized service
    */
-  const isJwtValid = useCallback(() => {
-    if (!jwtTokenRef.current || !jwtExpiryRef.current) return false;
-    return Date.now() < jwtExpiryRef.current;
-  }, []);
-
-  /**
-   * Perform JWT authentication for remote management
-   */
-  const performJwtAuthentication = useCallback(async () => {
-    if (isJwtAuthenticated && isJwtValid()) {
-      console.log('[RemoteManagement] Already authenticated with valid JWT');
+  const performAuthentication = useCallback(async () => {
+    // Check if already authenticated
+    if (remoteAuthService.isAuthenticated(nodeReference)) {
+      console.log('[RemoteManagement] Already authenticated for node:', nodeReference);
       return true;
+    }
+    
+    if (isAuthenticating) {
+      console.log('[RemoteManagement] Authentication already in progress');
+      return false;
     }
     
     setIsAuthenticating(true);
     setAuthError(null);
     
     try {
-      console.log('[RemoteManagement] Starting JWT authentication');
+      console.log('[RemoteManagement] Starting authentication for node:', nodeReference);
       
       // Step 1: Ensure we have a valid signature
       const signatureData = await ensureSignature();
       
       if (!signatureData || !signatureData.signature || !signatureData.message) {
-        throw new Error('Failed to obtain signature');
+        throw new Error('Failed to obtain wallet signature');
       }
       
-      console.log('[RemoteManagement] Got signature, valid for:', remainingTimeFormatted);
+      console.log('[RemoteManagement] Got signature, authenticating with RemoteAuthService');
       
-      // Step 2: Get JWT token from API
-      const tokenResponse = await nodeRegistrationService.generateRemoteManagementToken(
-        walletAddress,
-        signatureData.signature,
-        signatureData.message,
-        'okx',
+      // Step 2: Authenticate via centralized service
+      const authResult = await remoteAuthService.authenticate({
         nodeReference,
-        60 // 60 minutes validity
-      );
-      
-      if (!tokenResponse.success) {
-        throw new Error(tokenResponse.message || 'Failed to get JWT token');
-      }
-      
-      const token = tokenResponse.data?.token;
-      if (!token) {
-        throw new Error('No JWT token received from server');
-      }
-      
-      // Store JWT token (valid for 59 minutes to be safe)
-      jwtTokenRef.current = token;
-      jwtExpiryRef.current = Date.now() + (59 * 60 * 1000);
-      
-      console.log('[RemoteManagement] JWT token obtained, sending remote_auth');
-      
-      // Step 3: Send remote_auth message via WebSocket
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          webSocketService.off('message', handleMessage);
-          reject(new Error('Remote authentication timeout'));
-        }, 10000);
-        
-        const handleMessage = (message) => {
-          if (message.type === 'remote_auth_success') {
-            clearTimeout(timeout);
-            webSocketService.off('message', handleMessage);
-            setIsJwtAuthenticated(true);
-            setIsAuthenticating(false);
-            
-            // CRITICAL: Notify the hook that JWT auth is complete
-            setRemoteAuthenticatedState(true);
-            
-            console.log('[RemoteManagement] JWT authentication successful');
-            resolve(true);
-          } else if (message.type === 'error' && 
-                     (message.code === 'AUTH_FAILED' || 
-                      message.code === 'INVALID_TOKEN' ||
-                      message.code === 'INVALID_JWT')) {
-            clearTimeout(timeout);
-            webSocketService.off('message', handleMessage);
-            
-            // Clear JWT on auth failure
-            jwtTokenRef.current = null;
-            jwtExpiryRef.current = null;
-            setIsJwtAuthenticated(false);
-            
-            reject(new Error(message.message || 'JWT authentication failed'));
-          }
-        };
-        
-        webSocketService.on('message', handleMessage);
-        
-        const sent = webSocketService.send({
-          type: 'remote_auth',
-          jwt_token: token
-        });
-        
-        if (!sent) {
-          clearTimeout(timeout);
-          webSocketService.off('message', handleMessage);
-          reject(new Error('Failed to send authentication message'));
-        }
+        walletAddress,
+        signature: signatureData.signature,
+        message: signatureData.message,
+        walletType: 'okx'
       });
       
+      if (!authResult.success) {
+        throw new Error(authResult.error || 'Authentication failed');
+      }
+      
+      console.log('[RemoteManagement] Authentication successful');
+      setIsAuthenticating(false);
+      setAuthRetryCount(0);
+      
+      return true;
+      
     } catch (error) {
-      console.error('[RemoteManagement] JWT authentication failed:', error);
+      console.error('[RemoteManagement] Authentication failed:', error);
       setAuthError(error.message);
       setIsAuthenticating(false);
-      setIsJwtAuthenticated(false);
       
-      // Clear JWT on error
-      jwtTokenRef.current = null;
-      jwtExpiryRef.current = null;
+      // Increment retry count
+      setAuthRetryCount(prev => prev + 1);
       
-      throw error;
+      // Auto-retry for certain errors
+      if (authRetryCount < 3 && error.message.includes('WebSocket not authenticated')) {
+        console.log('[RemoteManagement] Will retry authentication in 2 seconds...');
+        authTimeoutRef.current = setTimeout(() => {
+          performAuthentication();
+        }, 2000);
+      }
+      
+      return false;
     }
-  }, [isJwtAuthenticated, isJwtValid, ensureSignature, remainingTimeFormatted, walletAddress, nodeReference]);
+  }, [nodeReference, walletAddress, ensureSignature, isAuthenticating, authRetryCount]);
 
   // ==================== Initialization ====================
+  
+  /**
+   * Initialize terminal after authentication
+   */
+  const initializeTerminalWithAuth = useCallback(async () => {
+    if (!isMountedRef.current) return null;
+    
+    try {
+      console.log('[RemoteManagement] Initializing terminal with auth check');
+      
+      // Step 1: Ensure authenticated
+      const authSuccess = await performAuthentication();
+      if (!authSuccess) {
+        console.log('[RemoteManagement] Authentication failed, cannot initialize terminal');
+        return null;
+      }
+      
+      // Step 2: Wait for auth to propagate
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Step 3: Initialize terminal
+      const result = await initializeTerminal();
+      
+      if (result && result.sessionId) {
+        console.log('[RemoteManagement] Terminal initialized:', result.sessionId);
+        setLocalTerminalReady(true);
+        setInitRetryCount(0);
+        
+        // Write welcome message
+        if (terminalRef.current) {
+          terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
+          terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
+          terminalRef.current.write('\x1b[90mSession: ' + result.sessionId + '\x1b[0m\r\n');
+          terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
+        }
+        
+        // Flush any buffered output
+        if (outputBufferRef.current && terminalRef.current) {
+          terminalRef.current.write(outputBufferRef.current);
+          outputBufferRef.current = '';
+        }
+        
+        return result;
+      }
+      
+      return null;
+      
+    } catch (error) {
+      console.error('[RemoteManagement] Terminal initialization failed:', error);
+      setAuthError(error.message);
+      
+      // Retry logic
+      if (initRetryCount < 5 && isMountedRef.current) {
+        setInitRetryCount(prev => prev + 1);
+        initTimeoutRef.current = setTimeout(() => {
+          initializeTerminalWithAuth();
+        }, 3000);
+      }
+      
+      return null;
+    }
+  }, [performAuthentication, initializeTerminal, nodeReference, initRetryCount]);
+
+  // ==================== Effects ====================
   
   // Initialize when modal opens
   useEffect(() => {
@@ -258,59 +268,18 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       }
       
       if (!isWebSocketReady) {
-        console.log('[RemoteManagement] WebSocket not ready, retrying...');
-        if (mounted && retryCount < 10) {
+        console.log('[RemoteManagement] WebSocket not ready, waiting...');
+        if (mounted && initRetryCount < 10) {
           initTimeoutRef.current = setTimeout(() => {
-            setRetryCount(prev => prev + 1);
+            setInitRetryCount(prev => prev + 1);
             init();
           }, 2000);
         }
         return;
       }
       
-      try {
-        // Perform JWT authentication first
-        if (!isJwtAuthenticated || !isJwtValid()) {
-          await performJwtAuthentication();
-        }
-        
-        // Wait to ensure JWT auth is processed by backend
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Now initialize terminal after JWT auth is confirmed
-        const result = await initializeTerminal();
-        
-        if (mounted && result && result.sessionId) {
-          console.log('[RemoteManagement] Terminal initialized:', result.sessionId);
-          setLocalTerminalReady(true);
-          setRetryCount(0);
-          
-          // Write welcome message
-          if (terminalRef.current) {
-            terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
-            terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
-            terminalRef.current.write('\x1b[90mSession: ' + result.sessionId + '\x1b[0m\r\n');
-            terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
-          }
-          
-          // Flush any buffered output
-          if (outputBufferRef.current && terminalRef.current) {
-            terminalRef.current.write(outputBufferRef.current);
-            outputBufferRef.current = '';
-          }
-        }
-      } catch (error) {
-        console.error('[RemoteManagement] Initialization failed:', error);
-        setAuthError(error.message);
-        
-        // Retry on failure
-        if (mounted && retryCount < 5) {
-          initTimeoutRef.current = setTimeout(() => {
-            setRetryCount(prev => prev + 1);
-            init();
-          }, 3000);
-        }
-      }
+      // Initialize terminal with authentication
+      await initializeTerminalWithAuth();
     };
 
     // Start initialization
@@ -321,8 +290,11 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       if (initTimeoutRef.current) {
         clearTimeout(initTimeoutRef.current);
       }
+      if (authTimeoutRef.current) {
+        clearTimeout(authTimeoutRef.current);
+      }
     };
-  }, [isOpen, nodeReference, isNodeOnline, isWebSocketReady, retryCount, isJwtAuthenticated, isJwtValid, performJwtAuthentication, initializeTerminal]);
+  }, [isOpen, nodeReference, isNodeOnline, isWebSocketReady, initRetryCount, initializeTerminalWithAuth]);
 
   // ==================== WebSocket Message Handling ====================
   
@@ -354,6 +326,11 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       
       if (terminalRef.current) {
         terminalRef.current.write('\r\n\x1b[31m● Error: ' + (message.error || message.message) + '\x1b[0m\r\n');
+      }
+      
+      // Clear authentication on certain errors
+      if (message.code === 'INVALID_JWT' || message.code === 'AUTH_FAILED') {
+        remoteAuthService.clearToken(nodeReference);
       }
     };
 
@@ -406,7 +383,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         ws.removeEventListener('message', messageListenerRef.current);
       }
     };
-  }, [isOpen, terminalSession]);
+  }, [isOpen, terminalSession, nodeReference]);
 
   // ==================== Terminal Handlers ====================
   
@@ -479,26 +456,30 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // Retry connection
   const handleRetryConnection = useCallback(async () => {
-    setRetryCount(0);
+    console.log('[RemoteManagement] Retrying connection');
+    
+    // Reset state
+    setInitRetryCount(0);
+    setAuthRetryCount(0);
     setLocalTerminalReady(false);
-    setIsJwtAuthenticated(false);
     setAuthError(null);
     outputBufferRef.current = '';
     initializationRef.current = false;
-    jwtTokenRef.current = null;
-    jwtExpiryRef.current = null;
     
-    // Reset hook state as well
-    setRemoteAuthenticatedState(false);
+    // Clear auth token for this node
+    remoteAuthService.clearToken(nodeReference);
     
     // Close any existing terminal session
     if (terminalSession) {
       closeTerminal();
     }
     
-    // Wait a moment before retrying
+    // Wait a moment
     await new Promise(resolve => setTimeout(resolve, 500));
-  }, [terminalSession, closeTerminal, setRemoteAuthenticatedState]);
+    
+    // Reinitialize
+    await initializeTerminalWithAuth();
+  }, [nodeReference, terminalSession, closeTerminal, initializeTerminalWithAuth]);
 
   // ==================== Quick Commands ====================
   
@@ -567,16 +548,14 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       
       // Reset state
       setLocalTerminalReady(false);
-      setRetryCount(0);
+      setInitRetryCount(0);
+      setAuthRetryCount(0);
       outputBufferRef.current = '';
       initializationRef.current = false;
       
-      // Reset hook authentication state
-      setRemoteAuthenticatedState(false);
-      
-      // Note: Keep JWT token for reuse
+      // Note: Keep JWT token for reuse within validity period
     }
-  }, [isOpen, terminalSession, closeTerminal, setRemoteAuthenticatedState]);
+  }, [isOpen, terminalSession, closeTerminal]);
 
   // ==================== Render ====================
   
@@ -617,10 +596,16 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
               
               {/* Connection Status */}
               <div className="flex items-center gap-2 ml-4">
-                {isJwtAuthenticated && (
+                {isRemoteAuthenticated && (
                   <div className="flex items-center gap-1">
                     <Shield className="w-3 h-3 text-green-400" />
-                    <span className="text-xs text-green-400">JWT Auth</span>
+                    <span className="text-xs text-green-400">Authenticated</span>
+                    {tokenExpiry && (
+                      <>
+                        <Clock className="w-3 h-3 text-gray-400 ml-1" />
+                        <span className="text-xs text-gray-400">{tokenExpiry}</span>
+                      </>
+                    )}
                   </div>
                 )}
                 {!isNodeOnline ? (
@@ -657,7 +642,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
               {remainingTimeFormatted && !isSignatureLoading && (
                 <div className="flex items-center gap-1 text-xs text-gray-400">
                   <Key className="w-3 h-3" />
-                  <span>{remainingTimeFormatted}</span>
+                  <span>Signature: {remainingTimeFormatted}</span>
                 </div>
               )}
             </div>
@@ -790,14 +775,15 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                   <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-3" />
                   <p className="text-white mb-1">
                     {isSignatureLoading ? 'Getting Signature...' :
-                     isAuthenticating ? 'Authenticating with JWT...' :
+                     isAuthenticating ? 'Authenticating...' :
                      'Connecting to Terminal...'}
                   </p>
                   <p className="text-xs text-gray-400">
                     {isSignatureLoading ? 'Please approve the signature request' :
                      isAuthenticating ? 'Obtaining secure access token' :
                      `Establishing connection to ${nodeReference}`}
-                    {retryCount > 0 && ` (Retry ${retryCount}/5)`}
+                    {(authRetryCount > 0 || initRetryCount > 0) && 
+                      ` (Retry ${Math.max(authRetryCount, initRetryCount)})`}
                   </p>
                 </div>
               </div>
