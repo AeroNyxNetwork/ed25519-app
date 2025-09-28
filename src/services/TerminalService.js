@@ -4,16 +4,24 @@
  * ============================================
  * Terminal service layer - Manages terminal session business logic
  * 
- * Responsibilities:
- * 1. Terminal session lifecycle management
- * 2. Input/output processing
- * 3. Session state management
- * 4. Coordination with WebSocket service
+ * Creation Reason: Terminal session lifecycle management
+ * Modification Reason: Fix terminal ready detection when backend doesn't send term_ready
+ * Main Functionality: Terminal session management and I/O processing
+ * Dependencies: webSocketService, EventEmitter
  * 
- * Features:
- * - Multi-session support
- * - Automatic session cleanup
- * - Input buffering and batch processing
+ * Main Logical Flow:
+ * 1. Create terminal session with unique ID
+ * 2. Send term_init to backend
+ * 3. Wait for term_ready OR first term_output as ready signal
+ * 4. Handle input/output and session lifecycle
+ * 
+ * ⚠️ Important Note for Next Developer:
+ * - Some backends send term_output directly without term_ready
+ * - We treat first term_output as implicit term_ready signal
+ * - Session cleanup is automatic on idle timeout
+ * - All existing functionality preserved
+ * 
+ * Last Modified: v2.1.0 - Fixed terminal ready detection for backends that don't send term_ready
  * ============================================
  */
 
@@ -61,6 +69,9 @@ class TerminalSession extends EventEmitter {
       lastActivity: Date.now()
     };
     
+    // Track if we've received first output (implicit ready signal)
+    this.hasReceivedFirstOutput = false;
+    
     // Debug mode
     this.debug = true;
   }
@@ -102,35 +113,82 @@ class TerminalSession extends EventEmitter {
       throw new Error('Failed to send initialization message');
     }
     
-    // Wait for ready signal (through events)
+    // Wait for ready signal (through events) OR first output
     return new Promise((resolve, reject) => {
+      let resolved = false;
+      
       const timeout = setTimeout(() => {
-        this.state = TERMINAL_STATE.ERROR;
-        reject(new Error('Terminal initialization timeout'));
+        if (!resolved) {
+          // Check if we received output (implicit ready)
+          if (this.hasReceivedFirstOutput || this.stats.bytesReceived > 0) {
+            this.log('Session ready (inferred from output)');
+            this.state = TERMINAL_STATE.READY;
+            resolved = true;
+            cleanup();
+            this.emit('ready');
+            resolve();
+          } else {
+            this.state = TERMINAL_STATE.ERROR;
+            resolved = true;
+            cleanup();
+            reject(new Error('Terminal initialization timeout'));
+          }
+        }
       }, 10000);
       
       const handleReady = (message) => {
-        if (message.session_id === this.sessionId) {
+        if (!resolved && message.session_id === this.sessionId) {
           clearTimeout(timeout);
-          webSocketService.off('terminalReady', handleReady);
+          resolved = true;
+          cleanup();
           this.state = TERMINAL_STATE.READY;
-          this.log('Session ready');
+          this.log('Session ready (explicit)');
+          this.emit('ready');
+          resolve();
+        }
+      };
+      
+      const handleOutput = (message) => {
+        // If we receive output for this session during initialization, treat it as ready
+        if (!resolved && message.session_id === this.sessionId && this.state === TERMINAL_STATE.INITIALIZING) {
+          this.log('Received output during initialization, marking as ready');
+          this.hasReceivedFirstOutput = true;
+          
+          // Handle the output
+          if (message.data) {
+            this.handleOutput(message.data);
+          }
+          
+          // Mark as ready
+          clearTimeout(timeout);
+          resolved = true;
+          cleanup();
+          this.state = TERMINAL_STATE.READY;
+          this.log('Session ready (from first output)');
           this.emit('ready');
           resolve();
         }
       };
       
       const handleError = (message) => {
-        if (message.session_id === this.sessionId) {
+        if (!resolved && message.session_id === this.sessionId) {
           clearTimeout(timeout);
-          webSocketService.off('terminalReady', handleReady);
-          webSocketService.off('terminalError', handleError);
+          resolved = true;
+          cleanup();
           this.state = TERMINAL_STATE.ERROR;
           reject(new Error(message.error || 'Terminal initialization failed'));
         }
       };
       
+      const cleanup = () => {
+        webSocketService.off('terminalReady', handleReady);
+        webSocketService.off('terminalOutput', handleOutput);
+        webSocketService.off('terminalError', handleError);
+      };
+      
+      // Listen for both explicit ready and first output
       webSocketService.on('terminalReady', handleReady);
+      webSocketService.on('terminalOutput', handleOutput);
       webSocketService.on('terminalError', handleError);
     });
   }
@@ -208,6 +266,9 @@ class TerminalSession extends EventEmitter {
     // Update statistics
     this.stats.bytesReceived += data.length;
     this.stats.lastActivity = Date.now();
+    
+    // Mark that we've received output
+    this.hasReceivedFirstOutput = true;
     
     // Add to history
     this.outputHistory.push({
@@ -318,10 +379,14 @@ class TerminalService extends EventEmitter {
    * Set up WebSocket event listeners
    */
   setupWebSocketListeners() {
-    // Terminal output
+    // Terminal output - handle even if session is initializing
     webSocketService.on('terminalOutput', (message) => {
       const session = this.sessions.get(message.session_id);
       if (session) {
+        // If session is initializing and this is first output, it will trigger ready
+        if (session.state === TERMINAL_STATE.INITIALIZING && !session.hasReceivedFirstOutput) {
+          this.log(`First output received for initializing session ${message.session_id}`);
+        }
         session.handleOutput(message.data);
       }
     });
@@ -344,6 +409,15 @@ class TerminalService extends EventEmitter {
         this.sessions.delete(message.session_id);
       }
     });
+    
+    // Also handle term_ready if backend sends it
+    webSocketService.on('term_ready', (message) => {
+      const session = this.sessions.get(message.session_id);
+      if (session && session.state === TERMINAL_STATE.INITIALIZING) {
+        this.log(`Explicit term_ready received for session ${message.session_id}`);
+        // The session's initialize promise will handle this
+      }
+    });
   }
   
   /**
@@ -361,7 +435,7 @@ class TerminalService extends EventEmitter {
     // Create session instance
     const session = new TerminalSession(sessionId, nodeReference);
     
-    // Add to session mapping
+    // Add to session mapping BEFORE initialization
     this.sessions.set(sessionId, session);
     
     // Listen for session closed event
@@ -484,6 +558,11 @@ const terminalService = new TerminalService();
 setInterval(() => {
   terminalService.cleanupIdleSessions();
 }, 5 * 60 * 1000); // Check every 5 minutes
+
+// Attach to window for debugging (development only)
+if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
+  window.terminalService = terminalService;
+}
 
 // Export service and related items
 export default terminalService;
