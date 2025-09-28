@@ -4,6 +4,8 @@
  * ============================================
  * WebSocket service layer - Handles all WebSocket communication
  * 
+ * MINOR UPDATE: Added remote authentication state tracking
+ * 
  * Responsibilities:
  * 1. Manage WebSocket connection lifecycle
  * 2. Handle message sending and receiving
@@ -58,6 +60,10 @@ class WebSocketService extends EventEmitter {
     this.isConnected = false;
     this.isAuthenticated = false;
     this.isMonitoring = false;
+    
+    // ADDED: Remote authentication state tracking
+    this.isRemoteAuthenticated = false;
+    this.remoteAuthNodes = new Set(); // Track which nodes are remote authenticated
     
     // Reconnection management
     this.reconnectAttempts = 0;
@@ -229,6 +235,8 @@ class WebSocketService extends EventEmitter {
     this.isConnected = false;
     this.isAuthenticated = false;
     this.isMonitoring = false;
+    this.isRemoteAuthenticated = false;
+    this.remoteAuthNodes.clear();
     this.updateState(WS_STATE.CLOSED);
   }
   
@@ -239,6 +247,8 @@ class WebSocketService extends EventEmitter {
     this.isConnected = false;
     this.isAuthenticated = false;
     this.isMonitoring = false;
+    this.isRemoteAuthenticated = false;
+    this.remoteAuthNodes.clear();
     this.ws = null;
     
     // Clean up timers
@@ -375,7 +385,7 @@ class WebSocketService extends EventEmitter {
           break;
           
         case 'remote_auth_success':
-          this.emit('remoteAuthSuccess', message);
+          this.handleRemoteAuthSuccess(message);
           break;
           
         case 'remote_command_response':
@@ -413,6 +423,21 @@ class WebSocketService extends EventEmitter {
   }
   
   /**
+   * ADDED: Handle remote authentication success
+   */
+  handleRemoteAuthSuccess(message) {
+    this.log('Remote authentication successful');
+    this.isRemoteAuthenticated = true;
+    
+    // Track which node was authenticated if provided
+    if (message.node_reference) {
+      this.remoteAuthNodes.add(message.node_reference);
+    }
+    
+    this.emit('remoteAuthSuccess', message);
+  }
+  
+  /**
    * Handle error message
    */
   handleError(message) {
@@ -423,6 +448,11 @@ class WebSocketService extends EventEmitter {
       this.isAuthenticated = false;
       this.clearStoredSession();
       this.emit('sessionExpired', message);
+    } else if (message.code === 'INVALID_JWT' || message.code === 'REMOTE_AUTH_FAILED') {
+      // ADDED: Clear remote auth on JWT errors
+      this.isRemoteAuthenticated = false;
+      this.remoteAuthNodes.clear();
+      this.emit('remoteAuthFailed', message);
     } else {
       this.emit('error', message);
     }
@@ -646,6 +676,23 @@ class WebSocketService extends EventEmitter {
     return this.send({
       type: 'stop_monitor'
     });
+  }
+  
+  /**
+   * ADDED: Check if remote authenticated for a specific node
+   * @param {string} nodeReference - Node reference to check
+   * @returns {boolean} Whether authenticated for this node
+   */
+  isRemoteAuthenticatedForNode(nodeReference) {
+    return this.remoteAuthNodes.has(nodeReference);
+  }
+  
+  /**
+   * ADDED: Clear remote authentication for a specific node
+   * @param {string} nodeReference - Node reference to clear
+   */
+  clearRemoteAuthForNode(nodeReference) {
+    this.remoteAuthNodes.delete(nodeReference);
   }
 }
 
