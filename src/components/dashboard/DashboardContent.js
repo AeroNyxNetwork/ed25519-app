@@ -51,6 +51,7 @@ import clsx from 'clsx';
 
 import { useWallet } from '../wallet/WalletProvider';
 import { useAeroNyxWebSocket } from '../../hooks/useAeroNyxWebSocket';
+import NodeCard from '../common/NodeCard';
 
 // Animation variants
 const containerVariants = {
@@ -316,7 +317,11 @@ export default function DashboardContent() {
                         <div className="space-y-3">
                           <AnimatePresence>
                             {nodes.slice(0, 5).map((node) => (
-                              <NodeStatusCard key={node.code} node={node} />
+                              <NodeCard 
+                                key={node.code} 
+                                node={node}
+                                variant="compact"
+                              />
                             ))}
                           </AnimatePresence>
                         </div>
@@ -499,70 +504,8 @@ function IssueCard({ type, nodes, onView }) {
   );
 }
 
-// Node Status Card - Individual Node Focus
-function NodeStatusCard({ node }) {
-  const getNodeStatus = () => {
-    const status = (node.status || '').toLowerCase();
-    const cpu = node.performance?.cpu || 0;
-    const memory = node.performance?.memory || 0;
-
-    if (status === 'offline' || status === 'disconnected') {
-      return { label: 'Offline', color: 'red', icon: XCircle };
-    }
-    if (cpu > 90 || memory > 90) {
-      return { label: 'Critical', color: 'orange', icon: AlertTriangle };
-    }
-    if (cpu > 70 || memory > 70) {
-      return { label: 'High Load', color: 'yellow', icon: AlertCircle };
-    }
-    if (status === 'pending') {
-      return { label: 'Pending', color: 'blue', icon: Clock };
-    }
-    return { label: 'Healthy', color: 'green', icon: CheckCircle2 };
-  };
-
-  const status = getNodeStatus();
-  const StatusIcon = status.icon;
-
-  return (
-    <Link href={`/dashboard/nodes/${node.code}`}>
-      <motion.div
-        whileHover={{ x: 4 }}
-        className="flex items-center justify-between p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-transparent hover:border-white/10 transition-all cursor-pointer"
-      >
-        <div className="flex items-center gap-4">
-          <div className={clsx(
-            "p-2 rounded-lg",
-            `bg-${status.color}-500/10`
-          )}>
-            <StatusIcon className={`w-5 h-5 text-${status.color}-400`} />
-          </div>
-          <div>
-            <h4 className="font-medium text-white">{node.name}</h4>
-            <div className="flex items-center gap-4 text-xs text-gray-400 mt-1">
-              <span>{node.code}</span>
-              {node.performance && (
-                <>
-                  <span>CPU: {node.performance.cpu || 0}%</span>
-                  <span>MEM: {node.performance.memory || 0}%</span>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className={clsx(
-            "text-xs px-2 py-1 rounded-full",
-            `bg-${status.color}-500/20 text-${status.color}-400`
-          )}>
-            {status.label}
-          </span>
-          <ChevronRight className="w-4 h-4 text-gray-500" />
-        </div>
-      </motion.div>
-    </Link>
-  );
-}
+// Import the new NodeCard component (add this at the top of the file with other imports)
+// import NodeCard from '../common/NodeCard';
 
 // Connection Status Badge
 function ConnectionStatus({ wsState }) {
