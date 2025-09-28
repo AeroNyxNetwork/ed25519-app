@@ -4,7 +4,7 @@
  * ============================================
  * WebSocket service layer - Handles all WebSocket communication
  * 
- * MINOR UPDATE: Added remote authentication state tracking
+ * MINOR UPDATE: Enhanced terminal event handling for compatibility
  * 
  * Responsibilities:
  * 1. Manage WebSocket connection lifecycle
@@ -17,6 +17,11 @@
  * - Automatic reconnection
  * - Message deduplication
  * - Event emitter pattern
+ * 
+ * ⚠️ Important Note for Next Developer:
+ * - All existing functionality preserved
+ * - Enhanced terminal events for better compatibility
+ * - No functions deleted, only enhanced
  * ============================================
  */
 
@@ -61,7 +66,7 @@ class WebSocketService extends EventEmitter {
     this.isAuthenticated = false;
     this.isMonitoring = false;
     
-    // ADDED: Remote authentication state tracking
+    // Remote authentication state tracking
     this.isRemoteAuthenticated = false;
     this.remoteAuthNodes = new Set(); // Track which nodes are remote authenticated
     
@@ -328,7 +333,7 @@ class WebSocketService extends EventEmitter {
   }
   
   /**
-   * Handle received message
+   * Handle received message - ENHANCED for better terminal support
    */
   handleMessage(data) {
     try {
@@ -369,19 +374,31 @@ class WebSocketService extends EventEmitter {
           break;
           
         case 'term_ready':
+          // ENHANCED: Emit multiple event names for compatibility
           this.emit('terminalReady', message);
+          this.emit('term_ready', message);
+          // Additional event for TerminalService compatibility
+          if (message.session_id) {
+            this.emit('terminalReady', message);
+          }
           break;
           
         case 'term_output':
+          // ENHANCED: Emit multiple event names for compatibility
           this.emit('terminalOutput', message);
+          this.emit('term_output', message);
           break;
           
         case 'term_error':
+          // ENHANCED: Emit multiple event names for compatibility
           this.emit('terminalError', message);
+          this.emit('term_error', message);
           break;
           
         case 'term_closed':
+          // ENHANCED: Emit multiple event names for compatibility
           this.emit('terminalClosed', message);
+          this.emit('term_closed', message);
           break;
           
         case 'remote_auth_success':
@@ -423,7 +440,7 @@ class WebSocketService extends EventEmitter {
   }
   
   /**
-   * ADDED: Handle remote authentication success
+   * Handle remote authentication success
    */
   handleRemoteAuthSuccess(message) {
     this.log('Remote authentication successful');
@@ -435,6 +452,8 @@ class WebSocketService extends EventEmitter {
     }
     
     this.emit('remoteAuthSuccess', message);
+    // ADDED: Also emit alternative naming for compatibility
+    this.emit('remote_auth_success', message);
   }
   
   /**
@@ -449,7 +468,7 @@ class WebSocketService extends EventEmitter {
       this.clearStoredSession();
       this.emit('sessionExpired', message);
     } else if (message.code === 'INVALID_JWT' || message.code === 'REMOTE_AUTH_FAILED') {
-      // ADDED: Clear remote auth on JWT errors
+      // Clear remote auth on JWT errors
       this.isRemoteAuthenticated = false;
       this.remoteAuthNodes.clear();
       this.emit('remoteAuthFailed', message);
@@ -679,7 +698,7 @@ class WebSocketService extends EventEmitter {
   }
   
   /**
-   * ADDED: Check if remote authenticated for a specific node
+   * Check if remote authenticated for a specific node
    * @param {string} nodeReference - Node reference to check
    * @returns {boolean} Whether authenticated for this node
    */
@@ -688,7 +707,7 @@ class WebSocketService extends EventEmitter {
   }
   
   /**
-   * ADDED: Clear remote authentication for a specific node
+   * Clear remote authentication for a specific node
    * @param {string} nodeReference - Node reference to clear
    */
   clearRemoteAuthForNode(nodeReference) {
@@ -698,6 +717,16 @@ class WebSocketService extends EventEmitter {
 
 // Create singleton instance
 const webSocketService = new WebSocketService();
+
+// ADDED: Attach to window for global access and debugging
+if (typeof window !== 'undefined') {
+  window.webSocketService = webSocketService;
+  // Also update globalWebSocket reference when connection changes
+  Object.defineProperty(window, 'globalWebSocket', {
+    get: function() { return webSocketService.ws; },
+    configurable: true
+  });
+}
 
 // Export singleton
 export default webSocketService;
