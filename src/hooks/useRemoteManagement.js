@@ -4,24 +4,24 @@
  * ============================================
  * Remote Management Hook - Terminal Session Management
  * 
- * Purpose: Provide terminal management logic for RemoteManagement component
- * Main Functionality: Manage terminal sessions (JWT handled externally)
+ * Creation Reason: Provide terminal management logic for RemoteManagement component
+ * Modification Reason: Fix terminal state not updating after successful initialization
+ * Main Functionality: Manage terminal sessions with proper state updates
  * Dependencies: terminalStore, webSocketService, terminalService, remoteAuthService
  * 
  * Main Logical Flow:
  * 1. Check WebSocket authentication status
  * 2. Verify JWT authentication (handled by RemoteAuthService)
- * 3. Create terminal session
+ * 3. Create terminal session and UPDATE STATE properly
  * 4. Handle bi-directional terminal communication
  * 
- * ⚠️ Important Notes:
+ * ⚠️ Important Note for Next Developer:
+ * - CRITICAL FIX: Ensure terminalSession state is updated after creation
+ * - Session ready state must be tracked properly
  * - JWT authentication is handled by RemoteAuthService
- * - This hook only manages terminal sessions
- * - Requires remote_auth_success before terminal operations
  * - Session cleanup is automatic on unmount
- * - FIXED: Removed excessive polling that caused performance issues
  * 
- * Last Modified: v3.2.0 - Fixed excessive polling and timeout issues
+ * Last Modified: v4.0.0 - Fixed terminal state management
  * ============================================
  */
 
@@ -73,7 +73,7 @@ export function useRemoteManagement(nodeReference) {
   // Get WebSocket state and nodes data
   const { 
     wsState: wsConnectionState,
-    nodes: wsNodes  // Get nodes array from WebSocket hook
+    nodes: wsNodes
   } = useAeroNyxWebSocket({
     autoConnect: true,
     autoMonitor: true
@@ -82,7 +82,7 @@ export function useRemoteManagement(nodeReference) {
   // Determine if WebSocket is ready
   const isWebSocketReady = wsState?.authenticated || wsConnectionState?.authenticated;
   
-  // Get node status - nodes might be an array or object
+  // Get node status
   let node = null;
   let isNodeOnline = false;
   
@@ -165,30 +165,10 @@ export function useRemoteManagement(nodeReference) {
     };
   }, [nodeReference]);
   
-  // FIXED: Removed excessive polling - only check auth state when needed
-  useEffect(() => {
-    // Only check auth state if significant time has passed or on specific events
-    const checkAuthState = () => {
-      const now = Date.now();
-      // Only check if more than 5 seconds have passed since last check
-      if (now - lastAuthCheckRef.current > 5000) {
-        const currentAuth = remoteAuthService.isAuthenticated(nodeReference);
-        if (currentAuth !== isRemoteAuthenticated) {
-          console.log('[useRemoteManagement] Auth state changed:', currentAuth);
-          setIsRemoteAuthenticated(currentAuth);
-        }
-        lastAuthCheckRef.current = now;
-      }
-    };
-    
-    // Check on mount and when terminal session changes
-    checkAuthState();
-  }, [nodeReference, terminalSession]);
-  
   // ==================== Terminal Management ====================
   
   /**
-   * Initialize terminal session
+   * Initialize terminal session - FIXED VERSION
    * NOTE: JWT authentication must be done externally before calling this
    */
   const initializeTerminal = useCallback(async () => {
@@ -237,13 +217,22 @@ export function useRemoteManagement(nodeReference) {
         throw new Error('Failed to create terminal session');
       }
       
+      console.log('[useRemoteManagement] Terminal session created:', sessionId);
+      
       // Get the session from service
       const session = terminalService.getSession(sessionId);
       if (!session) {
         throw new Error('Failed to get terminal session from service');
       }
       
+      // Store session ID immediately
       sessionRef.current = sessionId;
+      
+      // CRITICAL FIX: Update state immediately after successful creation
+      if (isMountedRef.current) {
+        setTerminalSession(sessionId);
+        console.log('[useRemoteManagement] Terminal session state updated:', sessionId);
+      }
       
       // Set up event listeners on the session
       outputHandlerRef.current = (data) => {
@@ -255,6 +244,7 @@ export function useRemoteManagement(nodeReference) {
         console.error('[useRemoteManagement] Terminal error:', error);
         if (isMountedRef.current) {
           setError(error?.message || error);
+          setTerminalReady(false);
         }
       };
       
@@ -272,6 +262,7 @@ export function useRemoteManagement(nodeReference) {
         console.log('[useRemoteManagement] Terminal session ready');
         if (isMountedRef.current) {
           setTerminalReady(true);
+          console.log('[useRemoteManagement] Terminal ready state updated to true');
         }
       };
       
@@ -281,14 +272,35 @@ export function useRemoteManagement(nodeReference) {
       session.on('closed', closedHandlerRef.current);
       session.on('ready', readyHandlerRef.current);
       
-      // Update state
-      if (isMountedRef.current) {
-        setTerminalSession(sessionId);
-        setTerminalReady(true);
-        setIsConnecting(false);
-      }
+      // Wait for session to be ready
+      await new Promise((resolve, reject) => {
+        const readyTimeout = setTimeout(() => {
+          // If session is initialized but not marked ready, mark it ready anyway
+          if (isMountedRef.current && sessionId) {
+            setTerminalReady(true);
+            console.log('[useRemoteManagement] Marking terminal ready after timeout');
+            resolve();
+          } else {
+            reject(new Error('Terminal ready timeout'));
+          }
+        }, 2000); // 2 second timeout for ready state
+        
+        // Listen for ready event
+        session.once('ready', () => {
+          clearTimeout(readyTimeout);
+          if (isMountedRef.current) {
+            setTerminalReady(true);
+            console.log('[useRemoteManagement] Terminal marked ready from event');
+          }
+          resolve();
+        });
+      });
       
-      console.log('[useRemoteManagement] Terminal session created:', sessionId);
+      // Final state update
+      if (isMountedRef.current) {
+        setIsConnecting(false);
+        console.log('[useRemoteManagement] Terminal initialization complete. Session:', sessionId, 'Ready:', true);
+      }
       
       return { sessionId };
       
@@ -298,26 +310,31 @@ export function useRemoteManagement(nodeReference) {
       if (isMountedRef.current) {
         setError(error.message || 'Failed to initialize terminal');
         setIsConnecting(false);
+        setTerminalSession(null);
+        setTerminalReady(false);
         isInitializedRef.current = false;
+        sessionRef.current = null;
       }
       
       return null;
     }
-  }, [nodeReference, isWebSocketReady, createSession]);
+  }, [nodeReference, isWebSocketReady, createSession, isConnecting]);
   
   /**
    * Send input to terminal
    */
   const sendTerminalInput = useCallback((data) => {
-    if (!terminalSession || !terminalReady) {
-      console.warn('[useRemoteManagement] Cannot send input - terminal not ready');
+    const currentSession = terminalSession || sessionRef.current;
+    
+    if (!currentSession || !terminalReady) {
+      console.warn('[useRemoteManagement] Cannot send input - terminal not ready. Session:', currentSession, 'Ready:', terminalReady);
       return false;
     }
     
-    console.log('[useRemoteManagement] Sending terminal input:', data?.length || 0, 'bytes');
+    console.log('[useRemoteManagement] Sending terminal input to session:', currentSession, 'Data length:', data?.length || 0);
     
     // Send through store which handles the service layer
-    sendInput(terminalSession, data);
+    sendInput(currentSession, data);
     
     return true;
   }, [terminalSession, terminalReady, sendInput]);
@@ -340,9 +357,11 @@ export function useRemoteManagement(nodeReference) {
   const closeTerminal = useCallback(() => {
     console.log('[useRemoteManagement] Closing terminal session');
     
-    if (terminalSession) {
+    const currentSession = terminalSession || sessionRef.current;
+    
+    if (currentSession) {
       // Get session from service for cleanup
-      const session = terminalService.getSession(terminalSession);
+      const session = terminalService.getSession(currentSession);
       
       if (session) {
         // Remove listeners
@@ -353,7 +372,7 @@ export function useRemoteManagement(nodeReference) {
       }
       
       // Close through store
-      closeSession(terminalSession);
+      closeSession(currentSession);
     }
     
     // Reset state
@@ -395,7 +414,7 @@ export function useRemoteManagement(nodeReference) {
    */
   const getStatus = useCallback(() => {
     return {
-      sessionId: terminalSession,
+      sessionId: terminalSession || sessionRef.current,
       isReady: terminalReady,
       isConnecting,
       hasError: !!error,
@@ -474,8 +493,9 @@ export function useRemoteManagement(nodeReference) {
       console.log('[useRemoteManagement] Unmounting, cleaning up');
       
       // Clean up session if exists
-      if (sessionRef.current) {
-        const session = terminalService.getSession(sessionRef.current);
+      const currentSession = sessionRef.current || terminalSession;
+      if (currentSession) {
+        const session = terminalService.getSession(currentSession);
         
         if (session) {
           // Remove listeners
@@ -486,14 +506,14 @@ export function useRemoteManagement(nodeReference) {
         }
         
         // Close session
-        if (terminalService.getSession(sessionRef.current)) {
-          closeSession(sessionRef.current);
+        if (terminalService.getSession(currentSession)) {
+          closeSession(currentSession);
         }
       }
       
       isInitializedRef.current = false;
     };
-  }, [closeSession]);
+  }, [closeSession, terminalSession]);
   
   /**
    * Monitor node status changes
@@ -530,21 +550,21 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== Return API ====================
   
-  // Reduced logging to prevent performance issues
+  // Debug logging on state changes
   useEffect(() => {
-    const logInterval = setInterval(() => {
-      if (node && isNodeOnline) {
-        console.log('[useRemoteManagement] Node found:', node);
-        console.log('[useRemoteManagement] Node online status:', isNodeOnline);
-      }
-    }, 10000); // Log every 10 seconds instead of continuously
-    
-    return () => clearInterval(logInterval);
-  }, [node, isNodeOnline]);
+    console.log('[useRemoteManagement] State updated:', {
+      terminalSession: terminalSession || sessionRef.current,
+      terminalReady,
+      isConnecting,
+      isRemoteAuthenticated,
+      isNodeOnline,
+      hasError: !!error
+    });
+  }, [terminalSession, terminalReady, isConnecting, isRemoteAuthenticated, isNodeOnline, error]);
   
   return {
     // State
-    terminalSession,
+    terminalSession: terminalSession || sessionRef.current,
     terminalReady,
     isConnecting,
     error,
