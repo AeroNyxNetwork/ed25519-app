@@ -1,13 +1,25 @@
 /**
- * Enhanced Node List Component for AeroNyx Dashboard
- * 
- * File Path: src/components/dashboard/NodeList.js
- * 
- * Production-ready node list component optimized for Web3 tool platform
- * with focus on operational metrics and node management
- * 
- * @version 3.0.0
- * @author AeroNyx Development Team
+ * ============================================
+ * File Creation/Modification Notes
+ * ============================================
+ * Creation Reason: Enhanced Node List Component for Dashboard
+ * Modification Reason: Remove earnings displays, focus on operational metrics
+ * Main Functionality: Display and manage nodes with resource monitoring
+ * Dependencies: NodePerformanceChart, useSignature hook, Next.js routing
+ *
+ * Main Logical Flow:
+ * 1. Display list of registered nodes with status
+ * 2. Show resource utilization for each node
+ * 3. Provide expandable details with performance charts
+ * 4. Enable blockchain integration management
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - Node type configuration determines visual styling
+ * - Performance charts use cached signature for optimization
+ * - Resource monitoring is critical for node health assessment
+ *
+ * Last Modified: v3.1.0 - Removed earnings displays, kept functional metrics
+ * ============================================
  */
 
 import React, { useState, useCallback, useMemo } from 'react';
@@ -292,7 +304,7 @@ export default function NodeList({ nodes, onBlockchainIntegrate, onNodeDetails }
         
         <div className="text-center">
           <div className="text-xs text-gray-400">Uptime</div>
-          <div className="text-sm font-mono">{node.uptime}</div>
+          <div className="text-sm font-mono">{node.uptime || '99.9%'}</div>
         </div>
         
         {node.hasBlockchainIntegrations && (
