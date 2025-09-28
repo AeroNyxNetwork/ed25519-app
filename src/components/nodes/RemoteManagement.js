@@ -90,11 +90,13 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     error: hookError,
     isNodeOnline,
     isWebSocketReady,
+    isRemoteAuthenticated: hookIsRemoteAuthenticated,
     initializeTerminal,
     sendTerminalInput,
     closeTerminal,
     executeCommand,
-    reconnectTerminal
+    reconnectTerminal,
+    setRemoteAuthenticatedState
   } = useRemoteManagement(nodeReference);
 
   // Local state
@@ -184,6 +186,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             webSocketService.off('message', handleMessage);
             setIsJwtAuthenticated(true);
             setIsAuthenticating(false);
+            
+            // CRITICAL: Notify the hook that JWT auth is complete
+            setRemoteAuthenticatedState(true);
+            
             console.log('[RemoteManagement] JWT authentication successful');
             resolve(true);
           } else if (message.type === 'error' && 
@@ -268,7 +274,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
           await performJwtAuthentication();
         }
         
-        // Initialize terminal after JWT auth
+        // Wait to ensure JWT auth is processed by backend
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Now initialize terminal after JWT auth is confirmed
         const result = await initializeTerminal();
         
         if (mounted && result && result.sessionId) {
@@ -479,8 +488,17 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     jwtTokenRef.current = null;
     jwtExpiryRef.current = null;
     
-    await reconnectTerminal();
-  }, [reconnectTerminal]);
+    // Reset hook state as well
+    setRemoteAuthenticatedState(false);
+    
+    // Close any existing terminal session
+    if (terminalSession) {
+      closeTerminal();
+    }
+    
+    // Wait a moment before retrying
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }, [terminalSession, closeTerminal, setRemoteAuthenticatedState]);
 
   // ==================== Quick Commands ====================
   
@@ -541,16 +559,24 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // Cleanup on close
   useEffect(() => {
-    if (!isOpen && terminalSession) {
-      console.log('[RemoteManagement] Closing terminal session');
-      closeTerminal();
+    if (!isOpen) {
+      if (terminalSession) {
+        console.log('[RemoteManagement] Closing terminal session');
+        closeTerminal();
+      }
+      
+      // Reset state
       setLocalTerminalReady(false);
       setRetryCount(0);
       outputBufferRef.current = '';
       initializationRef.current = false;
+      
+      // Reset hook authentication state
+      setRemoteAuthenticatedState(false);
+      
       // Note: Keep JWT token for reuse
     }
-  }, [isOpen, terminalSession, closeTerminal]);
+  }, [isOpen, terminalSession, closeTerminal, setRemoteAuthenticatedState]);
 
   // ==================== Render ====================
   
