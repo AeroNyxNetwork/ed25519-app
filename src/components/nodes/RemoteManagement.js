@@ -84,7 +84,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     terminalReady,
     isConnecting: hookIsConnecting,
     error: hookError,
-    isNodeOnline,
+    isNodeOnline: hookIsNodeOnline,  // Use hook's node status
     isWebSocketReady,
     isRemoteAuthenticated,
     initializeTerminal,
@@ -92,8 +92,12 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     closeTerminal,
     executeCommand,
     reconnectTerminal,
-    tokenExpiry
+    tokenExpiry,
+    nodes  // Get nodes from hook
   } = useRemoteManagement(nodeReference);
+  
+  // Use hook's determination of node status, but also check local data
+  const isNodeOnline = hookIsNodeOnline;
 
   // ==================== Local State ====================
   const [isFullscreen, setIsFullscreen] = useState(false);
