@@ -290,8 +290,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   useEffect(() => {
     if (!isOpen) return;
     
-    // Reset state when opening
-    if (!initializedRef.current) {
+    // Only initialize once per modal open
+    if (!initializedRef.current && !initializingRef.current) {
       console.log('[RemoteManagement] Modal opened, starting initialization');
       
       const init = async () => {
@@ -306,8 +306,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
           console.log('[RemoteManagement] WebSocket not ready, waiting...');
           if (initRetryCount < 10) {
             initTimeoutRef.current = setTimeout(() => {
-              setInitRetryCount(prev => prev + 1);
-              init();
+              if (isMountedRef.current && !initializedRef.current) {
+                setInitRetryCount(prev => prev + 1);
+                init();
+              }
             }, 2000);
           }
           return;
@@ -318,28 +320,26 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       };
       
       // Delay initialization slightly to ensure component is stable
-      setTimeout(init, 100);
+      initTimeoutRef.current = setTimeout(() => {
+        if (isMountedRef.current && !initializedRef.current) {
+          init();
+        }
+      }, 100);
     }
     
+    // Cleanup function - only run when modal is closing
     return () => {
-      // Don't cleanup if modal is still open
-      if (isOpen) return;
-      
-      // Abort any pending initialization
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-      
-      // Clear timeouts
+      // Clear pending timeouts
       if (initTimeoutRef.current) {
         clearTimeout(initTimeoutRef.current);
+        initTimeoutRef.current = null;
       }
       if (authTimeoutRef.current) {
         clearTimeout(authTimeoutRef.current);
+        authTimeoutRef.current = null;
       }
     };
-  }, [isOpen, nodeReference, isNodeOnline, isWebSocketReady, initRetryCount, initializeTerminalWithAuth]);
+  }, [isOpen]); // Simplified dependencies to prevent re-runs
 
   // ==================== WebSocket Message Handling ====================
   
@@ -609,28 +609,39 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     };
   }, []);
 
-  // Cleanup on close - FIXED VERSION
+  // Cleanup on close - FIXED VERSION to prevent premature cleanup
   useEffect(() => {
-    if (!isOpen && initializedRef.current) {
-      console.log('[RemoteManagement] Modal closed, cleaning up');
-      
-      if (terminalSession) {
-        closeTerminal();
-      }
-      
-      // Reset state for next open
-      setLocalTerminalReady(false);
-      setTerminalUIReady(false);
-      setInitRetryCount(0);
-      setAuthRetryCount(0);
-      outputBufferRef.current = '';
-      lastOutputRef.current = '';
-      initializedRef.current = false;
-      initializingRef.current = false;
-      
-      // Note: Keep JWT token for reuse within validity period
+    // Only run cleanup when modal is actually closing
+    if (isOpen) return;
+    
+    // Only cleanup if we actually had a session
+    if (!initializedRef.current) return;
+    
+    console.log('[RemoteManagement] Modal closed, cleaning up');
+    
+    // Abort any pending initialization
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
-  }, [isOpen, terminalSession, closeTerminal]);
+    
+    // Close terminal session
+    if (terminalSession) {
+      closeTerminal();
+    }
+    
+    // Reset state for next open
+    setLocalTerminalReady(false);
+    setTerminalUIReady(false);
+    setInitRetryCount(0);
+    setAuthRetryCount(0);
+    outputBufferRef.current = '';
+    lastOutputRef.current = '';
+    initializedRef.current = false;
+    initializingRef.current = false;
+    
+    // Note: Keep JWT token for reuse within validity period
+  }, [isOpen]); // Only depend on isOpen to prevent unwanted cleanup
 
   // ==================== Render ====================
   
