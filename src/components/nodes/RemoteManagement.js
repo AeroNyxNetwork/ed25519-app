@@ -634,37 +634,36 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // Cleanup on close - FIXED VERSION to prevent premature cleanup
   useEffect(() => {
-    // Only run cleanup when modal is actually closing
-    if (isOpen) return;
-    
-    // Only cleanup if we actually had a session
-    if (!initializedRef.current) return;
-    
-    console.log('[RemoteManagement] Modal closed, cleaning up');
-    
-    // Abort any pending initialization
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    // Only cleanup when modal is truly closed AND we're intentionally closing
+    if (!isOpen && initializedRef.current) {
+      console.log('[RemoteManagement] Modal closed, session will persist until explicitly closed');
+      
+      // Don't automatically close the terminal here
+      // Let the user or the parent component decide when to close it
+      
+      // Just reset UI state
+      setLocalTerminalReady(false);
+      setTerminalUIReady(false);
+      outputBufferRef.current = '';
+      lastOutputRef.current = '';
     }
-    
-    // Close terminal session
-    if (terminalSession) {
-      closeTerminal();
-    }
-    
-    // Reset state for next open
-    setLocalTerminalReady(false);
-    setTerminalUIReady(false);
-    setInitRetryCount(0);
-    setAuthRetryCount(0);
-    outputBufferRef.current = '';
-    lastOutputRef.current = '';
-    initializedRef.current = false;
-    initializingRef.current = false;
-    
-    // Note: Keep JWT token for reuse within validity period
-  }, [isOpen]); // Only depend on isOpen to prevent unwanted cleanup
+  }, [isOpen]); // Only depend on isOpen
+  
+  // Add explicit cleanup only on unmount
+  useEffect(() => {
+    return () => {
+      // Only close if component is truly being destroyed
+      if (!isMountedRef.current) return;
+      
+      console.log('[RemoteManagement] Component unmounting, checking if should close terminal');
+      
+      // Only close if modal is also closed
+      if (!isOpen && terminalSession) {
+        console.log('[RemoteManagement] Unmounting with closed modal, closing terminal');
+        closeTerminal();
+      }
+    };
+  }, []); // Empty deps - only on unmount
 
   // ==================== Render ====================
   
