@@ -278,13 +278,13 @@ class WebSocketManager {
       if (window.okxwallet || window.ethereum) {
         const provider = window.okxwallet || window.ethereum;
         
-        // Ensure we have accounts
-        const accounts = await provider.request({ method: 'eth_accounts' });
+        // Request accounts if needed
+        let accounts = await provider.request({ method: 'eth_accounts' });
         if (!accounts || accounts.length === 0) {
-          // Request accounts
-          const newAccounts = await provider.request({ method: 'eth_requestAccounts' });
-          if (!newAccounts || newAccounts.length === 0) {
-            throw new Error('No accounts available');
+          console.log('[WebSocketManager] No accounts found, requesting access...');
+          accounts = await provider.request({ method: 'eth_requestAccounts' });
+          if (!accounts || accounts.length === 0) {
+            throw new Error('No accounts available after request');
           }
         }
         
@@ -294,6 +294,12 @@ class WebSocketManager {
         
         console.log('[WebSocketManager] Signing with account:', accountToUse);
         
+        // Make sure wallet address matches
+        if (accountToUse.toLowerCase() !== this.walletAddress.toLowerCase()) {
+          console.warn('[WebSocketManager] Account mismatch, updating wallet address');
+          this.walletAddress = accountToUse;
+        }
+        
         const signature = await provider.request({
           method: 'personal_sign',
           params: [message, accountToUse]
@@ -302,7 +308,7 @@ class WebSocketManager {
         return {
           signature: signature.startsWith('0x') ? signature : `0x${signature}`,
           message: message,
-          wallet: messageWallet
+          wallet: accountToUse
         };
       }
       
@@ -323,6 +329,18 @@ class WebSocketManager {
       throw new Error('No wallet provider available');
     } catch (error) {
       console.error('[WebSocketManager] Sign error:', error);
+      
+      // If user rejected, clear auth state
+      if (error.code === 4001 || error.message?.includes('rejected')) {
+        this.authenticationInProgress = false;
+        this.updateState({ 
+          wsState: { 
+            authState: 'error', 
+            error: 'User rejected signature request' 
+          }
+        });
+      }
+      
       throw error;
     }
   }
@@ -337,6 +355,18 @@ class WebSocketManager {
   async startAuthentication() {
     if (this.authenticationInProgress) {
       console.log('[WebSocketManager] Authentication already in progress');
+      return;
+    }
+
+    // Check if we have wallet information
+    if (!this.walletAddress || !this.walletProvider) {
+      console.error('[WebSocketManager] Cannot authenticate - wallet not ready');
+      this.updateState({ 
+        wsState: { 
+          authState: 'error', 
+          error: 'Wallet not connected' 
+        }
+      });
       return;
     }
 
@@ -407,7 +437,8 @@ class WebSocketManager {
       // Then handle known message types
       switch (messageData.type) {
         case 'connected':
-          // WebSocket connected, wait before starting auth
+          // WebSocket connected, need to authenticate
+          console.log('[WebSocketManager] Server confirmed connection, starting authentication');
           this.updateState({ wsState: { connected: true, authState: 'connected' }});
           
           // Reset failure counter on successful connection
@@ -416,10 +447,11 @@ class WebSocketManager {
           // Sync with service
           this.syncWithService();
           
-          // Start authentication after a small delay
-          setTimeout(() => {
+          // CRITICAL: Start authentication immediately
+          // Don't wait - server expects auth right after connection
+          if (!this.authenticationInProgress) {
             this.startAuthentication();
-          }, 100);
+          }
           break;
           
         case 'signature_message':
@@ -627,37 +659,62 @@ class WebSocketManager {
    * CRITICAL: Must share WebSocket instance with RemoteManagement and WebSocketService
    */
   async connect(wallet) {
-    // Check if already connected
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      console.log('[WebSocketManager] Already connected or connecting');
+    // Check if already connected and authenticated
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      console.log('[WebSocketManager] Already connected');
       
-      // CRITICAL: Still share the existing WebSocket with RemoteManagement and Service
+      // Still share the existing WebSocket
       if (typeof setGlobalWebSocket === 'function') {
         setGlobalWebSocket(this.ws);
         setGlobalWsState(globalState.wsState);
-        console.log('[WebSocketManager] Shared existing WebSocket with RemoteManagement');
       }
       
       // Sync with service
       this.syncWithService();
+      
+      // If connected but not authenticated, start authentication
+      if (!globalState.wsState.authenticated && !this.authenticationInProgress) {
+        console.log('[WebSocketManager] Connected but not authenticated, starting auth');
+        this.startAuthentication();
+      }
+      
+      return;
+    }
+    
+    // Check if connecting - but allow override if connection is actually closed
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+      console.log('[WebSocketManager] Connection in progress, checking state...');
+      
+      // Wait a bit to see if connection succeeds
+      setTimeout(() => {
+        if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+          console.log('[WebSocketManager] Still connecting after check, aborting old connection');
+          this.ws.close();
+          this.isConnecting = false;
+          // Retry connection
+          this.connect(wallet);
+        }
+      }, 2000);
       return;
     }
 
     // Prevent multiple simultaneous connections
     if (!wallet || !wallet.connected) {
       console.log('[WebSocketManager] Cannot connect - wallet not ready');
-      return;
-    }
-    
-    // Allow reconnection even if previous connection failed
-    if (this.isConnecting && this.ws && this.ws.readyState === WebSocket.CLOSED) {
-      console.log('[WebSocketManager] Previous connection failed, resetting state');
       this.isConnecting = false;
+      return;
     }
     
+    // Force reset if previous connection failed
     if (this.isConnecting) {
-      console.log('[WebSocketManager] Already attempting connection');
-      return;
+      // Check if we have a dead connection
+      if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
+        console.log('[WebSocketManager] Previous connection dead, resetting state');
+        this.isConnecting = false;
+      } else {
+        console.log('[WebSocketManager] Already attempting connection');
+        return;
+      }
     }
 
     this.isConnecting = true;
@@ -724,6 +781,15 @@ class WebSocketManager {
         
         // Sync with service
         this.syncWithService();
+        
+        // CRITICAL: Start authentication immediately after connection
+        // The server expects authentication right after connection
+        console.log('[WebSocketManager] Starting authentication flow immediately');
+        setTimeout(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN && !this.authenticationInProgress) {
+            this.startAuthentication();
+          }
+        }, 100);
       };
       
       this.ws.onmessage = (event) => this.handleMessage(event);
@@ -751,10 +817,11 @@ class WebSocketManager {
           this.connectionTimeout = null;
         }
         
+        // Clear connection state
         this.ws = null;
         globalWebSocketInstance = null;
         window.globalWebSocket = null;
-        this.isConnecting = false;
+        this.isConnecting = false;  // Always reset connecting flag
         this.authenticationInProgress = false;
         
         // Clear global WebSocket if setter is available
@@ -783,9 +850,14 @@ class WebSocketManager {
         });
         
         // Handle reconnection for abnormal closures
-        // IMPROVED: Always reconnect unless explicitly stopped
+        // IMPROVED: Always reconnect unless explicitly stopped or manual close
         if (event.code !== 1000 && this.shouldReconnect) {
-          this.scheduleReconnect();
+          // Check if this was triggered by manual reconnect
+          if (event.reason === 'Manual reconnecting') {
+            console.log('[WebSocketManager] Skipping auto-reconnect for manual reconnection');
+          } else {
+            this.scheduleReconnect();
+          }
         }
       };
       
@@ -867,6 +939,8 @@ class WebSocketManager {
     
     this.reconnectTimeout = setTimeout(() => {
       if (this.walletAddress && this.shouldReconnect) {
+        // Reset isConnecting flag before attempting connection
+        this.isConnecting = false;
         this.connect({ 
           connected: true, 
           address: this.walletAddress, 
@@ -882,17 +956,44 @@ class WebSocketManager {
   reconnect() {
     console.log('[WebSocketManager] Manual reconnect requested');
     
-    // Reset counters for manual reconnect
+    // Clear any pending reconnection attempts first
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+      console.log('[WebSocketManager] Cleared pending reconnect timeout');
+    }
+    
+    // Reset all flags and counters
     this.reconnectAttempts = 0;
     this.consecutiveFailures = 0;
     this.shouldReconnect = true;
+    this.isConnecting = false;  // Force reset connecting flag
     
+    // Close existing connection if any
     if (this.ws) {
-      this.ws.close(1000, 'Reconnecting');
+      // Remove listeners temporarily to avoid triggering auto-reconnect
+      const originalOnClose = this.ws.onclose;
+      this.ws.onclose = null;
+      
+      this.ws.close(1000, 'Manual reconnecting');
+      this.ws = null;
+      globalWebSocketInstance = null;
+      window.globalWebSocket = null;
+      
+      // Clear global WebSocket
+      if (setGlobalWebSocket && typeof setGlobalWebSocket === 'function') {
+        setGlobalWebSocket(null);
+      }
+      
+      // Clear in centralized service
+      webSocketService.ws = null;
+      webSocketService.isConnected = false;
+      webSocketService.isAuthenticated = false;
     }
     
     if (this.walletAddress) {
       // Use quick retry for manual reconnect
+      console.log('[WebSocketManager] Starting fresh connection');
       setTimeout(() => {
         this.connect({ 
           connected: true, 
