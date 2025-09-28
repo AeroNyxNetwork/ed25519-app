@@ -330,32 +330,9 @@ export default function DashboardContent() {
 
                     {/* Actions & Resources */}
                     <div className="space-y-6">
-                      {/* Quick Actions */}
+                      {/* Quick Actions - Redesigned */}
                       <motion.div variants={itemVariants}>
-                        <GlassCard>
-                          <h3 className="text-lg font-semibold text-white mb-4">Quick Actions</h3>
-                          <div className="space-y-3">
-                            <ActionButton
-                              icon={Plus}
-                              title="Add New Node"
-                              description="Expand your network"
-                              href="/dashboard/register"
-                              primary
-                            />
-                            <ActionButton
-                              icon={Settings}
-                              title="Manage Nodes"
-                              description="Configure and optimize"
-                              href="/dashboard/nodes"
-                            />
-                            <ActionButton
-                              icon={Zap}
-                              title="Blockchain Setup"
-                              description="Enable Web3 features"
-                              href="/dashboard/blockchain-integration"
-                            />
-                          </div>
-                        </GlassCard>
+                        <QuickActionsCard nodes={nodes} />
                       </motion.div>
 
                       {/* Help & Resources */}
@@ -591,49 +568,180 @@ function EmptyState() {
   );
 }
 
-// Action Button Component
-function ActionButton({ icon: Icon, title, description, href, primary, onClick }) {
-  const content = (
-    <>
-      <Icon className="w-5 h-5" />
-      <div className="flex-1 text-left">
-        <div className="font-medium">{title}</div>
-        <div className="text-xs text-gray-400">{description}</div>
-      </div>
-      <ChevronRight className="w-4 h-4 opacity-50" />
-    </>
-  );
-
-  const className = clsx(
-    "flex items-center gap-3 p-3 rounded-xl transition-all",
-    primary 
-      ? "bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white" 
-      : "bg-white/5 hover:bg-white/10 text-gray-300"
-  );
-
-  if (href) {
-    return (
-      <Link href={href}>
-        <motion.a
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          className={className}
-        >
-          {content}
-        </motion.a>
-      </Link>
-    );
-  }
+// Quick Actions Card - Redesigned Component
+function QuickActionsCard({ nodes }) {
+  const [hoveredAction, setHoveredAction] = useState(null);
+  
+  const actions = [
+    {
+      id: 'register',
+      icon: Plus,
+      title: 'Register Node',
+      description: 'Add new device',
+      href: '/dashboard/register',
+      color: 'purple',
+      gradient: 'from-purple-600 to-purple-700',
+      stats: null,
+      primary: true
+    },
+    {
+      id: 'manage',
+      icon: Settings,
+      title: 'Manage',
+      description: `${nodes.length} active nodes`,
+      href: '/dashboard/nodes',
+      color: 'blue',
+      gradient: 'from-blue-600 to-blue-700',
+      stats: nodes.length,
+      badge: nodes.filter(n => n.status === 'pending').length || null
+    },
+    {
+      id: 'blockchain',
+      icon: Zap,
+      title: 'Blockchain',
+      description: 'Web3 integration',
+      href: '/dashboard/blockchain-integration',
+      color: 'green',
+      gradient: 'from-green-600 to-green-700',
+      stats: nodes.filter(n => n.blockchainIntegrations?.length > 0).length || null
+    }
+  ];
 
   return (
-    <motion.button
-      whileHover={{ scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
-      onClick={onClick}
-      className={className}
-    >
-      {content}
-    </motion.button>
+    <GlassCard>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-white">Quick Actions</h3>
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+          <span className="text-xs text-gray-500">Ready</span>
+        </div>
+      </div>
+      
+      <div className="grid grid-cols-1 gap-3">
+        {actions.map((action) => {
+          const Icon = action.icon;
+          const isHovered = hoveredAction === action.id;
+          
+          return (
+            <Link key={action.id} href={action.href}>
+              <motion.a
+                onMouseEnter={() => setHoveredAction(action.id)}
+                onMouseLeave={() => setHoveredAction(null)}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                className={clsx(
+                  "relative block p-4 rounded-xl",
+                  "border transition-all duration-300 overflow-hidden",
+                  action.primary 
+                    ? "bg-gradient-to-r " + action.gradient + " border-white/20"
+                    : "bg-white/5 hover:bg-white/10 border-white/10 hover:border-white/20"
+                )}
+              >
+                {/* Background Pattern */}
+                <div className="absolute inset-0 opacity-10">
+                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,white_0%,transparent_50%)]" />
+                </div>
+                
+                {/* Content */}
+                <div className="relative flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {/* Icon Container */}
+                    <div className={clsx(
+                      "relative p-2.5 rounded-lg transition-all duration-300",
+                      action.primary 
+                        ? "bg-white/20" 
+                        : `bg-${action.color}-500/10 group-hover:bg-${action.color}-500/20`
+                    )}>
+                      <Icon className={clsx(
+                        "w-5 h-5 transition-transform duration-300",
+                        action.primary ? "text-white" : `text-${action.color}-400`,
+                        isHovered && "scale-110 rotate-3"
+                      )} />
+                      
+                      {/* Badge */}
+                      {action.badge && (
+                        <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center">
+                          <span className="text-xs text-white font-bold">{action.badge}</span>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Text */}
+                    <div>
+                      <div className={clsx(
+                        "font-semibold transition-colors",
+                        action.primary ? "text-white" : "text-white"
+                      )}>
+                        {action.title}
+                      </div>
+                      <div className={clsx(
+                        "text-xs transition-colors",
+                        action.primary ? "text-white/80" : "text-gray-400"
+                      )}>
+                        {action.description}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Arrow or Stats */}
+                  <div className="flex items-center gap-2">
+                    {action.stats !== null && !action.primary && (
+                      <div className={clsx(
+                        "px-2 py-1 rounded-full text-xs font-medium",
+                        `bg-${action.color}-500/20 text-${action.color}-400`
+                      )}>
+                        {action.stats}
+                      </div>
+                    )}
+                    <ChevronRight className={clsx(
+                      "w-4 h-4 transition-all duration-300",
+                      action.primary ? "text-white/60" : "text-gray-500",
+                      isHovered && "translate-x-1"
+                    )} />
+                  </div>
+                </div>
+                
+                {/* Hover Effect */}
+                <motion.div
+                  className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/5 to-white/0"
+                  initial={{ x: '-100%' }}
+                  animate={{ x: isHovered ? '100%' : '-100%' }}
+                  transition={{ duration: 0.6 }}
+                />
+              </motion.a>
+            </Link>
+          );
+        })}
+      </div>
+      
+      {/* Bottom Stats Bar */}
+      <div className="mt-4 pt-3 border-t border-white/10">
+        <div className="flex items-center justify-between text-xs">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1.5">
+              <div className="w-2 h-2 bg-green-500 rounded-full" />
+              <span className="text-gray-400">
+                {nodes.filter(n => n.status === 'active' || n.status === 'online').length} Online
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-2 h-2 bg-yellow-500 rounded-full" />
+              <span className="text-gray-400">
+                {nodes.filter(n => n.status === 'pending').length} Pending
+              </span>
+            </div>
+          </div>
+          <Link href="/dashboard/nodes">
+            <motion.a
+              whileHover={{ scale: 1.05 }}
+              className="text-purple-400 hover:text-purple-300 transition-colors"
+            >
+              View all →
+            </motion.a>
+          </Link>
+        </div>
+      </div>
+    </GlassCard>
   );
 }
 
