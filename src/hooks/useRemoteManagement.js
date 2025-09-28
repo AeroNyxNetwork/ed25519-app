@@ -167,7 +167,7 @@ export function useRemoteManagement(nodeReference) {
         const timeout = setTimeout(() => {
           webSocketService.off('message', handleMessage);
           reject(new Error('Remote authentication timeout'));
-        }, 10000);
+        }, 5000);  // 降低到5秒
         
         const handleMessage = (message) => {
           console.log('[useRemoteManagement] Auth response:', message.type);
