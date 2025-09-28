@@ -172,10 +172,19 @@ export function useRemoteManagement(nodeReference) {
    * NOTE: JWT authentication must be done externally before calling this
    */
   const initializeTerminal = useCallback(async () => {
-    // Prevent duplicate initialization
-    if (isInitializedRef.current || isConnecting) {
-      console.log('[useRemoteManagement] Already initializing or initialized');
-      return sessionRef.current ? { sessionId: sessionRef.current } : null;
+    // Prevent duplicate initialization - but allow if no session exists
+    if (isInitializedRef.current && sessionRef.current) {
+      console.log('[useRemoteManagement] Already initialized with session:', sessionRef.current);
+      return { sessionId: sessionRef.current };
+    }
+    
+    if (isConnecting) {
+      console.log('[useRemoteManagement] Already connecting, waiting...');
+      // Wait for current connection attempt
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (sessionRef.current) {
+        return { sessionId: sessionRef.current };
+      }
     }
     
     // Check prerequisites
@@ -320,14 +329,29 @@ export function useRemoteManagement(nodeReference) {
     }
   }, [nodeReference, isWebSocketReady, createSession, isConnecting]);
   
+  // Create ref to store current state for sendTerminalInput
+  const terminalStateRef = useRef({
+    session: null,
+    ready: false
+  });
+  
+  // Update ref when state changes
+  useEffect(() => {
+    terminalStateRef.current = {
+      session: terminalSession || sessionRef.current,
+      ready: terminalReady
+    };
+  }, [terminalSession, terminalReady]);
+  
   /**
-   * Send input to terminal
+   * Send input to terminal - Fixed to use ref to avoid closure issues
    */
   const sendTerminalInput = useCallback((data) => {
-    const currentSession = terminalSession || sessionRef.current;
+    // Get current state from ref instead of closure
+    const { session: currentSession, ready: currentReady } = terminalStateRef.current;
     
-    if (!currentSession || !terminalReady) {
-      console.warn('[useRemoteManagement] Cannot send input - terminal not ready. Session:', currentSession, 'Ready:', terminalReady);
+    if (!currentSession || !currentReady) {
+      console.warn('[useRemoteManagement] Cannot send input - terminal not ready. Session:', currentSession, 'Ready:', currentReady);
       return false;
     }
     
@@ -337,7 +361,7 @@ export function useRemoteManagement(nodeReference) {
     sendInput(currentSession, data);
     
     return true;
-  }, [terminalSession, terminalReady, sendInput]);
+  }, [sendInput]); // Only depend on sendInput function
   
   /**
    * Execute command (convenience method)
