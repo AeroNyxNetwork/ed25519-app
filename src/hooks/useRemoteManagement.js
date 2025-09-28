@@ -59,12 +59,24 @@ export function useRemoteManagement(nodeReference) {
   // Get store state
   const { 
     wsState, 
-    nodes,
+    nodes: storeNodes,  // Get nodes from store
     createSession,
     sendInput,
     closeSession,
     getSession
   } = useTerminalStore();
+  
+  // Get WebSocket state and nodes data
+  const { 
+    wsState: wsConnectionState,
+    nodes: wsNodes  // Also get nodes from WebSocket hook
+  } = useAeroNyxWebSocket({
+    autoConnect: true,
+    autoMonitor: true
+  });
+  
+  // Use nodes from WebSocket hook as primary source (it's more up-to-date)
+  const nodes = wsNodes || storeNodes || {};
   
   // Get WebSocket state
   const { 
