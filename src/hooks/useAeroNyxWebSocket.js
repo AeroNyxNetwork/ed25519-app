@@ -7,6 +7,7 @@
  * 1. Added integration with centralized WebSocketService
  * 2. Sync WebSocket instance with the service layer
  * 3. Share authentication state with terminal system
+ * 4. IMPROVED: Better timeout and retry logic for production stability
  * ============================================
  */
 
@@ -43,6 +44,20 @@ const WsState = {
 const SESSION_STORAGE_KEY = 'aeronyx_ws_session';
 const SESSION_DURATION = 30 * 60 * 1000; // 30 minutes
 
+// Connection configuration
+const CONNECTION_CONFIG = {
+  CONNECTION_TIMEOUT: 10000,     // 10 seconds for initial connection
+  PING_INTERVAL: 15000,          // Send ping every 15 seconds
+  PONG_TIMEOUT: 35000,           // Consider dead if no pong for 35 seconds
+  QUICK_RETRY_COUNT: 3,          // Number of quick retries
+  QUICK_RETRY_DELAY: 1000,       // 1 second for quick retries
+  NORMAL_RETRY_DELAY: 5000,      // 5 seconds for normal retries
+  SLOW_RETRY_DELAY: 15000,       // 15 seconds for slow retries
+  SLOW_RETRY_THRESHOLD: 10,     // After 10 attempts, use slow retry
+  AUTH_RETRY_DELAY: 1000,        // 1 second for auth retries
+  MAX_CONSECUTIVE_FAILURES: 100  // Max consecutive failures before giving up (optional)
+};
+
 // Singleton WebSocket instance and state
 let globalWebSocketInstance = null;
 let globalListeners = new Set();
@@ -77,6 +92,7 @@ class WebSocketManager {
     this.connectionTimeout = null;
     this.pingInterval = null;
     this.reconnectAttempts = 0;
+    this.consecutiveFailures = 0;
     this.lastPong = Date.now();
     this.sessionToken = null;
     this.isConnecting = false;
@@ -84,6 +100,7 @@ class WebSocketManager {
     this.walletProvider = null;
     this.authenticationInProgress = false;
     this.signatureNonce = null;
+    this.shouldReconnect = true; // Flag to control reconnection
   }
 
   /**
@@ -219,6 +236,7 @@ class WebSocketManager {
 
   /**
    * Setup ping interval - only after authentication
+   * IMPROVED: More responsive ping/pong detection
    */
   setupPingInterval() {
     if (this.pingInterval) {
@@ -228,18 +246,21 @@ class WebSocketManager {
     this.pingInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN && globalState.wsState.authenticated) {
         const timeSinceLastPong = Date.now() - this.lastPong;
-        if (timeSinceLastPong > 90000) { // 90 seconds without pong
-          console.warn('[WebSocketManager] No pong received for 90 seconds, reconnecting');
+        
+        // Check if connection seems dead (no pong received in time)
+        if (timeSinceLastPong > CONNECTION_CONFIG.PONG_TIMEOUT) {
+          console.warn(`[WebSocketManager] No pong received for ${CONNECTION_CONFIG.PONG_TIMEOUT/1000} seconds, reconnecting`);
           this.reconnect();
           return;
         }
 
+        // Send ping
         this.sendMessage({ 
           type: 'ping',
           echo: Date.now()
         });
       }
-    }, 30000); // 30 seconds
+    }, CONNECTION_CONFIG.PING_INTERVAL);
   }
 
   /**
@@ -389,6 +410,9 @@ class WebSocketManager {
           // WebSocket connected, wait before starting auth
           this.updateState({ wsState: { connected: true, authState: 'connected' }});
           
+          // Reset failure counter on successful connection
+          this.consecutiveFailures = 0;
+          
           // Sync with service
           this.syncWithService();
           
@@ -500,11 +524,11 @@ class WebSocketManager {
             // Clear in centralized service too
             webSocketService.clearStoredSession();
             
-            // Retry authentication with signature
+            // Retry authentication with signature quickly
             console.log('[WebSocketManager] Session invalid, retrying authentication');
             setTimeout(() => {
               this.startAuthentication();
-            }, 1000);
+            }, CONNECTION_CONFIG.AUTH_RETRY_DELAY);
             
           } else if (messageData.message === 'Not authenticated') {
             // If we get "Not authenticated" and we're not in auth flow, start it
@@ -513,12 +537,12 @@ class WebSocketManager {
               this.startAuthentication();
             }
           } else if (messageData.message === 'Internal error') {
-            // Server internal error - could try API fallback here
+            // Server internal error - retry with standard delay
             console.log('[WebSocketManager] Server internal error, retrying');
             this.authenticationInProgress = false;
             setTimeout(() => {
               this.startAuthentication();
-            }, 2000);
+            }, CONNECTION_CONFIG.AUTH_RETRY_DELAY);
           } else {
             // Other errors
             this.authenticationInProgress = false;
@@ -651,7 +675,6 @@ class WebSocketManager {
       console.log('[WebSocketManager] Connecting to WebSocket:', wsUrl);
       this.ws = new WebSocket(wsUrl);
       
-      
       // Store as global
       globalWebSocketInstance = this.ws;
       
@@ -667,7 +690,7 @@ class WebSocketManager {
       // Make it globally accessible for debugging
       window.globalWebSocket = this.ws;
       
-      // Connection timeout
+      // Connection timeout - shorter for better UX
       this.connectionTimeout = setTimeout(() => {
         if (this.ws.readyState === WebSocket.CONNECTING) {
           console.error('[WebSocketManager] Connection timeout');
@@ -679,8 +702,9 @@ class WebSocketManager {
             }
           });
           this.isConnecting = false;
+          // Will trigger reconnect in onclose handler
         }
-      }, 30000);
+      }, CONNECTION_CONFIG.CONNECTION_TIMEOUT);
       
       this.ws.onopen = () => {
         console.log('[WebSocketManager] WebSocket opened');
@@ -711,6 +735,8 @@ class WebSocketManager {
           clearTimeout(this.connectionTimeout);
           this.connectionTimeout = null;
         }
+        
+        this.consecutiveFailures++;
         
         this.updateState({ 
           wsState: { error: 'Connection error' }
@@ -757,7 +783,8 @@ class WebSocketManager {
         });
         
         // Handle reconnection for abnormal closures
-        if (event.code !== 1000 && this.reconnectAttempts < 5) {
+        // IMPROVED: Always reconnect unless explicitly stopped
+        if (event.code !== 1000 && this.shouldReconnect) {
           this.scheduleReconnect();
         }
       };
@@ -790,20 +817,56 @@ class WebSocketManager {
           error: 'Failed to connect' 
         }
       });
+      
+      // Schedule reconnection
+      if (this.shouldReconnect) {
+        this.scheduleReconnect();
+      }
     }
   }
 
   /**
    * Schedule reconnection
+   * IMPROVED: Better retry strategy with quick initial retries
    */
   scheduleReconnect() {
+    // Optional: Check max consecutive failures
+    if (CONNECTION_CONFIG.MAX_CONSECUTIVE_FAILURES && 
+        this.consecutiveFailures >= CONNECTION_CONFIG.MAX_CONSECUTIVE_FAILURES) {
+      console.error('[WebSocketManager] Max consecutive failures reached, stopping reconnection attempts');
+      this.shouldReconnect = false;
+      this.updateState({ 
+        wsState: { 
+          error: 'Max reconnection attempts reached. Please refresh the page.' 
+        }
+      });
+      return;
+    }
+    
     this.reconnectAttempts++;
-    const delay = Math.min(3000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+    
+    // Determine delay based on attempt count
+    let delay;
+    if (this.reconnectAttempts <= CONNECTION_CONFIG.QUICK_RETRY_COUNT) {
+      // Quick retries for first few attempts
+      delay = CONNECTION_CONFIG.QUICK_RETRY_DELAY;
+    } else if (this.reconnectAttempts <= CONNECTION_CONFIG.SLOW_RETRY_THRESHOLD) {
+      // Normal retries
+      delay = CONNECTION_CONFIG.NORMAL_RETRY_DELAY;
+    } else {
+      // Slow retries after many attempts
+      delay = CONNECTION_CONFIG.SLOW_RETRY_DELAY;
+    }
     
     console.log(`[WebSocketManager] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
     
+    // Clear any existing timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+    }
+    
     this.reconnectTimeout = setTimeout(() => {
-      if (this.walletAddress) {
+      if (this.walletAddress && this.shouldReconnect) {
         this.connect({ 
           connected: true, 
           address: this.walletAddress, 
@@ -817,22 +880,26 @@ class WebSocketManager {
    * Reconnect WebSocket
    */
   reconnect() {
-    console.log('[WebSocketManager] Reconnecting');
+    console.log('[WebSocketManager] Manual reconnect requested');
+    
+    // Reset counters for manual reconnect
+    this.reconnectAttempts = 0;
+    this.consecutiveFailures = 0;
+    this.shouldReconnect = true;
     
     if (this.ws) {
       this.ws.close(1000, 'Reconnecting');
     }
     
-    this.reconnectAttempts = 0;
-    
     if (this.walletAddress) {
+      // Use quick retry for manual reconnect
       setTimeout(() => {
         this.connect({ 
           connected: true, 
           address: this.walletAddress, 
           provider: this.walletProvider 
         });
-      }, 1000);
+      }, CONNECTION_CONFIG.QUICK_RETRY_DELAY);
     }
   }
 
@@ -842,16 +909,22 @@ class WebSocketManager {
   disconnect() {
     console.log('[WebSocketManager] Disconnecting');
     
+    // Stop reconnection attempts
+    this.shouldReconnect = false;
+    
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
     }
     
     if (this.connectionTimeout) {
       clearTimeout(this.connectionTimeout);
+      this.connectionTimeout = null;
     }
     
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
     
     if (this.ws) {
@@ -875,6 +948,10 @@ class WebSocketManager {
     }
     
     this.authenticationInProgress = false;
+    
+    // Reset counters
+    this.reconnectAttempts = 0;
+    this.consecutiveFailures = 0;
   }
 
   /**
@@ -885,6 +962,15 @@ class WebSocketManager {
     this.sessionToken = null;
     webSocketService.clearStoredSession();
     console.log('[WebSocketManager] Session cleared');
+  }
+
+  /**
+   * Enable reconnection (useful after manual disconnect)
+   */
+  enableReconnection() {
+    this.shouldReconnect = true;
+    this.reconnectAttempts = 0;
+    this.consecutiveFailures = 0;
   }
 }
 
@@ -999,6 +1085,12 @@ export function useAeroNyxWebSocket(options = {}) {
     wsManager.clearSession();
   }, []);
 
+  const forceReconnect = useCallback(() => {
+    console.log('[useAeroNyxWebSocket] Force reconnect');
+    wsManager.enableReconnection();
+    wsManager.reconnect();
+  }, []);
+
   // Return hook state and methods
   return {
     // WebSocket state
@@ -1014,6 +1106,7 @@ export function useAeroNyxWebSocket(options = {}) {
     startMonitoring,
     stopMonitoring,
     clearSession,
+    forceReconnect, // New method for forcing reconnection
     
     // Loading and error states
     isLoading: localState.wsState.authState === 'connecting' || 
@@ -1023,12 +1116,19 @@ export function useAeroNyxWebSocket(options = {}) {
     error: localState.wsState.error,
     
     // Session info
-    hasStoredSession: !!wsManager.sessionToken
+    hasStoredSession: !!wsManager.sessionToken,
+    
+    // Connection info (new)
+    reconnectAttempts: wsManager.reconnectAttempts,
+    isReconnecting: wsManager.reconnectAttempts > 0 && !localState.wsState.connected
   };
 }
 
 // Export WebSocket states
 export { WsState };
+
+// Export connection config for external use/debugging
+export { CONNECTION_CONFIG };
 
 // Export for backward compatibility
 export default useAeroNyxWebSocket;
