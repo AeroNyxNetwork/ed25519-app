@@ -80,12 +80,14 @@ export function useRemoteManagement(nodeReference) {
   // Check if JWT authenticated for this node
   const isRemoteAuthenticated = remoteAuthService.isAuthenticated(nodeReference);
   
-  // Get node status
+  // Get node status - check from multiple sources
   const node = nodes[nodeReference];
   const isNodeOnline = node && (
     node.status === 'online' || 
     node.status === 'active' ||
-    node.status === 'running'
+    node.status === 'running' ||
+    node.originalStatus === 'active' ||
+    node.normalizedStatus === 'online'
   );
   
   // ==================== Terminal Management ====================
