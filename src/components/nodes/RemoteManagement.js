@@ -279,8 +279,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
           // Write welcome message
           if (terminalRef.current) {
             terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
-            terminalRef.current.write(`\x1b[90mNode: ${nodeReference}\x1b[0m\r\n`);
-            terminalRef.current.write(`\x1b[90mSession: ${result.sessionId}\x1b[0m\r\n');
+            terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
+            terminalRef.current.write('\x1b[90mSession: ' + result.sessionId + '\x1b[0m\r\n');
             terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
           }
           
@@ -344,7 +344,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       console.error('[RemoteManagement] Terminal error:', message);
       
       if (terminalRef.current) {
-        terminalRef.current.write(`\r\n\x1b[31m● Error: ${message.error || message.message}\x1b[0m\r\n`);
+        terminalRef.current.write('\r\n\x1b[31m● Error: ' + (message.error || message.message) + '\x1b[0m\r\n');
       }
     };
 
