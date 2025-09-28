@@ -19,8 +19,9 @@
  * - Hook only manages terminal, not authentication
  * - Token is valid for 59 minutes with auto-cleanup
  * - Terminal output comes through WebSocket messages
+ * - FIXED: Terminal ready state synchronization issue
  * 
- * Last Modified: v4.0.0 - Uses centralized RemoteAuthService
+ * Last Modified: v4.1.0 - Fixed terminal ready state and duplicate output
  * ============================================
  */
 
@@ -81,7 +82,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   // Use the remote management hook (no longer handles JWT)
   const {
     terminalSession,
-    terminalReady,
+    terminalReady: hookTerminalReady,
     isConnecting: hookIsConnecting,
     error: hookError,
     isNodeOnline: hookIsNodeOnline,  // Use hook's node status
@@ -96,7 +97,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     nodes  // Get nodes from hook
   } = useRemoteManagement(nodeReference);
   
-  // Use hook's determination of node status, but also check local data
+  // Use hook's determination of node status
   const isNodeOnline = hookIsNodeOnline;
 
   // ==================== Local State ====================
@@ -105,6 +106,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [localTerminalReady, setLocalTerminalReady] = useState(false);
   const [initRetryCount, setInitRetryCount] = useState(0);
+  
+  // FIXED: Track if terminal UI has been initialized to prevent duplicate writes
+  const [terminalUIReady, setTerminalUIReady] = useState(false);
 
   // Refs
   const terminalRef = useRef(null);
@@ -114,6 +118,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const isMountedRef = useRef(true);
   const messageListenerRef = useRef(null);
   const initializationRef = useRef(false);
+  const lastOutputRef = useRef(''); // Track last output to prevent duplicates
+
+  // FIXED: Combine terminal ready states
+  const terminalReady = terminalSession && hookTerminalReady && localTerminalReady && terminalUIReady;
 
   // ==================== Authentication ====================
   
@@ -215,19 +223,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         setLocalTerminalReady(true);
         setInitRetryCount(0);
         
-        // Write welcome message
-        if (terminalRef.current) {
-          terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
-          terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
-          terminalRef.current.write('\x1b[90mSession: ' + result.sessionId + '\x1b[0m\r\n');
-          terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
-        }
-        
-        // Flush any buffered output
-        if (outputBufferRef.current && terminalRef.current) {
-          terminalRef.current.write(outputBufferRef.current);
-          outputBufferRef.current = '';
-        }
+        // Don't write welcome message here - wait for terminal UI to be ready
         
         return result;
       }
@@ -311,15 +307,25 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       
       console.log('[RemoteManagement] Received terminal output:', message.data?.length || 0, 'bytes');
       
-      if (message.data && terminalRef.current) {
-        try {
-          terminalRef.current.write(message.data);
-        } catch (error) {
-          console.error('[RemoteManagement] Error writing to terminal:', error);
+      if (message.data) {
+        // Check if this is duplicate output
+        if (lastOutputRef.current === message.data) {
+          console.log('[RemoteManagement] Skipping duplicate output');
+          return;
+        }
+        lastOutputRef.current = message.data;
+        
+        if (terminalRef.current && terminalUIReady) {
+          try {
+            terminalRef.current.write(message.data);
+          } catch (error) {
+            console.error('[RemoteManagement] Error writing to terminal:', error);
+            outputBufferRef.current += message.data;
+          }
+        } else {
+          // Buffer output if terminal UI isn't ready
           outputBufferRef.current += message.data;
         }
-      } else if (message.data) {
-        outputBufferRef.current += message.data;
       }
     };
 
@@ -328,7 +334,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       
       console.error('[RemoteManagement] Terminal error:', message);
       
-      if (terminalRef.current) {
+      if (terminalRef.current && terminalUIReady) {
         terminalRef.current.write('\r\n\x1b[31m● Error: ' + (message.error || message.message) + '\x1b[0m\r\n');
       }
       
@@ -343,11 +349,12 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       
       console.log('[RemoteManagement] Terminal closed');
       
-      if (terminalRef.current) {
+      if (terminalRef.current && terminalUIReady) {
         terminalRef.current.write('\r\n\x1b[33m● Session closed by remote host\x1b[0m\r\n');
       }
       
       setLocalTerminalReady(false);
+      setTerminalUIReady(false);
     };
 
     // Use WebSocket service event emitter
@@ -387,47 +394,51 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         ws.removeEventListener('message', messageListenerRef.current);
       }
     };
-  }, [isOpen, terminalSession, nodeReference]);
+  }, [isOpen, terminalSession, nodeReference, terminalUIReady]);
 
   // ==================== Terminal Handlers ====================
   
-  // Handle terminal ready
-  useEffect(() => {
-    if (terminalReady && terminalRef.current && outputBufferRef.current) {
-      console.log('[RemoteManagement] Terminal ready, flushing buffer');
+  // Handle terminal UI ready
+  const handleTerminalUIReady = useCallback(() => {
+    console.log('[RemoteManagement] Terminal UI is ready');
+    setTerminalUIReady(true);
+    
+    // Write welcome message when UI is ready and we have a session
+    if (terminalSession && terminalRef.current) {
+      terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
+      terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
+      terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
+      terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
       
-      try {
-        terminalRef.current.write(outputBufferRef.current);
-        outputBufferRef.current = '';
-      } catch (error) {
-        console.error('[RemoteManagement] Error flushing buffer:', error);
+      // Flush any buffered output
+      if (outputBufferRef.current) {
+        try {
+          terminalRef.current.write(outputBufferRef.current);
+          outputBufferRef.current = '';
+        } catch (error) {
+          console.error('[RemoteManagement] Error writing buffered output:', error);
+        }
       }
     }
-  }, [terminalReady]);
+  }, [terminalSession, nodeReference]);
 
   // Handle terminal input
   const handleTerminalInput = useCallback((data) => {
-    if (terminalSession && terminalReady) {
+    console.log('[RemoteManagement] handleTerminalInput called, terminalReady:', terminalReady);
+    console.log('[RemoteManagement] States:', {
+      terminalSession,
+      hookTerminalReady,
+      localTerminalReady,
+      terminalUIReady
+    });
+    
+    if (terminalSession && hookTerminalReady) {
       console.log('[RemoteManagement] Sending input:', data.length, 'bytes');
       sendTerminalInput(data);
     } else {
       console.warn('[RemoteManagement] Cannot send input - terminal not ready');
     }
-  }, [terminalSession, terminalReady, sendTerminalInput]);
-
-  // Handle terminal UI ready
-  const handleTerminalUIReady = useCallback(() => {
-    console.log('[RemoteManagement] Terminal UI is ready');
-    
-    if (outputBufferRef.current && terminalRef.current) {
-      try {
-        terminalRef.current.write(outputBufferRef.current);
-        outputBufferRef.current = '';
-      } catch (error) {
-        console.error('[RemoteManagement] Error writing buffered output:', error);
-      }
-    }
-  }, []);
+  }, [terminalSession, hookTerminalReady, sendTerminalInput, terminalReady, localTerminalReady, terminalUIReady]);
 
   // ==================== Terminal Actions ====================
   
@@ -448,6 +459,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const clearTerminal = useCallback(() => {
     if (terminalRef.current) {
       terminalRef.current.clear();
+      lastOutputRef.current = ''; // Reset duplicate tracking
     }
   }, []);
 
@@ -455,6 +467,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const resetTerminal = useCallback(() => {
     if (terminalRef.current) {
       terminalRef.current.reset();
+      lastOutputRef.current = ''; // Reset duplicate tracking
     }
   }, []);
 
@@ -466,8 +479,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     setInitRetryCount(0);
     setAuthRetryCount(0);
     setLocalTerminalReady(false);
+    setTerminalUIReady(false);
     setAuthError(null);
     outputBufferRef.current = '';
+    lastOutputRef.current = '';
     initializationRef.current = false;
     
     // Clear auth token for this node
@@ -500,12 +515,12 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // Execute quick command
   const executeQuickCommand = useCallback((command) => {
-    if (terminalSession && terminalReady) {
+    if (terminalSession && hookTerminalReady) {
       const commandWithNewline = command.endsWith('\n') ? command : `${command}\n`;
       sendTerminalInput(commandWithNewline);
       setShowCommandPalette(false);
     }
-  }, [terminalSession, terminalReady, sendTerminalInput]);
+  }, [terminalSession, hookTerminalReady, sendTerminalInput]);
 
   // ==================== Keyboard Handlers ====================
   
@@ -552,9 +567,11 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       
       // Reset state
       setLocalTerminalReady(false);
+      setTerminalUIReady(false);
       setInitRetryCount(0);
       setAuthRetryCount(0);
       outputBufferRef.current = '';
+      lastOutputRef.current = '';
       initializationRef.current = false;
       
       // Note: Keep JWT token for reuse within validity period
@@ -735,10 +752,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                       <button
                         key={index}
                         onClick={() => executeQuickCommand(cmd.command)}
-                        disabled={!terminalReady}
+                        disabled={!hookTerminalReady}
                         className={clsx(
                           "flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-xs",
-                          terminalReady
+                          hookTerminalReady
                             ? "bg-white/5 hover:bg-white/10 text-gray-300"
                             : "bg-white/5 text-gray-600 cursor-not-allowed"
                         )}
@@ -773,7 +790,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             )}
 
             {/* Connecting State */}
-            {(isAuthenticating || hookIsConnecting || isSignatureLoading) && !terminalReady && !displayError && (
+            {(isAuthenticating || hookIsConnecting || isSignatureLoading) && !hookTerminalReady && !displayError && (
               <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="text-center">
                   <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-3" />
