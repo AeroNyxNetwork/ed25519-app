@@ -389,8 +389,9 @@ export function useRemoteManagement(nodeReference) {
   }, [terminalSession, terminalReady]);
   
   /**
-   * Send input to terminal - Fixed to use WebSocket directly
+   * Send input to terminal - Fixed to use WebSocket directly with Base64 encoding
    * This bypasses terminalService to avoid session lookup issues
+   * CRITICAL: Data must be Base64 encoded for the backend
    */
   const sendTerminalInput = useCallback((data) => {
     // Get current state from ref instead of closure
@@ -408,11 +409,24 @@ export function useRemoteManagement(nodeReference) {
     
     console.log('[useRemoteManagement] Sending terminal input to session:', currentSession, 'Data length:', data?.length || 0);
     
-    // Send directly via WebSocket to avoid issues with terminalService
+    // CRITICAL FIX: Convert data to Base64 for backend compatibility
+    let base64Data;
+    try {
+      // Convert string to UTF-8 bytes then to Base64
+      const encoder = new TextEncoder();
+      const uint8Array = encoder.encode(data);
+      base64Data = btoa(String.fromCharCode.apply(null, uint8Array));
+      console.log('[useRemoteManagement] Encoded input to Base64:', base64Data);
+    } catch (error) {
+      console.error('[useRemoteManagement] Failed to encode input to Base64:', error);
+      return false;
+    }
+    
+    // Send directly via WebSocket with Base64 encoded data
     const success = webSocketService.send({
       type: 'term_input',
       session_id: currentSession,
-      data: data
+      data: base64Data  // Send Base64 encoded data
     });
     
     if (!success) {
