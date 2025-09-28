@@ -1,20 +1,24 @@
 /**
- * Dashboard Content Component - Optimized Using Unified WebSocket Hook
- * 
- * File Path: src/components/dashboard/DashboardContent.js
- * 
- * This component now uses the unified useAeroNyxWebSocket hook instead of
- * implementing its own WebSocket logic. The original WebSocket flow has been
- * extracted to the reusable hook to prevent code duplication.
- * 
- * CHANGES:
- * - Extracted WebSocket logic to useAeroNyxWebSocket hook
- * - Reduced from 1100+ lines to ~600 lines
- * - Maintains exact same functionality and UI
- * - Shares WebSocket connection with other components
- * 
- * @version 12.0.0
- * @author AeroNyx Development Team
+ * ============================================
+ * File Creation/Modification Notes
+ * ============================================
+ * Creation Reason: Main Dashboard Content Component
+ * Modification Reason: Remove monetization/earnings displays, keep only functional features
+ * Main Functionality: Display node status, resource usage, and management controls
+ * Dependencies: useAeroNyxWebSocket, useWallet, node management components
+ *
+ * Main Logical Flow:
+ * 1. Connect to WebSocket for real-time node monitoring
+ * 2. Display node operational status and resource metrics
+ * 3. Provide quick actions for node management
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - This file focuses on functional node management only
+ * - Monetization features have been intentionally removed
+ * - WebSocket connection is critical for real-time updates
+ *
+ * Last Modified: v13.0.0 - Removed earnings displays, kept functional features
+ * ============================================
  */
 
 'use client';
@@ -25,8 +29,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Server, 
   Activity, 
-  Zap, 
-  DollarSign,
+  Zap,
+  Cpu,
+  HardDrive,
   RefreshCw,
   Plus,
   ChevronRight,
@@ -66,7 +71,7 @@ const itemVariants = {
 /**
  * Dashboard Content Component
  * 
- * Uses the unified WebSocket hook for all data communication
+ * Focuses on functional node management without monetization displays
  */
 export default function DashboardContent() {
   const { wallet } = useWallet();
@@ -166,7 +171,7 @@ export default function DashboardContent() {
               initial="hidden"
               animate="visible"
             >
-              {/* Stats Grid */}
+              {/* Stats Grid - Focus on operational metrics only */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                 <StatsCard
                   icon={Server}
@@ -185,19 +190,19 @@ export default function DashboardContent() {
                 />
                 
                 <StatsCard
-                  icon={Zap}
-                  title="Resource Usage"
-                  value={`${stats.resourceUtilization}%`}
-                  subtitle="Average utilization"
+                  icon={Cpu}
+                  title="CPU Usage"
+                  value={`${stats.resourceUtilization || 0}%`}
+                  subtitle="Average across nodes"
                   trend="neutral"
                 />
                 
                 <StatsCard
-                  icon={DollarSign}
-                  title="Total Earnings"
-                  value={`$${stats.totalEarnings.toFixed(2)}`}
-                  subtitle="Lifetime earnings"
-                  trend="up"
+                  icon={HardDrive}
+                  title="Storage Used"
+                  value={`${Math.round(stats.storageUsed || 0)}%`}
+                  subtitle="Total capacity"
+                  trend="neutral"
                 />
               </div>
               
@@ -253,8 +258,8 @@ export default function DashboardContent() {
                         />
                         <QuickAction
                           icon={Activity}
-                          title="Network Stats"
-                          href="/dashboard/network"
+                          title="Blockchain Integration"
+                          href="/dashboard/blockchain-integration"
                         />
                       </div>
                     </GlassCard>
@@ -276,6 +281,13 @@ export default function DashboardContent() {
                           value={stats.resourceUtilization}
                           max={100}
                           color="purple"
+                        />
+                        <HealthMetric
+                          label="Network Latency"
+                          value={25}
+                          max={100}
+                          color="blue"
+                          suffix="ms"
                         />
                       </div>
                     </GlassCard>
@@ -377,12 +389,18 @@ function StatsCard({ icon: Icon, title, value, subtitle, trend }) {
 function NodeCard({ node }) {
   const statusConfig = {
     active: { color: 'green', Icon: CheckCircle, label: 'Active' },
+    online: { color: 'green', Icon: CheckCircle, label: 'Online' },
     offline: { color: 'red', Icon: XCircle, label: 'Offline' },
     pending: { color: 'yellow', Icon: AlertCircle, label: 'Pending' }
   };
   
-  const config = statusConfig[node.status] || statusConfig.offline;
+  const normalizedStatus = node.status?.toLowerCase() || 'offline';
+  const config = statusConfig[normalizedStatus] || statusConfig.offline;
   const { Icon } = config;
+  
+  // Calculate resource usage
+  const cpuUsage = node.performance?.cpu || 0;
+  const memoryUsage = node.performance?.memory || 0;
   
   return (
     <motion.div
@@ -412,8 +430,8 @@ function NodeCard({ node }) {
       </div>
       <div className="flex items-center gap-3">
         <div className="text-right">
-          <p className="text-sm font-medium text-white">${node.earnings || '0.00'}</p>
-          <p className="text-xs text-gray-500">Earned</p>
+          <p className="text-sm font-medium text-white">CPU: {cpuUsage}%</p>
+          <p className="text-xs text-gray-500">MEM: {memoryUsage}%</p>
         </div>
         <Icon className={`w-5 h-5 text-${config.color}-400`} />
       </div>
@@ -442,14 +460,16 @@ function QuickAction({ icon: Icon, title, href, primary }) {
   );
 }
 
-function HealthMetric({ label, value, max, color }) {
+function HealthMetric({ label, value, max, color, suffix = '' }) {
   const percentage = (value / max) * 100;
   
   return (
     <div>
       <div className="flex justify-between text-sm mb-2">
         <span className="text-gray-400">{label}</span>
-        <span className="text-white font-medium">{value}/{max}</span>
+        <span className="text-white font-medium">
+          {value}{suffix}{max > 1 && `/${max}`}
+        </span>
       </div>
       <div className="h-2 bg-white/10 rounded-full overflow-hidden">
         <motion.div
@@ -459,7 +479,8 @@ function HealthMetric({ label, value, max, color }) {
           className={clsx(
             "h-full bg-gradient-to-r",
             color === 'green' && "from-green-500 to-green-400",
-            color === 'purple' && "from-purple-500 to-purple-400"
+            color === 'purple' && "from-purple-500 to-purple-400",
+            color === 'blue' && "from-blue-500 to-blue-400"
           )}
         />
       </div>
