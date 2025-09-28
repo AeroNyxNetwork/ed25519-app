@@ -1,11 +1,24 @@
 /**
- * Dashboard Layout Component - Updated Version
- * 
- * File Path: src/app/dashboard/layout.js
- * 
- * Provides consistent header and footer for all dashboard pages
- * 
- * @version 2.0.0
+ * ============================================
+ * File Creation/Modification Notes
+ * ============================================
+ * Creation Reason: Dashboard Layout Component - provides consistent header and footer
+ * Modification Reason: Remove network stats navigation link as that feature is removed
+ * Main Functionality: Consistent navigation and layout for dashboard pages
+ * Dependencies: Next.js navigation, Framer Motion, ConnectWallet component
+ *
+ * Main Logical Flow:
+ * 1. Render consistent header with navigation
+ * 2. Wrap children content with background effects
+ * 3. Display footer with copyright information
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - Navigation items are configured in navItems array
+ * - Background effects are essential for visual consistency
+ * - ConnectWallet component manages wallet connection state
+ *
+ * Last Modified: v2.1.0 - Removed network stats navigation link
+ * ============================================
  */
 
 'use client';
@@ -13,22 +26,20 @@
 import React from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { Home, Server, Plus, Activity } from 'lucide-react';
+import { Home, Server, Plus } from 'lucide-react';
 import clsx from 'clsx';
 import { usePathname } from 'next/navigation';
-// Remove this line:
-// import { WebSocketProvider } from '../../components/providers/WebSocketProvider';
 import ConnectWallet from '../../components/wallet/ConnectWallet';
 import Logo from '../../components/common/Logo';
 
 /**
  * Navigation items configuration
+ * Removed Network Stats as it's no longer functional
  */
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: Home },
   { href: '/dashboard/nodes', label: 'My Nodes', icon: Server },
-  { href: '/dashboard/register', label: 'Register Node', icon: Plus },
-  { href: '/dashboard/network', label: 'Network Stats', icon: Activity },
+  { href: '/dashboard/register', label: 'Register Node', icon: Plus }
 ];
 
 /**
@@ -38,7 +49,6 @@ export default function DashboardLayout({ children }) {
   const pathname = usePathname();
 
   return (
-    // Remove WebSocketProvider wrapper
     <div className="min-h-screen bg-black flex flex-col">
       {/* Background effects */}
       <div className="fixed inset-0 pointer-events-none">
