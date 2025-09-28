@@ -623,6 +623,12 @@ class WebSocketManager {
           break;
       }
       
+      // CRITICAL: Also emit through WebSocketService for compatibility
+      // This ensures RemoteAuthService and other services receive the message
+      if (webSocketService) {
+        webSocketService.emit('message', messageData);
+      }
+      
     } catch (error) {
       console.error('[WebSocketManager] Message handling error:', error);
     }
