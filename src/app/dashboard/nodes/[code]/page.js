@@ -255,6 +255,76 @@ function generatePredictiveInsights(node) {
   return insights;
 }
 
+// System Info Panel Component
+function SystemInfoPanel({ node, onOpenRemote }) {
+  return (
+    <div className="bg-white/5 rounded-xl p-8 border border-white/10 text-center">
+      <Activity className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+      <h3 className="text-xl font-semibold mb-2">System Information</h3>
+      <p className="text-gray-400 mb-6">
+        Open Remote Management to view detailed system information
+      </p>
+      <button 
+        onClick={onOpenRemote}
+        className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+      >
+        Open Remote Management
+      </button>
+    </div>
+  );
+}
+
+// File Manager Panel Component  
+function FileManagerPanel({ node, onOpenRemote }) {
+  return (
+    <div className="bg-white/5 rounded-xl p-8 border border-white/10 text-center">
+      <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+      <h3 className="text-xl font-semibold mb-2">File Manager</h3>
+      <p className="text-gray-400 mb-6">
+        Open Remote Management to access the file manager
+      </p>
+      <button 
+        onClick={onOpenRemote}
+        className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+      >
+        Open Remote Management
+      </button>
+    </div>
+  );
+}
+
+// Terminal Panel Component
+function TerminalPanel({ isOnline, onOpenRemote }) {
+  return (
+    <div className="bg-white/5 rounded-xl p-8 border border-white/10 text-center">
+      <Terminal className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+      <h3 className="text-xl font-semibold mb-2">Remote Terminal</h3>
+      {isOnline ? (
+        <>
+          <p className="text-gray-400 mb-6">
+            Access full terminal functionality through Remote Management
+          </p>
+          <button 
+            onClick={onOpenRemote}
+            className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
+          >
+            Open Remote Management
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="text-red-400 mb-6">
+            Node must be online to access terminal
+          </p>
+          <div className="px-6 py-3 bg-gray-700 text-gray-400 rounded-xl">
+            Terminal Unavailable (Node Offline)
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * Main Node Details Page Component
  */
@@ -809,17 +879,26 @@ export default function NodeDetailsPage({ params }) {
 
           {/* System Info Tab */}
           {selectedTab === 'system' && (
-            <SystemInfoPanel node={node} />
+            <SystemInfoPanel 
+              node={node} 
+              onOpenRemote={() => setShowRemoteManagement(true)} 
+            />
           )}
 
           {/* File Manager Tab */}
           {selectedTab === 'files' && (
-            <FileManagerPanel node={node} />
+            <FileManagerPanel 
+              node={node} 
+              onOpenRemote={() => setShowRemoteManagement(true)} 
+            />
           )}
 
           {/* Terminal Tab */}
           {selectedTab === 'terminal' && (
-            <TerminalPanel isOnline={isNodeOnline} onOpenRemote={() => setShowRemoteManagement(true)} />
+            <TerminalPanel 
+              isOnline={isNodeOnline} 
+              onOpenRemote={() => setShowRemoteManagement(true)} 
+            />
           )}
         </div>
       </div>
