@@ -3,42 +3,9 @@
  * File: src/app/dashboard/nodes/[code]/page.js
  * Path: src/app/dashboard/nodes/[code]/page.js
  * ============================================
- * UTILITY-FOCUSED VERSION - v4.0.0
+ * UTILITY-FOCUSED VERSION - v4.0.3 - CLEAN (No Duplicates)
  * 
- * Creation Reason: Node Details Page - Professional Infrastructure Management
- * Modification Reason: Remove monetization concepts, focus on operational excellence
- * Main Functionality: Deep node monitoring, diagnostics, and management
- * Dependencies: useWallet, useAeroNyxWebSocket, RemoteManagement component
- *
- * Removed Features (v4.0.0):
- * - ALL earnings/revenue displays
- * - Monetization metrics
- * - Token/rewards references
- * - Speculative value indicators
- *
- * Added Features (v4.0.0):
- * - Operational health scoring
- * - Resource efficiency metrics
- * - Predictive maintenance alerts
- * - Deep diagnostic capabilities
- * - Enhanced monitoring views
- *
- * Main Logical Flow:
- * 1. Load node data from WebSocket
- * 2. Calculate health score from multiple metrics
- * 3. Generate predictive insights from trends
- * 4. Display actionable operational intelligence
- * 5. Provide diagnostic and management tools
- *
- * ⚠️ Important Note for Next Developer:
- * - This is a PROFESSIONAL TOOL, not a speculation platform
- * - Focus on helping operators manage infrastructure
- * - All metrics must be actionable and meaningful
- * - Maintain technical depth that VCs respect
- * - Do NOT re-add earnings/monetization without careful consideration
- *
- * Last Modified: v4.0.0 - Complete utility-first redesign
- * Previous Version: v3.3.0 - Had earnings displays (removed)
+ * Last Modified: v4.0.3 - Removed all duplicate component definitions
  * ============================================
  */
 
@@ -49,8 +16,6 @@ import { useRouter } from 'next/navigation';
 import { useWallet } from '../../../../components/wallet/WalletProvider';
 import { useAeroNyxWebSocket } from '../../../../hooks/useAeroNyxWebSocket';
 import RemoteManagement from '../../../../components/nodes/RemoteManagement';
-import SystemInfo from '../../../../components/nodes/SystemInfo';
-import FileManager from '../../../../components/nodes/FileManager';
 import { motion, AnimatePresence } from 'framer-motion';
 import Link from 'next/link';
 import { 
@@ -68,7 +33,6 @@ import {
   Loader2,
   Shield,
   Database,
-  Network,
   BarChart3,
   Clock,
   Thermometer,
@@ -78,10 +42,7 @@ import {
   AlertTriangle,
   Settings,
   FileText,
-  Zap,
-  CheckCircle2,
-  Download,
-  Play
+  CheckCircle2
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -132,65 +93,55 @@ function isNodeReallyOnline(node) {
 
 /**
  * Calculate node health score (0-100)
- * Based on multiple operational metrics
  */
 function calculateHealthScore(node) {
   if (!node) return 0;
   
   let score = 100;
   
-  // Status impact (50 points max penalty)
   const status = normalizeNodeStatus(node);
   if (status === 'offline') score -= 50;
   else if (status === 'error') score -= 40;
   else if (status === 'pending') score -= 20;
   
-  // Resource usage impact
   const cpu = node.performance?.cpu || 0;
   const memory = node.performance?.memory || 0;
   const disk = node.performance?.disk || 0;
   
-  // CPU penalties
   if (cpu > 95) score -= 20;
   else if (cpu > 85) score -= 15;
   else if (cpu > 75) score -= 10;
   else if (cpu > 65) score -= 5;
   
-  // Memory penalties
   if (memory > 95) score -= 20;
   else if (memory > 85) score -= 15;
   else if (memory > 75) score -= 10;
   else if (memory > 65) score -= 5;
   
-  // Disk penalties
   if (disk > 90) score -= 10;
   else if (disk > 80) score -= 5;
   
-  // Uptime bonus/penalty
   const uptime = parseFloat(node.uptime) || 0;
   if (uptime < 95) score -= 10;
   else if (uptime < 98) score -= 5;
-  else if (uptime > 99.9) score += 5; // Bonus for excellent uptime
+  else if (uptime > 99.9) score += 5;
   
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 /**
- * Generate predictive insights based on trends
+ * Generate predictive insights
  */
 function generatePredictiveInsights(node) {
   if (!node) return [];
   
   const insights = [];
-  
-  // Safely get performance metrics with defaults
   const memory = node.performance?.memory || 0;
   const cpu = node.performance?.cpu || 0;
   const disk = node.performance?.disk || 0;
   
-  // Memory trending
   if (memory > 80) {
-    const daysToFull = Math.round((100 - memory) / 2); // Assuming 2% growth per day
+    const daysToFull = Math.round((100 - memory) / 2);
     insights.push({
       type: 'warning',
       metric: 'memory',
@@ -201,7 +152,6 @@ function generatePredictiveInsights(node) {
     });
   }
   
-  // CPU patterns
   if (cpu > 70) {
     insights.push({
       type: 'info',
@@ -213,9 +163,8 @@ function generatePredictiveInsights(node) {
     });
   }
   
-  // Disk space
   if (disk > 75) {
-    const daysToFull = Math.round((100 - disk) / 0.5); // Assuming 0.5% growth per day
+    const daysToFull = Math.round((100 - disk) / 0.5);
     insights.push({
       type: disk > 85 ? 'warning' : 'info',
       metric: 'disk',
@@ -226,7 +175,6 @@ function generatePredictiveInsights(node) {
     });
   }
   
-  // All good scenario
   if (insights.length === 0 && memory < 70 && cpu < 60 && disk < 70) {
     insights.push({
       type: 'success',
@@ -322,12 +270,10 @@ export default function NodeDetailsPage({ params }) {
   const [loadingState, setLoadingState] = useState('initializing');
   const [errorDetails, setErrorDetails] = useState(null);
   const [selectedTab, setSelectedTab] = useState('overview');
-  const [remoteSession, setRemoteSession] = useState(null);
   const checkTimeoutRef = useRef(null);
   const retryCountRef = useRef(0);
   const maxRetries = 3;
   
-  // Get node data from WebSocket
   const { 
     nodes, 
     isLoading, 
@@ -339,14 +285,12 @@ export default function NodeDetailsPage({ params }) {
     autoMonitor: true
   });
 
-  // Find the specific node
   const node = useMemo(() => {
     return nodes.find(n => 
       n.code && n.code.toUpperCase() === code.toUpperCase()
     );
   }, [nodes, code]);
 
-  // Calculate derived metrics - with safety checks
   const nodeStatus = useMemo(() => normalizeNodeStatus(node), [node]);
   const isNodeOnline = useMemo(() => isNodeReallyOnline(node), [node]);
   const healthScore = useMemo(() => {
@@ -358,7 +302,6 @@ export default function NodeDetailsPage({ params }) {
     return generatePredictiveInsights(node);
   }, [node]);
 
-  // Wallet initialization check
   useEffect(() => {
     if (isInitializing) {
       setLoadingState('wallet_initializing');
@@ -370,7 +313,6 @@ export default function NodeDetailsPage({ params }) {
     }
   }, [isInitializing, wallet.connected, router]);
 
-  // Update loading state
   useEffect(() => {
     if (isInitializing) return;
 
@@ -390,14 +332,12 @@ export default function NodeDetailsPage({ params }) {
     }
   }, [isInitializing, wsState, nodes.length, node]);
 
-  // Retry logic
   const handleRetry = useCallback(() => {
     retryCountRef.current += 1;
     setErrorDetails(null);
     refresh();
   }, [refresh]);
 
-  // Timeout for node not found
   useEffect(() => {
     if (checkTimeoutRef.current) {
       clearTimeout(checkTimeoutRef.current);
@@ -427,7 +367,6 @@ export default function NodeDetailsPage({ params }) {
     };
   }, [isInitializing, wsState.authenticated, wsState.monitoring, nodes.length, node, code, handleRetry]);
 
-  // Handle WebSocket errors
   useEffect(() => {
     if (wsError) {
       setErrorDetails({
@@ -439,7 +378,6 @@ export default function NodeDetailsPage({ params }) {
     }
   }, [wsError]);
 
-  // Loading state messages
   const loadingMessages = {
     'wallet_initializing': 'Restoring Wallet Connection...',
     'initializing': 'Initializing Protocol...',
@@ -450,7 +388,6 @@ export default function NodeDetailsPage({ params }) {
     'searching_node': `Locating Node ${code}...`
   };
 
-  // Render loading state
   if (loadingState !== 'ready' && loadingState !== 'error') {
     return (
       <div className="min-h-screen bg-[#0A0A0F] flex items-center justify-center">
@@ -490,7 +427,6 @@ export default function NodeDetailsPage({ params }) {
     );
   }
 
-  // Render error state
   if (loadingState === 'error' && errorDetails) {
     return (
       <div className="min-h-screen bg-[#0A0A0F] flex items-center justify-center">
@@ -534,7 +470,6 @@ export default function NodeDetailsPage({ params }) {
     );
   }
 
-  // Node not found
   if (!node) {
     return (
       <div className="min-h-screen bg-[#0A0A0F] flex items-center justify-center">
@@ -558,7 +493,6 @@ export default function NodeDetailsPage({ params }) {
     );
   }
 
-  // Status configuration
   const statusConfig = {
     online: { color: colors.success, Icon: CheckCircle, label: 'Online', glow: true },
     offline: { color: colors.error, Icon: XCircle, label: 'Offline', glow: false },
@@ -570,7 +504,6 @@ export default function NodeDetailsPage({ params }) {
   const status = statusConfig[nodeStatus] || statusConfig.unknown;
   const StatusIcon = status.Icon;
 
-  // Get health score color
   const getHealthColor = (score) => {
     if (score >= 90) return 'text-green-400';
     if (score >= 70) return 'text-yellow-400';
@@ -578,7 +511,6 @@ export default function NodeDetailsPage({ params }) {
     return 'text-red-400';
   };
 
-  // Tabs configuration - ONLY IMPLEMENTED FEATURES
   const tabs = [
     { id: 'overview', label: 'Overview', icon: BarChart3 },
     { id: 'system', label: 'System Info', icon: Activity },
@@ -588,7 +520,6 @@ export default function NodeDetailsPage({ params }) {
 
   return (
     <div className="min-h-screen bg-[#0A0A0F]">
-      {/* Background effects */}
       <div className="fixed inset-0 pointer-events-none">
         <div className="absolute inset-0 bg-gradient-to-br from-purple-900/10 via-transparent to-blue-900/10" />
         <div className="absolute top-0 left-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-[128px]" />
@@ -596,14 +527,12 @@ export default function NodeDetailsPage({ params }) {
       </div>
 
       <div className="relative z-10">
-        {/* Header */}
         <motion.header 
           className="px-6 py-6 border-b border-white/5 backdrop-blur-xl bg-black/20"
           initial={{ y: -20, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
         >
           <div className="max-w-7xl mx-auto">
-            {/* Top bar */}
             <div className="flex items-center gap-4 mb-6">
               <Link href="/dashboard/nodes">
                 <motion.div
@@ -647,7 +576,6 @@ export default function NodeDetailsPage({ params }) {
               </div>
 
               <div className="flex items-center gap-3">
-                {/* Health Score */}
                 <div className="flex items-center gap-3 px-4 py-2 bg-white/5 rounded-xl border border-white/10">
                   <span className="text-sm text-gray-400">Health Score:</span>
                   <span className={`text-2xl font-bold ${getHealthColor(healthScore)}`}>
@@ -684,7 +612,6 @@ export default function NodeDetailsPage({ params }) {
               </div>
             </div>
 
-            {/* Status Bar */}
             <div className="flex items-center gap-4 p-4 bg-white/5 rounded-xl border border-white/10">
               <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full ${
@@ -706,7 +633,6 @@ export default function NodeDetailsPage({ params }) {
           </div>
         </motion.header>
 
-        {/* Tabs */}
         <div className="max-w-7xl mx-auto px-6 mt-6">
           <div className="flex gap-2 border-b border-white/10">
             {tabs.map(tab => {
@@ -729,10 +655,8 @@ export default function NodeDetailsPage({ params }) {
           </div>
         </div>
 
-        {/* Content */}
         <div className="max-w-7xl mx-auto px-6 py-8">
           
-          {/* Offline Alert */}
           {!isNodeOnline && nodeStatus === 'offline' && (
             <motion.div
               initial={{ opacity: 0, y: -10 }}
@@ -749,11 +673,9 @@ export default function NodeDetailsPage({ params }) {
             </motion.div>
           )}
 
-          {/* Overview Tab */}
           {selectedTab === 'overview' && (
             <div className="space-y-6">
               
-              {/* Predictive Insights */}
               {predictiveInsights.length > 0 && (
                 <div className="bg-white/5 rounded-xl p-6 border border-white/10">
                   <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
@@ -794,10 +716,7 @@ export default function NodeDetailsPage({ params }) {
                 </div>
               )}
 
-              {/* Resource Metrics Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                
-                {/* CPU */}
                 <ResourceCard
                   title="CPU"
                   icon={Cpu}
@@ -810,7 +729,6 @@ export default function NodeDetailsPage({ params }) {
                   ]}
                 />
 
-                {/* Memory */}
                 <ResourceCard
                   title="Memory"
                   icon={Database}
@@ -823,7 +741,6 @@ export default function NodeDetailsPage({ params }) {
                   ]}
                 />
 
-                {/* Disk */}
                 <ResourceCard
                   title="Disk"
                   icon={HardDrive}
@@ -836,7 +753,6 @@ export default function NodeDetailsPage({ params }) {
                   ]}
                 />
 
-                {/* Network */}
                 <ResourceCard
                   title="Network"
                   icon={Wifi}
@@ -850,7 +766,6 @@ export default function NodeDetailsPage({ params }) {
                 />
               </div>
 
-              {/* Recent Events */}
               <div className="bg-white/5 rounded-xl p-6 border border-white/10">
                 <h3 className="text-lg font-semibold mb-4">Recent Events</h3>
                 <div className="space-y-2">
@@ -863,7 +778,6 @@ export default function NodeDetailsPage({ params }) {
             </div>
           )}
 
-          {/* System Info Tab */}
           {selectedTab === 'system' && (
             <SystemInfoPanel 
               node={node} 
@@ -871,7 +785,6 @@ export default function NodeDetailsPage({ params }) {
             />
           )}
 
-          {/* File Manager Tab */}
           {selectedTab === 'files' && (
             <FileManagerPanel 
               node={node} 
@@ -879,7 +792,6 @@ export default function NodeDetailsPage({ params }) {
             />
           )}
 
-          {/* Terminal Tab */}
           {selectedTab === 'terminal' && (
             <TerminalPanel 
               isOnline={isNodeOnline} 
@@ -889,7 +801,6 @@ export default function NodeDetailsPage({ params }) {
         </div>
       </div>
 
-      {/* Remote Management Modal */}
       {isNodeOnline && showRemoteManagement && (
         <RemoteManagement
           nodeReference={node.code}
@@ -901,7 +812,6 @@ export default function NodeDetailsPage({ params }) {
   );
 }
 
-// Resource Card Component
 function ResourceCard({ title, icon: Icon, value, color, details }) {
   const colorMap = {
     purple: { bg: 'bg-purple-500/20', text: 'text-purple-400', bar: 'bg-purple-500' },
@@ -956,7 +866,6 @@ function ResourceCard({ title, icon: Icon, value, color, details }) {
   );
 }
 
-// Event Item Component
 function EventItem({ time, type, message }) {
   const typeColors = {
     success: 'bg-green-500',
@@ -970,105 +879,6 @@ function EventItem({ time, type, message }) {
       <div className={`w-2 h-2 rounded-full ${typeColors[type] || typeColors.info}`} />
       <span className="text-sm text-gray-400">{time}</span>
       <span className="flex-1">{message}</span>
-    </div>
-  );
-}
-
-// Diagnostics Panel Component
-function DiagnosticsPanel() {
-  return (
-    <div className="bg-white/5 rounded-xl p-8 border border-white/10">
-      <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-        <Activity className="w-6 h-6 text-purple-400" />
-        Diagnostic Tools
-      </h3>
-      <p className="text-gray-400 mb-6">Run comprehensive tests to diagnose and optimize your node</p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <DiagnosticButton icon={Network} title="Network Test" description="Ping, traceroute, bandwidth" color="blue" />
-        <DiagnosticButton icon={Zap} title="Stress Test" description="Identify bottlenecks" color="yellow" />
-        <DiagnosticButton icon={CheckCircle} title="Health Check" description="Full system scan" color="green" />
-        <DiagnosticButton icon={Download} title="Generate Report" description="Export diagnostics" color="purple" />
-      </div>
-    </div>
-  );
-}
-
-function DiagnosticButton({ icon: Icon, title, description, color }) {
-  const colorMap = {
-    blue: 'text-blue-400',
-    yellow: 'text-yellow-400',
-    green: 'text-green-400',
-    purple: 'text-purple-400'
-  };
-
-  return (
-    <button className="p-4 bg-white/5 hover:bg-white/10 rounded-lg border border-white/10 transition-colors text-left">
-      <Icon className={`w-6 h-6 mb-2 ${colorMap[color]}`} />
-      <div className="font-medium">{title}</div>
-      <div className="text-xs text-gray-400 mt-1">{description}</div>
-    </button>
-  );
-}
-
-// Logs Panel Component
-function LogsPanel() {
-  return (
-    <div className="bg-white/5 rounded-xl p-6 border border-white/10">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">System Logs</h3>
-        <div className="flex gap-2">
-          <select className="px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm">
-            <option>All Logs</option>
-            <option>Errors Only</option>
-            <option>Warnings</option>
-            <option>Info</option>
-          </select>
-          <button className="px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-sm">
-            <Download className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-      <div className="bg-black/50 rounded-lg p-4 font-mono text-xs space-y-1 h-96 overflow-y-auto">
-        <div className="text-green-400">[INFO] 2025-01-20 14:23:45 - System check completed</div>
-        <div className="text-yellow-400">[WARN] 2025-01-20 14:22:31 - High memory usage detected</div>
-        <div className="text-blue-400">[INFO] 2025-01-20 14:20:15 - Configuration updated</div>
-        <div className="text-green-400">[INFO] 2025-01-20 14:18:02 - Connection established</div>
-        <div className="text-gray-400">[DEBUG] 2025-01-20 14:15:44 - Heartbeat sent</div>
-        <div className="text-gray-400">[DEBUG] 2025-01-20 14:15:29 - Monitoring metrics</div>
-        <div className="text-blue-400">[INFO] 2025-01-20 14:15:00 - Performance data collected</div>
-      </div>
-    </div>
-  );
-}
-
-// Terminal Panel Component
-function TerminalPanel({ isOnline }) {
-  return (
-    <div className="bg-white/5 rounded-xl p-6 border border-white/10">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">Remote Terminal</h3>
-        {isOnline ? (
-          <button className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm flex items-center gap-2">
-            <Play className="w-4 h-4" />
-            Connect
-          </button>
-        ) : (
-          <div className="px-4 py-2 bg-gray-700 text-gray-400 rounded-lg text-sm">
-            Node Offline
-          </div>
-        )}
-      </div>
-      <div className="bg-black/50 rounded-lg p-4 h-96 font-mono text-sm">
-        {isOnline ? (
-          <div className="text-gray-400">
-            Click "Connect" to start remote terminal session...
-          </div>
-        ) : (
-          <div className="text-red-400">
-            Terminal unavailable - Node is offline
-          </div>
-        )}
-      </div>
     </div>
   );
 }
