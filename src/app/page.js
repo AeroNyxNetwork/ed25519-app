@@ -1,151 +1,169 @@
+/**
+ * ============================================
+ * File: src/app/page.js
+ * Path: src/app/page.js
+ * ============================================
+ * SIMPLIFIED VERSION - v5.0.0
+ * 
+ * Creation Reason: Root page - Direct login interface
+ * Modification Reason: Remove marketing fluff, focus on utility
+ * Main Functionality: Clean wallet connection interface
+ * Dependencies: WalletProvider, Next.js router
+ *
+ * Design Philosophy:
+ * - Professional tool = Direct login, no marketing
+ * - Like GitHub/AWS Console/Datadog - straight to work
+ * - VCs respect tools that don't waste time
+ * - B2B infrastructure tools don't need landing pages
+ *
+ * Main Logical Flow:
+ * 1. Show clean login interface
+ * 2. User connects wallet
+ * 3. Redirect to dashboard immediately
+ * 4. That's it. No fluff.
+ *
+ * ⚠️ Important Note for Next Developer:
+ * - This is NOT a marketing page
+ * - Keep it minimal and professional
+ * - Auto-redirect if already connected
+ * - Think AWS Console, not consumer app
+ *
+ * Last Modified: v5.0.0 - Removed all marketing content
+ * Previous Version: v4.0.0 - Had hero sections, features, CTAs (removed)
+ * ============================================
+ */
+
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Header from '../components/layout/Header';
 import { useWallet } from '../components/wallet/WalletProvider';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Server, Shield, Zap, ArrowRight, Loader2 } from 'lucide-react';
 
 export default function Home() {
   const { wallet, connectWallet } = useWallet();
   const router = useRouter();
+  const [isConnecting, setIsConnecting] = useState(false);
 
-  // Redirect to dashboard if already connected
-  React.useEffect(() => {
+  // Auto-redirect if already connected
+  useEffect(() => {
     if (wallet.connected) {
       router.push('/dashboard');
     }
   }, [wallet.connected, router]);
 
+  // Handle wallet connection
+  const handleConnect = async () => {
+    setIsConnecting(true);
+    try {
+      await connectWallet();
+    } catch (error) {
+      console.error('Connection failed:', error);
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen flex flex-col">
-      <Header />
-      
-      <main className="flex-grow">
-        {/* Hero Section */}
-        <section className="py-20 relative overflow-hidden">
-          <div className="absolute inset-0 bg-grid-pattern opacity-5"></div>
-          <div className="absolute top-0 right-0 w-1/3 h-1/3 bg-gradient-radial from-primary-500/20 to-transparent blur-3xl"></div>
-          <div className="absolute bottom-0 left-0 w-1/2 h-1/2 bg-gradient-radial from-secondary-500/20 to-transparent blur-3xl"></div>
-          
-          <div className="container-custom relative z-10">
-            <div className="max-w-3xl mx-auto text-center">
-              <h1 className="text-5xl md:text-6xl font-bold mb-6">
-                <span className="gradient-text">Privacy-First</span> Decentralized Computing Infrastructure
-              </h1>
-              <p className="text-xl text-gray-300 mb-10">
-                AeroNyx Network empowers billions of devices with its privacy-first SDK, establishing a secure foundation for device-to-device collaboration in our global marketplace.
-              </p>
-              <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                <button 
-                  onClick={connectWallet}
-                  className="button-primary text-lg py-3 px-8"
-                >
-                  Connect Wallet to Start
-                </button>
-                <a
-                  href="https://docs.aeronyx.network"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="button-outline text-lg py-3 px-8"
-                >
-                  Read Documentation
-                </a>
-              </div>
-            </div>
+    <div className="min-h-screen bg-[#0A0A0F] flex items-center justify-center">
+      {/* Background effects */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute inset-0 bg-gradient-to-br from-purple-900/10 via-transparent to-blue-900/10" />
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-[128px]" />
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-blue-600/10 rounded-full blur-[128px]" />
+      </div>
+
+      {/* Main Content */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+        className="relative z-10 w-full max-w-md px-6"
+      >
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <div className="w-20 h-20 bg-gradient-to-br from-purple-600 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Server className="w-10 h-10 text-white" />
           </div>
-        </section>
-        
-        {/* Features Section */}
-        <section className="py-16 bg-background-50">
-          <div className="container-custom">
-            <h2 className="text-3xl font-bold text-center mb-12">
-              <span className="gradient-text">Core Features</span>
-            </h2>
-            
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              {/* Feature 1 */}
-              <div className="card glass-effect">
-                <div className="mb-4 text-primary">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                </div>
-                <h3 className="text-xl font-bold mb-3">Privacy-First SDK</h3>
-                <p className="text-gray-300">
-                  Our lightweight SDK implements state-of-the-art cryptographic protocols that ensure end-to-end privacy while enabling secure device-to-device connections.
-                </p>
-              </div>
-              
-              {/* Feature 2 */}
-              <div className="card glass-effect">
-                <div className="mb-4 text-primary">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
-                  </svg>
-                </div>
-                <h3 className="text-xl font-bold mb-3">Resource Marketplace</h3>
-                <p className="text-gray-300">
-                  Create new value from underutilized computing resources. Trade GPU, CPU, bandwidth, and storage in a global, decentralized marketplace with instant settlement.
-                </p>
-              </div>
-              
-              {/* Feature 3 */}
-              <div className="card glass-effect">
-                <div className="mb-4 text-primary">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                  </svg>
-                </div>
-                <h3 className="text-xl font-bold mb-3">Decentralized AI Infrastructure</h3>
-                <p className="text-gray-300">
-                  Contribute to and benefit from distributed AI training and inference. Keep data local while participating in global model improvement.
-                </p>
-              </div>
-            </div>
+          <h1 className="text-3xl font-bold text-white mb-2">
+            AeroNyx Network
+          </h1>
+          <p className="text-gray-400 text-sm">
+            Infrastructure Management Platform
+          </p>
+        </div>
+
+        {/* Login Card */}
+        <div className="bg-white/5 backdrop-blur-xl rounded-2xl border border-white/10 p-8">
+          <h2 className="text-xl font-semibold text-white mb-6 text-center">
+            Connect to Continue
+          </h2>
+
+          {/* Connect Button */}
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={handleConnect}
+            disabled={isConnecting}
+            className="w-full py-4 px-6 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-xl text-white font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isConnecting ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                Connecting...
+              </>
+            ) : (
+              <>
+                Connect Wallet
+                <ArrowRight className="w-5 h-5" />
+              </>
+            )}
+          </motion.button>
+
+          {/* Info Pills */}
+          <div className="mt-6 space-y-2">
+            <InfoPill icon={Shield} text="Secure wallet authentication" />
+            <InfoPill icon={Server} text="Monitor your infrastructure" />
+            <InfoPill icon={Zap} text="Real-time diagnostics" />
           </div>
-        </section>
-        
-        {/* CTA Section */}
-        <section className="py-20 relative">
-          <div className="absolute inset-0 bg-grid-pattern opacity-5"></div>
-          <div className="container-custom relative z-10">
-            <div className="max-w-3xl mx-auto text-center">
-              <h2 className="text-3xl font-bold mb-6">Ready to Join the Network?</h2>
-              <p className="text-xl text-gray-300 mb-8">
-                Connect your wallet, register your nodes, and start earning rewards for contributing to the AeroNyx ecosystem.
-              </p>
-              <button 
-                onClick={connectWallet}
-                className="button-primary text-lg py-3 px-8"
-              >
-                Get Started Now
-              </button>
-            </div>
-          </div>
-        </section>
-      </main>
-      
-      {/* Footer */}
-      <footer className="bg-background-100 border-t border-background-200 py-8">
-        <div className="container-custom">
-          <div className="flex flex-col md:flex-row justify-between items-center">
-            <div className="flex items-center gap-2 mb-4 md:mb-0">
-              <div className="w-8 h-8 relative">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" className="w-full h-full">
-                  <g transform="translate(0,512) scale(0.1,-0.1)" fill="#8A2BE2" stroke="none">
-                    <path d="M1277 3833 l-1277 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1278 -1277z"/>
-                    <path d="M3838 3833 l-1278 -1278 0 -1275 0 -1275 1280 1280 1280 1280 -2 1273 -3 1272 -1277 -1277z"/>
-                  </g>
-                </svg>
-              </div>
-              <span className="text-lg font-bold text-white">AeroNyx Network</span>
-            </div>
-            <div className="text-sm text-gray-400">
-              © {new Date().getFullYear()} AeroNyx Network. All rights reserved.
-            </div>
+
+          {/* Footer Links */}
+          <div className="mt-6 pt-6 border-t border-white/10 flex justify-center gap-6 text-sm">
+            <a
+              href="https://docs.aeronyx.network"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-400 hover:text-white transition-colors"
+            >
+              Documentation
+            </a>
+            <a
+              href="https://support.aeronyx.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-400 hover:text-white transition-colors"
+            >
+              Support
+            </a>
           </div>
         </div>
-      </footer>
+
+        {/* Bottom Note */}
+        <p className="text-center text-xs text-gray-500 mt-6">
+          Professional infrastructure management for Web3
+        </p>
+      </motion.div>
+    </div>
+  );
+}
+
+// Info Pill Component
+function InfoPill({ icon: Icon, text }) {
+  return (
+    <div className="flex items-center gap-2 text-sm text-gray-400">
+      <Icon className="w-4 h-4 text-gray-500" />
+      <span>{text}</span>
     </div>
   );
 }
