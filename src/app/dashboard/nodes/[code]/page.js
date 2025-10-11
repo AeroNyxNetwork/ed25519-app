@@ -16,6 +16,8 @@ import { useRouter } from 'next/navigation';
 import { useWallet } from '../../../../components/wallet/WalletProvider';
 import { useAeroNyxWebSocket } from '../../../../hooks/useAeroNyxWebSocket';
 import RemoteManagement from '../../../../components/nodes/RemoteManagement';
+import FileManager from '../../../../components/nodes/FileManager';
+import { useRemoteManagement } from '../../../../hooks/useRemoteManagement';
 import { motion, AnimatePresence } from 'framer-motion';
 import Link from 'next/link';
 import { 
@@ -208,21 +210,48 @@ function SystemInfoPanel({ node, onOpenRemote }) {
   );
 }
 
-// File Manager Panel Component  
-function FileManagerPanel({ node, onOpenRemote }) {
+// File Manager Panel Component - Integrated
+function FileManagerPanel({ node }) {
+  const { 
+    isConnected,
+    executeCommand,
+    uploadFile,
+    connect,
+    disconnect 
+  } = useRemoteManagement(node.code);
+
+  // Auto-connect when panel is shown
+  useEffect(() => {
+    if (!isConnected) {
+      connect();
+    }
+    
+    return () => {
+      // Optionally disconnect when leaving
+      // disconnect();
+    };
+  }, [connect, isConnected]);
+
+  if (!isConnected) {
+    return (
+      <div className="bg-white/5 rounded-xl p-8 border border-white/10 text-center">
+        <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4 animate-pulse" />
+        <h3 className="text-xl font-semibold mb-2">Connecting to Node...</h3>
+        <p className="text-gray-400">
+          Establishing secure connection for file management
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="bg-white/5 rounded-xl p-8 border border-white/10 text-center">
-      <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-      <h3 className="text-xl font-semibold mb-2">File Manager</h3>
-      <p className="text-gray-400 mb-6">
-        Open Remote Management to access the file manager
-      </p>
-      <button 
-        onClick={onOpenRemote}
-        className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all"
-      >
-        Open Remote Management
-      </button>
+    <div className="bg-white/5 rounded-xl border border-white/10 overflow-hidden">
+      <FileManager
+        nodeReference={node.code}
+        sessionId={null}
+        executeCommand={executeCommand}
+        uploadFile={uploadFile}
+      />
     </div>
   );
 }
@@ -786,10 +815,7 @@ export default function NodeDetailsPage({ params }) {
           )}
 
           {selectedTab === 'files' && (
-            <FileManagerPanel 
-              node={node} 
-              onOpenRemote={() => setShowRemoteManagement(true)} 
-            />
+            <FileManagerPanel node={node} />
           )}
 
           {selectedTab === 'terminal' && (
