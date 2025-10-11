@@ -191,8 +191,11 @@ function calculateHealthScore(node) {
  * Generate predictive insights based on trends
  */
 function generatePredictiveInsights(node) {
+  if (!node) return [];
+  
   const insights = [];
   
+  // Safely get performance metrics with defaults
   const memory = node.performance?.memory || 0;
   const cpu = node.performance?.cpu || 0;
   const disk = node.performance?.disk || 0;
@@ -278,15 +281,23 @@ export default function NodeDetailsPage({ params }) {
   });
 
   // Find the specific node
-  const node = nodes.find(n => 
-    n.code && n.code.toUpperCase() === code.toUpperCase()
-  );
+  const node = useMemo(() => {
+    return nodes.find(n => 
+      n.code && n.code.toUpperCase() === code.toUpperCase()
+    );
+  }, [nodes, code]);
 
-  // Calculate derived metrics
-  const nodeStatus = normalizeNodeStatus(node);
-  const isNodeOnline = isNodeReallyOnline(node);
-  const healthScore = useMemo(() => calculateHealthScore(node), [node]);
-  const predictiveInsights = useMemo(() => generatePredictiveInsights(node), [node]);
+  // Calculate derived metrics - with safety checks
+  const nodeStatus = useMemo(() => normalizeNodeStatus(node), [node]);
+  const isNodeOnline = useMemo(() => isNodeReallyOnline(node), [node]);
+  const healthScore = useMemo(() => {
+    if (!node) return 0;
+    return calculateHealthScore(node);
+  }, [node]);
+  const predictiveInsights = useMemo(() => {
+    if (!node) return [];
+    return generatePredictiveInsights(node);
+  }, [node]);
 
   // Wallet initialization check
   useEffect(() => {
