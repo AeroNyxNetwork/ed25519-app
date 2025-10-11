@@ -10,20 +10,6 @@
  * Main Functionality: Deep node monitoring, diagnostics, and management
  * Dependencies: useWallet, useAeroNyxWebSocket, RemoteManagement component
  *
- * Design Philosophy for Web3 VCs:
- * 1. Technical depth over vanity metrics
- * 2. Actionable intelligence, not passive monitoring
- * 3. Enterprise-grade infrastructure management
- * 4. Predictive analytics and operational insights
- * 
- * Key Features:
- * - Health Scoring System (0-100 based on real metrics)
- * - Predictive Analytics (resource trending)
- * - Diagnostic Tools (network tests, stress tests)
- * - Enhanced Resource Monitoring (temperature, SMART, etc)
- * - Event Timeline and Audit Logs
- * - Professional Remote Management
- *
  * Removed Features (v4.0.0):
  * - ALL earnings/revenue displays
  * - Monetization metrics
