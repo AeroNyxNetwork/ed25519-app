@@ -10,6 +10,12 @@
  * Main Functionality: Deep node monitoring, diagnostics, and management
  * Dependencies: useWallet, useAeroNyxWebSocket, RemoteManagement component
  *
+ * Design Philosophy for Web3 VCs:
+ * 1. Technical depth over vanity metrics
+ * 2. Actionable intelligence, not passive monitoring
+ * 3. Enterprise-grade infrastructure management
+ * 4. Predictive analytics and operational insights
+ * 
  * Key Features:
  * - Health Scoring System (0-100 based on real metrics)
  * - Predictive Analytics (resource trending)
@@ -57,6 +63,8 @@ import { useRouter } from 'next/navigation';
 import { useWallet } from '../../../../components/wallet/WalletProvider';
 import { useAeroNyxWebSocket } from '../../../../hooks/useAeroNyxWebSocket';
 import RemoteManagement from '../../../../components/nodes/RemoteManagement';
+import SystemInfo from '../../../../components/nodes/SystemInfo';
+import FileManager from '../../../../components/nodes/FileManager';
 import { motion, AnimatePresence } from 'framer-motion';
 import Link from 'next/link';
 import { 
@@ -258,6 +266,7 @@ export default function NodeDetailsPage({ params }) {
   const [loadingState, setLoadingState] = useState('initializing');
   const [errorDetails, setErrorDetails] = useState(null);
   const [selectedTab, setSelectedTab] = useState('overview');
+  const [remoteSession, setRemoteSession] = useState(null);
   const checkTimeoutRef = useRef(null);
   const retryCountRef = useRef(0);
   const maxRetries = 3;
@@ -513,11 +522,11 @@ export default function NodeDetailsPage({ params }) {
     return 'text-red-400';
   };
 
-  // Tabs configuration
+  // Tabs configuration - ONLY IMPLEMENTED FEATURES
   const tabs = [
     { id: 'overview', label: 'Overview', icon: BarChart3 },
-    { id: 'diagnostics', label: 'Diagnostics', icon: Activity },
-    { id: 'logs', label: 'Logs', icon: FileText },
+    { id: 'system', label: 'System Info', icon: Activity },
+    { id: 'files', label: 'File Manager', icon: FileText },
     { id: 'terminal', label: 'Terminal', icon: Terminal }
   ];
 
@@ -798,19 +807,19 @@ export default function NodeDetailsPage({ params }) {
             </div>
           )}
 
-          {/* Diagnostics Tab */}
-          {selectedTab === 'diagnostics' && (
-            <DiagnosticsPanel />
+          {/* System Info Tab */}
+          {selectedTab === 'system' && (
+            <SystemInfoPanel node={node} />
           )}
 
-          {/* Logs Tab */}
-          {selectedTab === 'logs' && (
-            <LogsPanel />
+          {/* File Manager Tab */}
+          {selectedTab === 'files' && (
+            <FileManagerPanel node={node} />
           )}
 
           {/* Terminal Tab */}
           {selectedTab === 'terminal' && (
-            <TerminalPanel isOnline={isNodeOnline} />
+            <TerminalPanel isOnline={isNodeOnline} onOpenRemote={() => setShowRemoteManagement(true)} />
           )}
         </div>
       </div>
