@@ -38,6 +38,7 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useWallet } from '../components/wallet/WalletProvider';
+import Logo from '../components/common/Logo';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Server, Shield, Zap, ArrowRight, Loader2 } from 'lucide-react';
 
@@ -83,9 +84,7 @@ export default function Home() {
       >
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="w-20 h-20 bg-gradient-to-br from-purple-600 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <Server className="w-10 h-10 text-white" />
-          </div>
+          <Logo className="w-20 h-20 mx-auto mb-4" />
           <h1 className="text-3xl font-bold text-white mb-2">
             AeroNyx Network
           </h1>
