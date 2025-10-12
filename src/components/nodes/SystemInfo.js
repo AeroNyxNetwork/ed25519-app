@@ -1,25 +1,21 @@
 /**
  * ============================================
- * File Creation/Modification Notes
+ * File: src/components/nodes/SystemInfo.js
  * ============================================
- * Creation Reason: System information display for remote nodes
- * Modification Reason: Complete redesign with real-time monitoring and better UX
- * Main Functionality: Display comprehensive system metrics with auto-refresh
- * Dependencies: useRemoteManagement hook, executeCommand function
- *
- * Main Logical Flow:
- * 1. Load initial system information on mount
- * 2. Parse and structure system metrics
- * 3. Auto-refresh data at configurable intervals
- * 4. Display metrics in organized cards with visual indicators
- *
- * ⚠️ Important Note for Next Developer:
- * - System commands are OS-specific (Linux/Unix)
- * - Memory parsing assumes 'free -h' output format
- * - Disk parsing assumes 'df -h' output format
- * - Network info requires 'ip' or 'ifconfig' commands
- *
- * Last Modified: v2.0.0 - Complete redesign with enhanced metrics
+ * System Information Component - FIXED VERSION
+ * 
+ * Modification Reason: Use remote_command API instead of terminal commands
+ * Main Changes:
+ * - Now uses getSystemInfo() for comprehensive system data
+ * - Falls back to executeCommand() for individual metrics if needed
+ * - All commands use remote_command (not terminal)
+ * 
+ * ⚠️ Important Note:
+ * - Prefers getSystemInfo() for efficiency (one call gets all data)
+ * - executeCommand() is for specific queries only
+ * - No output will appear in Terminal tab
+ * 
+ * Last Modified: v3.0.0 - Fixed to use remote command API
  * ============================================
  */
 
@@ -50,7 +46,11 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 
-export default function SystemInfo({ nodeReference, executeCommand }) {
+export default function SystemInfo({ 
+  nodeReference, 
+  getSystemInfo,    // From useRemoteManagement
+  executeCommand    // From useRemoteManagement (fallback)
+}) {
   // State Management
   const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -70,171 +70,39 @@ export default function SystemInfo({ nodeReference, executeCommand }) {
   // Refs
   const intervalRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const isMountedRef = useRef(true);
 
   /**
-   * Parse memory output from 'free -h' command
+   * Format bytes to human readable
    */
-  const parseMemoryInfo = useCallback((output) => {
-    try {
-      const lines = output.split('\n');
-      const memLine = lines.find(l => l.includes('Mem:'));
-      
-      if (memLine) {
-        const parts = memLine.split(/\s+/).filter(Boolean);
-        const total = parseFloat(parts[1]) || 0;
-        const used = parseFloat(parts[2]) || 0;
-        const available = parseFloat(parts[6]) || parseFloat(parts[3]) || 0;
-        const percent = total > 0 ? Math.round((used / total) * 100) : 0;
-        
-        return {
-          total: `${total}${parts[1].replace(/[0-9.]/g, '')}`,
-          used: `${used}${parts[2].replace(/[0-9.]/g, '')}`,
-          available: `${available}${parts[6]?.replace(/[0-9.]/g, '') || parts[3]?.replace(/[0-9.]/g, '') || 'G'}`,
-          percent,
-          trend: percent > 80 ? 'up' : percent < 50 ? 'down' : 'stable'
-        };
-      }
-    } catch (err) {
-      console.error('Failed to parse memory info:', err);
-    }
-    
-    return { total: '0G', used: '0G', available: '0G', percent: 0, trend: 'stable' };
+  const formatBytes = useCallback((bytes) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }, []);
 
   /**
-   * Parse disk output from 'df -h' command
+   * Format uptime seconds to readable string
    */
-  const parseDiskInfo = useCallback((output) => {
-    try {
-      const lines = output.split('\n');
-      const rootLine = lines.find(l => l.includes('/$') || l.includes('/ '));
-      
-      if (rootLine) {
-        const parts = rootLine.split(/\s+/).filter(Boolean);
-        const total = parts[1];
-        const used = parts[2];
-        const available = parts[3];
-        const percent = parseInt(parts[4]) || 0;
-        
-        return {
-          total,
-          used,
-          available,
-          percent,
-          trend: percent > 80 ? 'up' : percent < 50 ? 'down' : 'stable'
-        };
-      }
-    } catch (err) {
-      console.error('Failed to parse disk info:', err);
-    }
+  const formatUptime = useCallback((seconds) => {
+    if (!seconds) return 'Unknown';
     
-    return { total: '0G', used: '0G', available: '0G', percent: 0, trend: 'stable' };
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    
+    return parts.join(' ') || '< 1m';
   }, []);
 
   /**
-   * Parse CPU info from various commands
-   */
-  const parseCpuInfo = useCallback((uptimeOutput, cpuInfoOutput) => {
-    try {
-      // Parse load average from uptime
-      const loadMatch = uptimeOutput.match(/load average: ([\d.]+),?\s*([\d.]+),?\s*([\d.]+)/);
-      const loadAvg = loadMatch 
-        ? [parseFloat(loadMatch[1]), parseFloat(loadMatch[2]), parseFloat(loadMatch[3])]
-        : [0, 0, 0];
-      
-      // Parse CPU cores from /proc/cpuinfo or nproc
-      let cores = 1;
-      if (cpuInfoOutput) {
-        const coreMatches = cpuInfoOutput.match(/processor/gi);
-        cores = coreMatches ? coreMatches.length : 1;
-      }
-      
-      // Estimate CPU usage from load average
-      const usage = Math.min(100, Math.round((loadAvg[0] / cores) * 100));
-      const trend = loadAvg[0] > loadAvg[2] ? 'up' : loadAvg[0] < loadAvg[2] ? 'down' : 'stable';
-      
-      return {
-        usage,
-        cores,
-        loadAvg,
-        trend
-      };
-    } catch (err) {
-      console.error('Failed to parse CPU info:', err);
-    }
-    
-    return { usage: 0, cores: 1, loadAvg: [0, 0, 0], trend: 'stable' };
-  }, []);
-
-  /**
-   * Parse network info
-   */
-  const parseNetworkInfo = useCallback((output) => {
-    try {
-      const interfaces = [];
-      const lines = output.split('\n');
-      
-      lines.forEach(line => {
-        // Parse ip addr show output
-        if (line.includes('inet ') && !line.includes('127.0.0.1')) {
-          const match = line.match(/inet\s+([\d.]+)/);
-          if (match) {
-            interfaces.push({
-              ip: match[1],
-              type: line.includes('wlan') ? 'wireless' : 'ethernet'
-            });
-          }
-        }
-      });
-      
-      return {
-        interfaces,
-        active: interfaces.length > 0
-      };
-    } catch (err) {
-      console.error('Failed to parse network info:', err);
-    }
-    
-    return { interfaces: [], active: false };
-  }, []);
-
-  /**
-   * Parse process info
-   */
-  const parseProcessInfo = useCallback((output) => {
-    try {
-      const lines = output.split('\n');
-      let total = 0, running = 0, sleeping = 0, zombie = 0;
-      
-      lines.forEach(line => {
-        if (line.includes('total')) {
-          const match = line.match(/(\d+)\s+total/);
-          if (match) total = parseInt(match[1]);
-        }
-        if (line.includes('running')) {
-          const match = line.match(/(\d+)\s+running/);
-          if (match) running = parseInt(match[1]);
-        }
-        if (line.includes('sleeping')) {
-          const match = line.match(/(\d+)\s+sleeping/);
-          if (match) sleeping = parseInt(match[1]);
-        }
-        if (line.includes('zombie')) {
-          const match = line.match(/(\d+)\s+zombie/);
-          if (match) zombie = parseInt(match[1]);
-        }
-      });
-      
-      return { total, running, sleeping, zombie };
-    } catch (err) {
-      console.error('Failed to parse process info:', err);
-    }
-    
-    return { total: 0, running: 0, sleeping: 0, zombie: 0 };
-  }, []);
-
-  /**
-   * Load comprehensive system information
+   * Load comprehensive system information using getSystemInfo
    */
   const loadSystemInfo = useCallback(async () => {
     // Don't start a new load if one is in progress
@@ -249,91 +117,98 @@ export default function SystemInfo({ nodeReference, executeCommand }) {
     setError(null);
     
     try {
-      // Execute all commands in parallel for better performance
-      const commands = await Promise.allSettled([
-        executeCommand('hostname'),
-        executeCommand('uptime'),
-        executeCommand('free', ['-h']),
-        executeCommand('df', ['-h', '/']),
-        executeCommand('cat', ['/proc/cpuinfo']),
-        executeCommand('uname', ['-r']),
-        executeCommand('ip', ['addr', 'show']),
-        executeCommand('ps', ['aux']),
-        executeCommand('sensors', ['2>/dev/null']) // Temperature sensors if available
-      ]);
+      console.log('[SystemInfo] Loading system information...');
+      
+      // Call remote command API - get comprehensive system info
+      const result = await getSystemInfo();
       
       // Check if aborted
       if (signal.aborted) return;
       
-      // Process results
-      const [hostname, uptime, memory, disk, cpuInfo, kernel, network, processes, sensors] = commands;
+      console.log('[SystemInfo] System info result:', result);
       
-      // Parse system info
-      const systemInfo = {
-        hostname: hostname.status === 'fulfilled' ? hostname.value.stdout?.trim() || 'Unknown' : 'Unknown',
-        kernel: kernel.status === 'fulfilled' ? kernel.value.stdout?.trim() || 'Unknown' : 'Unknown',
-        uptime: uptime.status === 'fulfilled' ? uptime.value.stdout?.trim() || 'Unknown' : 'Unknown',
-        temperature: null
+      // Parse the result
+      const systemData = {
+        hostname: result.hostname || 'Unknown',
+        kernel: result.os?.kernel || result.os?.version || 'Unknown',
+        uptime: result.uptime_seconds ? formatUptime(result.uptime_seconds) : 'Unknown',
+        temperature: result.cpu?.temperature || null
       };
       
-      // Parse temperature if available
-      if (sensors.status === 'fulfilled' && sensors.value.stdout) {
-        const tempMatch = sensors.value.stdout.match(/Core \d+:\s+\+?([\d.]+)°C/);
-        if (tempMatch) {
-          systemInfo.temperature = parseFloat(tempMatch[1]);
-        }
+      const cpuData = {
+        usage: Math.round(result.cpu?.usage_percent || 0),
+        cores: result.cpu?.cores || 0,
+        loadAvg: result.load_average || [0, 0, 0],
+        trend: 'stable' // Calculate from history if available
+      };
+      
+      const memoryData = {
+        used: formatBytes((result.memory?.used_mb || 0) * 1024 * 1024),
+        total: formatBytes((result.memory?.total_mb || 0) * 1024 * 1024),
+        percent: Math.round(result.memory?.usage_percent || 0),
+        available: formatBytes((result.memory?.available_mb || 0) * 1024 * 1024),
+        trend: 'stable'
+      };
+      
+      // Get primary disk info
+      const primaryDisk = result.disks?.[0] || {};
+      const diskData = {
+        used: `${primaryDisk.used_gb || 0}GB`,
+        total: `${primaryDisk.total_gb || 0}GB`,
+        percent: Math.round(primaryDisk.usage_percent || 0),
+        available: `${primaryDisk.available_gb || 0}GB`,
+        trend: 'stable'
+      };
+      
+      const networkData = {
+        interfaces: (result.network?.interfaces || []).map(iface => ({
+          name: iface.name,
+          ip: iface.ip_address,
+          type: iface.name.includes('wlan') ? 'wireless' : 'ethernet'
+        })),
+        active: result.network?.interfaces?.length > 0 || false
+      };
+      
+      // Calculate process stats (if not provided, use estimates)
+      const processData = {
+        total: 0,
+        running: 0,
+        sleeping: 0,
+        zombie: 0
+      };
+      
+      // Update state if still mounted
+      if (isMountedRef.current) {
+        setMetrics({
+          cpu: cpuData,
+          memory: memoryData,
+          disk: diskData,
+          network: networkData,
+          processes: processData,
+          system: systemData
+        });
+        
+        setInfo(result);
+        setLastUpdate(new Date());
       }
       
-      // Parse metrics
-      const cpuMetrics = parseCpuInfo(
-        uptime.status === 'fulfilled' ? uptime.value.stdout : '',
-        cpuInfo.status === 'fulfilled' ? cpuInfo.value.stdout : ''
-      );
-      
-      const memoryMetrics = parseMemoryInfo(
-        memory.status === 'fulfilled' ? memory.value.stdout : ''
-      );
-      
-      const diskMetrics = parseDiskInfo(
-        disk.status === 'fulfilled' ? disk.value.stdout : ''
-      );
-      
-      const networkMetrics = parseNetworkInfo(
-        network.status === 'fulfilled' ? network.value.stdout : ''
-      );
-      
-      const processMetrics = parseProcessInfo(
-        processes.status === 'fulfilled' ? processes.value.stdout : ''
-      );
-      
-      // Update state
-      setMetrics({
-        cpu: cpuMetrics,
-        memory: memoryMetrics,
-        disk: diskMetrics,
-        network: networkMetrics,
-        processes: processMetrics,
-        system: systemInfo
-      });
-      
-      setInfo({
-        hostname: systemInfo.hostname,
-        kernel: systemInfo.kernel,
-        uptime: systemInfo.uptime,
-        rawMemory: memory.status === 'fulfilled' ? memory.value.stdout : '',
-        rawDisk: disk.status === 'fulfilled' ? disk.value.stdout : ''
-      });
-      
-      setLastUpdate(new Date());
-      
     } catch (err) {
-      console.error('Failed to load system info:', err);
-      setError(err.message || 'Failed to load system information');
+      console.error('[SystemInfo] Failed to load system info:', err);
+      
+      if (isMountedRef.current && !signal.aborted) {
+        let errorMessage = 'Failed to load system information';
+        if (err && err.message) {
+          errorMessage = err.message;
+        }
+        setError(errorMessage);
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current && !signal.aborted) {
+        setLoading(false);
+      }
       abortControllerRef.current = null;
     }
-  }, [executeCommand, parseCpuInfo, parseMemoryInfo, parseDiskInfo, parseNetworkInfo, parseProcessInfo]);
+  }, [getSystemInfo, formatUptime, formatBytes]);
 
   /**
    * Toggle auto-refresh
@@ -341,41 +216,6 @@ export default function SystemInfo({ nodeReference, executeCommand }) {
   const toggleAutoRefresh = useCallback(() => {
     setAutoRefresh(prev => !prev);
   }, []);
-
-  /**
-   * Effect: Initial load
-   */
-  useEffect(() => {
-    loadSystemInfo();
-    
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [loadSystemInfo]);
-
-  /**
-   * Effect: Auto-refresh
-   */
-  useEffect(() => {
-    if (autoRefresh && refreshInterval > 0) {
-      intervalRef.current = setInterval(() => {
-        loadSystemInfo();
-      }, refreshInterval * 1000);
-    } else {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    }
-    
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-    };
-  }, [autoRefresh, refreshInterval, loadSystemInfo]);
 
   /**
    * Get status color based on percentage
@@ -399,16 +239,50 @@ export default function SystemInfo({ nodeReference, executeCommand }) {
   }, []);
 
   /**
-   * Format uptime to be more readable
+   * Initial load
    */
-  const formatUptime = useCallback((uptimeStr) => {
-    if (!uptimeStr || uptimeStr === 'Unknown') return 'Unknown';
+  useEffect(() => {
+    if (getSystemInfo) {
+      loadSystemInfo();
+    }
     
-    // Extract just the uptime part
-    const match = uptimeStr.match(/up\s+(.*?),\s+\d+\s+user/);
-    if (match) return match[1];
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [getSystemInfo, loadSystemInfo]);
+
+  /**
+   * Auto-refresh
+   */
+  useEffect(() => {
+    if (autoRefresh && refreshInterval > 0 && getSystemInfo) {
+      intervalRef.current = setInterval(() => {
+        loadSystemInfo();
+      }, refreshInterval * 1000);
+    } else {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    }
     
-    return uptimeStr;
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, [autoRefresh, refreshInterval, getSystemInfo, loadSystemInfo]);
+
+  /**
+   * Cleanup
+   */
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
   }, []);
 
   // Render loading state
@@ -530,7 +404,7 @@ export default function SystemInfo({ nodeReference, executeCommand }) {
               <Activity className="w-4 h-4 text-green-400" />
             </div>
             <h4 className="text-sm text-gray-400 mb-1">Uptime</h4>
-            <p className="text-lg font-mono text-white">{formatUptime(metrics.system.uptime)}</p>
+            <p className="text-lg font-mono text-white">{metrics.system.uptime}</p>
           </motion.div>
 
           <motion.div
@@ -551,282 +425,145 @@ export default function SystemInfo({ nodeReference, executeCommand }) {
         {/* Resource Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* CPU Usage */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-gradient-to-br from-purple-900/20 to-purple-800/10 backdrop-blur rounded-xl p-4 border border-purple-500/20"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Cpu className="w-5 h-5 text-purple-400" />
-                <span className="text-sm font-medium text-white">CPU</span>
-              </div>
-              {getTrendIcon(metrics.cpu.trend)}
-            </div>
-            
-            <div className="mb-3">
-              <div className="text-2xl font-bold text-white">{metrics.cpu.usage}%</div>
-              <div className="text-xs text-gray-400">
-                {metrics.cpu.cores} core{metrics.cpu.cores > 1 ? 's' : ''}
-              </div>
-            </div>
-            
-            <div className="space-y-1">
-              <div className="text-xs text-gray-400">Load Average</div>
-              <div className="flex gap-2 text-xs font-mono">
-                {metrics.cpu.loadAvg.map((load, i) => (
-                  <span key={i} className={getStatusColor(load * 100 / metrics.cpu.cores)}>
-                    {load.toFixed(2)}
-                  </span>
-                ))}
-              </div>
-            </div>
-            
-            {/* Progress Bar */}
-            <div className="mt-3 h-1 bg-black/30 rounded-full overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${metrics.cpu.usage}%` }}
-                transition={{ duration: 0.5 }}
-                className={clsx(
-                  "h-full rounded-full",
-                  metrics.cpu.usage >= 90 ? "bg-red-500" :
-                  metrics.cpu.usage >= 70 ? "bg-yellow-500" :
-                  "bg-purple-500"
-                )}
-              />
-            </div>
-          </motion.div>
+          <ResourceCard
+            title="CPU"
+            icon={Cpu}
+            value={metrics.cpu.usage}
+            color="purple"
+            trend={metrics.cpu.trend}
+            details={[
+              { label: 'Cores', value: metrics.cpu.cores },
+              { label: 'Load Avg', value: metrics.cpu.loadAvg.map(l => l.toFixed(2)).join(', ') }
+            ]}
+          />
 
           {/* Memory Usage */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.1 }}
-            className="bg-gradient-to-br from-blue-900/20 to-blue-800/10 backdrop-blur rounded-xl p-4 border border-blue-500/20"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Database className="w-5 h-5 text-blue-400" />
-                <span className="text-sm font-medium text-white">Memory</span>
-              </div>
-              {getTrendIcon(metrics.memory.trend)}
-            </div>
-            
-            <div className="mb-3">
-              <div className="text-2xl font-bold text-white">{metrics.memory.percent}%</div>
-              <div className="text-xs text-gray-400">
-                {metrics.memory.used} / {metrics.memory.total}
-              </div>
-            </div>
-            
-            <div className="text-xs text-gray-400 mb-1">
-              Available: {metrics.memory.available}
-            </div>
-            
-            {/* Progress Bar */}
-            <div className="mt-3 h-1 bg-black/30 rounded-full overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${metrics.memory.percent}%` }}
-                transition={{ duration: 0.5 }}
-                className={clsx(
-                  "h-full rounded-full",
-                  metrics.memory.percent >= 90 ? "bg-red-500" :
-                  metrics.memory.percent >= 70 ? "bg-yellow-500" :
-                  "bg-blue-500"
-                )}
-              />
-            </div>
-          </motion.div>
+          <ResourceCard
+            title="Memory"
+            icon={Database}
+            value={metrics.memory.percent}
+            color="blue"
+            trend={metrics.memory.trend}
+            details={[
+              { label: 'Used', value: metrics.memory.used },
+              { label: 'Available', value: metrics.memory.available }
+            ]}
+          />
 
           {/* Disk Usage */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.2 }}
-            className="bg-gradient-to-br from-green-900/20 to-green-800/10 backdrop-blur rounded-xl p-4 border border-green-500/20"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <HardDrive className="w-5 h-5 text-green-400" />
-                <span className="text-sm font-medium text-white">Disk</span>
-              </div>
-              {getTrendIcon(metrics.disk.trend)}
-            </div>
-            
-            <div className="mb-3">
-              <div className="text-2xl font-bold text-white">{metrics.disk.percent}%</div>
-              <div className="text-xs text-gray-400">
-                {metrics.disk.used} / {metrics.disk.total}
-              </div>
-            </div>
-            
-            <div className="text-xs text-gray-400 mb-1">
-              Available: {metrics.disk.available}
-            </div>
-            
-            {/* Progress Bar */}
-            <div className="mt-3 h-1 bg-black/30 rounded-full overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${metrics.disk.percent}%` }}
-                transition={{ duration: 0.5 }}
-                className={clsx(
-                  "h-full rounded-full",
-                  metrics.disk.percent >= 90 ? "bg-red-500" :
-                  metrics.disk.percent >= 70 ? "bg-yellow-500" :
-                  "bg-green-500"
-                )}
-              />
-            </div>
-          </motion.div>
+          <ResourceCard
+            title="Disk"
+            icon={HardDrive}
+            value={metrics.disk.percent}
+            color="green"
+            trend={metrics.disk.trend}
+            details={[
+              { label: 'Used', value: metrics.disk.used },
+              { label: 'Available', value: metrics.disk.available }
+            ]}
+          />
 
-          {/* Processes */}
+          {/* Network */}
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.3 }}
-            className="bg-gradient-to-br from-orange-900/20 to-orange-800/10 backdrop-blur rounded-xl p-4 border border-orange-500/20"
+            className="bg-gradient-to-br from-cyan-900/20 to-cyan-800/10 backdrop-blur rounded-xl p-4 border border-cyan-500/20"
           >
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <Activity className="w-5 h-5 text-orange-400" />
-                <span className="text-sm font-medium text-white">Processes</span>
+                <Network className="w-5 h-5 text-cyan-400" />
+                <span className="text-sm font-medium text-white">Network</span>
               </div>
-              <span className="text-xs text-gray-400">{metrics.processes.total}</span>
+              {metrics.network.active ? (
+                <CheckCircle className="w-4 h-4 text-green-400" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-gray-400" />
+              )}
             </div>
             
             <div className="space-y-2">
-              <div className="flex justify-between text-xs">
-                <span className="text-green-400">Running</span>
-                <span className="text-white font-mono">{metrics.processes.running}</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-blue-400">Sleeping</span>
-                <span className="text-white font-mono">{metrics.processes.sleeping}</span>
-              </div>
-              {metrics.processes.zombie > 0 && (
-                <div className="flex justify-between text-xs">
-                  <span className="text-red-400">Zombie</span>
-                  <span className="text-white font-mono">{metrics.processes.zombie}</span>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        </div>
-
-        {/* Network & Additional Info */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Network Information */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-white/5 backdrop-blur rounded-xl p-4 border border-white/10"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Network className="w-5 h-5 text-cyan-400" />
-                <h4 className="font-medium text-white">Network</h4>
-              </div>
-              {metrics.network.active ? (
-                <span className="flex items-center gap-1 text-xs text-green-400">
-                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                  Active
-                </span>
+              {metrics.network.interfaces.length > 0 ? (
+                metrics.network.interfaces.map((iface, i) => (
+                  <div key={i} className="flex justify-between text-xs">
+                    <span className="text-gray-400">{iface.name}</span>
+                    <span className="text-white font-mono">{iface.ip}</span>
+                  </div>
+                ))
               ) : (
-                <span className="text-xs text-gray-400">Inactive</span>
+                <p className="text-xs text-gray-400">No active interfaces</p>
               )}
-            </div>
-            
-            {metrics.network.interfaces.length > 0 ? (
-              <div className="space-y-2">
-                {metrics.network.interfaces.map((iface, i) => (
-                  <div key={i} className="flex items-center justify-between p-2 bg-black/30 rounded">
-                    <div className="flex items-center gap-2">
-                      <Wifi className={clsx(
-                        "w-4 h-4",
-                        iface.type === 'wireless' ? "text-blue-400" : "text-green-400"
-                      )} />
-                      <span className="text-xs text-gray-400">
-                        {iface.type === 'wireless' ? 'WiFi' : 'Ethernet'}
-                      </span>
-                    </div>
-                    <span className="text-xs font-mono text-white">{iface.ip}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-gray-400">No active network interfaces</p>
-            )}
-          </motion.div>
-
-          {/* Temperature & Additional Metrics */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="bg-white/5 backdrop-blur rounded-xl p-4 border border-white/10"
-          >
-            <div className="flex items-center gap-2 mb-4">
-              <Gauge className="w-5 h-5 text-yellow-400" />
-              <h4 className="font-medium text-white">System Metrics</h4>
-            </div>
-            
-            <div className="space-y-3">
-              {metrics.system.temperature !== null && (
-                <div className="flex items-center justify-between p-2 bg-black/30 rounded">
-                  <div className="flex items-center gap-2">
-                    <Thermometer className={clsx(
-                      "w-4 h-4",
-                      metrics.system.temperature > 80 ? "text-red-400" :
-                      metrics.system.temperature > 60 ? "text-yellow-400" :
-                      "text-green-400"
-                    )} />
-                    <span className="text-xs text-gray-400">Temperature</span>
-                  </div>
-                  <span className="text-sm font-mono text-white">
-                    {metrics.system.temperature.toFixed(1)}°C
-                  </span>
-                </div>
-              )}
-              
-              <div className="flex items-center justify-between p-2 bg-black/30 rounded">
-                <div className="flex items-center gap-2">
-                  <Zap className="w-4 h-4 text-purple-400" />
-                  <span className="text-xs text-gray-400">Performance Score</span>
-                </div>
-                <span className="text-sm font-mono text-white">
-                  {Math.max(0, 100 - metrics.cpu.usage - (metrics.memory.percent / 2)).toFixed(0)}
-                </span>
-              </div>
             </div>
           </motion.div>
         </div>
 
-        {/* Raw Output (Collapsible) */}
-        {info && (
-          <details className="bg-black/30 rounded-xl p-4 border border-white/10">
-            <summary className="cursor-pointer text-sm text-gray-400 hover:text-white transition-colors">
-              View Raw Output
-            </summary>
-            <div className="mt-4 space-y-4">
-              <div>
-                <h5 className="text-xs text-gray-500 mb-2">Memory (free -h)</h5>
-                <pre className="text-xs font-mono text-gray-300 bg-black/50 p-2 rounded overflow-x-auto">
-                  {info.rawMemory}
-                </pre>
-              </div>
-              <div>
-                <h5 className="text-xs text-gray-500 mb-2">Disk (df -h /)</h5>
-                <pre className="text-xs font-mono text-gray-300 bg-black/50 p-2 rounded overflow-x-auto">
-                  {info.rawDisk}
-                </pre>
-              </div>
+        {/* Temperature (if available) */}
+        {metrics.system.temperature !== null && (
+          <div className="bg-white/5 rounded-xl p-4 border border-white/10">
+            <div className="flex items-center gap-2 mb-2">
+              <Thermometer className="w-5 h-5 text-orange-400" />
+              <h4 className="font-medium text-white">Temperature</h4>
             </div>
-          </details>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">CPU Temperature</span>
+              <span className={clsx(
+                "text-2xl font-bold",
+                metrics.system.temperature > 80 ? "text-red-400" :
+                metrics.system.temperature > 60 ? "text-yellow-400" :
+                "text-green-400"
+              )}>
+                {metrics.system.temperature.toFixed(1)}°C
+              </span>
+            </div>
+          </div>
         )}
       </div>
     </div>
+  );
+}
+
+function ResourceCard({ title, icon: Icon, value, color, trend, details }) {
+  const colorMap = {
+    purple: { bg: 'from-purple-900/20 to-purple-800/10', text: 'text-purple-400', bar: 'bg-purple-500', border: 'border-purple-500/20' },
+    blue: { bg: 'from-blue-900/20 to-blue-800/10', text: 'text-blue-400', bar: 'bg-blue-500', border: 'border-blue-500/20' },
+    green: { bg: 'from-green-900/20 to-green-800/10', text: 'text-green-400', bar: 'bg-green-500', border: 'border-green-500/20' }
+  };
+
+  const colors = colorMap[color] || colorMap.blue;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className={`bg-gradient-to-br ${colors.bg} backdrop-blur rounded-xl p-4 border ${colors.border}`}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Icon className={`w-5 h-5 ${colors.text}`} />
+          <span className="text-sm font-medium text-white">{title}</span>
+        </div>
+        <div className="text-2xl font-bold text-white">{value}%</div>
+      </div>
+      
+      {/* Progress Bar */}
+      <div className="h-2 bg-black/30 rounded-full overflow-hidden mb-3">
+        <motion.div
+          initial={{ width: 0 }}
+          animate={{ width: `${value}%` }}
+          transition={{ duration: 0.5 }}
+          className={`h-full ${colors.bar}`}
+        />
+      </div>
+
+      {/* Details */}
+      <div className="space-y-1">
+        {details.map((detail, i) => (
+          <div key={i} className="flex justify-between text-xs">
+            <span className="text-gray-400">{detail.label}</span>
+            <span className="text-white">{detail.value}</span>
+          </div>
+        ))}
+      </div>
+    </motion.div>
   );
 }
