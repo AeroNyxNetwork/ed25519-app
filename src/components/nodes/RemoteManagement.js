@@ -2,26 +2,22 @@
  * ============================================
  * File: src/components/nodes/RemoteManagement.js
  * ============================================
- * Remote Management Component with Centralized JWT Authentication
+ * Remote Management Component with Default Tab Support
  * 
- * Creation Reason: Provide terminal interface for remote nodes
- * Modification Reason: Fix component unmounting during initialization
- * Main Functionality: Terminal UI with stable initialization
- * Dependencies: TerminalUI, useRemoteManagement hook, remoteAuthService
+ * Modification Reason: Add support for opening specific tab from external trigger
+ * Main Functionality: Multi-tab remote management with tab navigation
  * 
  * Main Logical Flow:
- * 1. Get signature from wallet (via useGlobalSignature)
- * 2. Authenticate via RemoteAuthService
- * 3. Initialize terminal session ONCE with proper cleanup
- * 4. Handle terminal I/O
+ * 1. Accept defaultTab prop to set initial active tab
+ * 2. Authenticate and establish connection
+ * 3. Display selected tab content
  * 
- * ⚠️ Important Notes:
- * - CRITICAL FIX: Prevent duplicate initialization and premature cleanup
- * - Use abort controller for cleanup
- * - Track initialization state properly
- * - Terminal output comes through WebSocket messages
+ * ⚠️ Important Note:
+ * - defaultTab prop allows external components to specify which tab to open
+ * - Maintains all existing functionality
+ * - No breaking changes to existing usage
  * 
- * Last Modified: v5.0.0 - Fixed initialization and unmounting issues
+ * Last Modified: v5.1.0 - Added defaultTab support
  * ============================================
  */
 
@@ -47,7 +43,9 @@ import {
   Trash2,
   Key,
   Shield,
-  Clock
+  Clock,
+  Folder,
+  Monitor
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -62,7 +60,16 @@ import remoteAuthService from '../../services/RemoteAuthService';
 import webSocketService from '../../services/WebSocketService';
 import { useGlobalSignature } from '../../hooks/useGlobalSignature';
 
-export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
+// Import other panels
+import FileManager from './FileManager';
+import SystemInfo from './SystemInfo';
+
+export default function RemoteManagement({ 
+  nodeReference, 
+  isOpen, 
+  onClose,
+  defaultTab = 'terminal' // NEW: Support default tab
+}) {
   // ==================== Authentication State ====================
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [authError, setAuthError] = useState(null);
@@ -94,7 +101,8 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     executeCommand,
     reconnectTerminal,
     tokenExpiry,
-    nodes
+    nodes,
+    uploadFile
   } = useRemoteManagement(nodeReference);
   
   // Use hook's determination of node status
@@ -109,6 +117,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   
   // Track if terminal UI has been initialized
   const [terminalUIReady, setTerminalUIReady] = useState(false);
+  
+  // NEW: Active tab state with default
+  const [activeTab, setActiveTab] = useState(defaultTab);
 
   // Refs
   const terminalRef = useRef(null);
@@ -119,12 +130,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
   const messageListenerRef = useRef(null);
   const lastOutputRef = useRef('');
   
-  // CRITICAL FIX: Track initialization state properly
   const initializingRef = useRef(false);
   const initializedRef = useRef(false);
   const abortControllerRef = useRef(null);
   
-  // CRITICAL FIX: Use ref to store current terminal state to avoid closure issues
   const terminalStateRef = useRef({
     session: null,
     ready: false,
@@ -145,14 +154,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       localReady: localTerminalReady,
       uiReady: terminalUIReady
     };
-    console.log('[RemoteManagement] Terminal state ref updated:', terminalStateRef.current);
   }, [terminalSession, hookTerminalReady, localTerminalReady, terminalUIReady, terminalReady]);
 
   // ==================== Authentication ====================
   
-  /**
-   * Perform JWT authentication via centralized service
-   */
   const performAuthentication = useCallback(async () => {
     if (remoteAuthService.isAuthenticated(nodeReference)) {
       console.log('[RemoteManagement] Already authenticated for node:', nodeReference);
@@ -218,11 +223,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // ==================== Initialization ====================
   
-  /**
-   * Initialize terminal after authentication - FIXED VERSION
-   */
   const initializeTerminalWithAuth = useCallback(async () => {
-    // Prevent duplicate initialization
     if (initializingRef.current || initializedRef.current) {
       console.log('[RemoteManagement] Already initializing or initialized');
       return null;
@@ -235,42 +236,35 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     
     initializingRef.current = true;
     
-    // Create abort controller for this initialization
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
     
     try {
       console.log('[RemoteManagement] Initializing terminal with auth check');
       
-      // Check if aborted
       if (signal.aborted) {
         console.log('[RemoteManagement] Initialization aborted');
         return null;
       }
       
-      // Step 1: Ensure authenticated
       const authSuccess = await performAuthentication();
       if (!authSuccess) {
         console.log('[RemoteManagement] Authentication failed, cannot initialize terminal');
         return null;
       }
       
-      // Check if aborted
       if (signal.aborted) {
         console.log('[RemoteManagement] Initialization aborted after auth');
         return null;
       }
       
-      // Step 2: Wait for auth to propagate
       await new Promise(resolve => setTimeout(resolve, 500));
       
-      // Check if aborted
       if (signal.aborted) {
         console.log('[RemoteManagement] Initialization aborted after wait');
         return null;
       }
       
-      // Step 3: Initialize terminal
       const result = await initializeTerminal();
       
       if (result && result.sessionId && !signal.aborted) {
@@ -288,7 +282,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       console.error('[RemoteManagement] Terminal initialization failed:', error);
       setAuthError(error.message);
       
-      // Retry logic
       if (initRetryCount < 5 && isMountedRef.current && !signal.aborted) {
         setInitRetryCount(prev => prev + 1);
         initTimeoutRef.current = setTimeout(() => {
@@ -307,16 +300,13 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // ==================== Effects ====================
   
-  // Initialize when modal opens - FIXED VERSION
   useEffect(() => {
     if (!isOpen) return;
     
-    // Only initialize once per modal open
     if (!initializedRef.current && !initializingRef.current) {
       console.log('[RemoteManagement] Modal opened, starting initialization');
       
       const init = async () => {
-        // Check prerequisites
         if (!isNodeOnline) {
           console.log('[RemoteManagement] Node is offline');
           setAuthError('Node is offline');
@@ -336,11 +326,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
           return;
         }
         
-        // Initialize terminal with authentication
         await initializeTerminalWithAuth();
       };
       
-      // Delay initialization slightly to ensure component is stable
       initTimeoutRef.current = setTimeout(() => {
         if (isMountedRef.current && !initializedRef.current) {
           init();
@@ -348,9 +336,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       }, 100);
     }
     
-    // Cleanup function - only run when modal is closing
     return () => {
-      // Clear pending timeouts
       if (initTimeoutRef.current) {
         clearTimeout(initTimeoutRef.current);
         initTimeoutRef.current = null;
@@ -360,11 +346,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         authTimeoutRef.current = null;
       }
     };
-  }, [isOpen]); // Simplified dependencies to prevent re-runs
+  }, [isOpen]);
 
   // ==================== WebSocket Message Handling ====================
   
-  // Listen for terminal output from WebSocket
   useEffect(() => {
     if (!isOpen || !terminalSession) return;
 
@@ -374,7 +359,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       console.log('[RemoteManagement] Received terminal output:', message.data?.length || 0, 'bytes');
       
       if (message.data) {
-        // Check if this is duplicate output
         if (lastOutputRef.current === message.data) {
           console.log('[RemoteManagement] Skipping duplicate output');
           return;
@@ -389,7 +373,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             outputBufferRef.current += message.data;
           }
         } else {
-          // Buffer output if terminal UI isn't ready
           outputBufferRef.current += message.data;
         }
       }
@@ -404,7 +387,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
         terminalRef.current.write('\r\n\x1b[31m● Error: ' + (message.error || message.message) + '\x1b[0m\r\n');
       }
       
-      // Clear authentication on certain errors
       if (message.code === 'INVALID_JWT' || message.code === 'AUTH_FAILED') {
         remoteAuthService.clearToken(nodeReference);
       }
@@ -423,12 +405,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       setTerminalUIReady(false);
     };
 
-    // Use WebSocket service event emitter
     webSocketService.on('terminalOutput', handleTerminalOutput);
     webSocketService.on('terminalError', handleTerminalError);
     webSocketService.on('terminalClosed', handleTerminalClosed);
 
-    // Also listen to raw WebSocket for compatibility
     const handleRawMessage = (event) => {
       try {
         const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
@@ -464,22 +444,18 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
   // ==================== Terminal Handlers ====================
   
-  // Handle terminal UI ready
   const handleTerminalUIReady = useCallback(() => {
     console.log('[RemoteManagement] Terminal UI is ready');
     setTerminalUIReady(true);
     
-    // Get current state from ref
     const currentState = terminalStateRef.current;
     
-    // Write welcome message when UI is ready and we have a session
     if (currentState.session && terminalRef.current) {
       terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
       terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
       terminalRef.current.write('\x1b[90mSession: ' + currentState.session + '\x1b[0m\r\n');
       terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
       
-      // Flush any buffered output
       if (outputBufferRef.current) {
         try {
           terminalRef.current.write(outputBufferRef.current);
@@ -491,9 +467,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     }
   }, [nodeReference]);
 
-  // Handle terminal input - Fixed to avoid closure issues
   const handleTerminalInput = useCallback((data) => {
-    // Use ref to get current state instead of closure values
     const currentState = terminalStateRef.current;
     
     console.log('[RemoteManagement] handleTerminalInput called');
@@ -506,11 +480,10 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
       console.warn('[RemoteManagement] Cannot send input - terminal not ready');
       console.log('[RemoteManagement] Debug - session:', currentState.session, 'hookReady:', currentState.hookReady);
     }
-  }, [sendTerminalInput]); // Only depend on sendTerminalInput
+  }, [sendTerminalInput]);
 
   // ==================== Terminal Actions ====================
   
-  // Copy terminal content
   const copyTerminalContent = useCallback(() => {
     if (terminalRef.current) {
       const selection = terminalRef.current.getSelection();
@@ -523,7 +496,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     }
   }, []);
 
-  // Clear terminal
   const clearTerminal = useCallback(() => {
     if (terminalRef.current) {
       terminalRef.current.clear();
@@ -531,7 +503,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     }
   }, []);
 
-  // Reset terminal
   const resetTerminal = useCallback(() => {
     if (terminalRef.current) {
       terminalRef.current.reset();
@@ -539,11 +510,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     }
   }, []);
 
-  // Retry connection
   const handleRetryConnection = useCallback(async () => {
     console.log('[RemoteManagement] Retrying connection');
     
-    // Reset state
     setInitRetryCount(0);
     setAuthRetryCount(0);
     setLocalTerminalReady(false);
@@ -554,18 +523,14 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     initializedRef.current = false;
     initializingRef.current = false;
     
-    // Clear auth token for this node
     remoteAuthService.clearToken(nodeReference);
     
-    // Close any existing terminal session
     if (terminalSession) {
       closeTerminal();
     }
     
-    // Wait a moment
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    // Reinitialize
     await initializeTerminalWithAuth();
   }, [nodeReference, terminalSession, closeTerminal, initializeTerminalWithAuth]);
 
@@ -582,7 +547,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     { label: 'Clear Screen', command: 'clear', icon: Trash2 }
   ];
 
-  // Execute quick command
   const executeQuickCommand = useCallback((command) => {
     if (terminalSession && hookTerminalReady) {
       const commandWithNewline = command.endsWith('\n') ? command : `${command}\n`;
@@ -624,7 +588,6 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     return () => {
       isMountedRef.current = false;
       
-      // Abort any pending initialization
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
         abortControllerRef.current = null;
@@ -632,44 +595,42 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
     };
   }, []);
 
-  // Cleanup on close - FIXED VERSION to prevent premature cleanup
   useEffect(() => {
-    // Only cleanup when modal is truly closed AND we're intentionally closing
     if (!isOpen && initializedRef.current) {
       console.log('[RemoteManagement] Modal closed, session will persist until explicitly closed');
       
-      // Don't automatically close the terminal here
-      // Let the user or the parent component decide when to close it
-      
-      // Just reset UI state
       setLocalTerminalReady(false);
       setTerminalUIReady(false);
       outputBufferRef.current = '';
       lastOutputRef.current = '';
     }
-  }, [isOpen]); // Only depend on isOpen
+  }, [isOpen]);
   
-  // Add explicit cleanup only on unmount
   useEffect(() => {
     return () => {
-      // Only close if component is truly being destroyed
       if (!isMountedRef.current) return;
       
       console.log('[RemoteManagement] Component unmounting, checking if should close terminal');
       
-      // Only close if modal is also closed
       if (!isOpen && terminalSession) {
         console.log('[RemoteManagement] Unmounting with closed modal, closing terminal');
         closeTerminal();
       }
     };
-  }, []); // Empty deps - only on unmount
+  }, []);
 
   // ==================== Render ====================
   
   if (!isOpen) return null;
 
   const displayError = authError || hookError || signatureError;
+
+  // Define tabs
+  const tabs = [
+    { id: 'terminal', label: 'Terminal', icon: TerminalIcon },
+    { id: 'files', label: 'File Manager', icon: Folder },
+    { id: 'system', label: 'System Info', icon: Monitor }
+  ];
 
   return (
     <AnimatePresence>
@@ -698,7 +659,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
                 <TerminalIcon className="w-4 h-4 text-white" />
               </div>
               <div>
-                <h2 className="text-sm font-semibold text-white">Remote Terminal</h2>
+                <h2 className="text-sm font-semibold text-white">Remote Management</h2>
                 <p className="text-xs text-gray-400">Node: {nodeReference}</p>
               </div>
               
@@ -757,45 +718,53 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
 
             {/* Actions */}
             <div className="flex items-center gap-2">
-              {/* Quick Commands */}
-              <button
-                onClick={() => setShowCommandPalette(!showCommandPalette)}
-                className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
-                title="Quick Commands (Ctrl+K)"
-              >
-                <Command className="w-4 h-4 text-gray-400" />
-              </button>
+              {/* Quick Commands (only for terminal tab) */}
+              {activeTab === 'terminal' && (
+                <button
+                  onClick={() => setShowCommandPalette(!showCommandPalette)}
+                  className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                  title="Quick Commands (Ctrl+K)"
+                >
+                  <Command className="w-4 h-4 text-gray-400" />
+                </button>
+              )}
 
-              {/* Copy */}
-              <button
-                onClick={copyTerminalContent}
-                className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
-                title="Copy Selection"
-              >
-                {copied ? (
-                  <Check className="w-4 h-4 text-green-400" />
-                ) : (
-                  <Copy className="w-4 h-4 text-gray-400" />
-                )}
-              </button>
+              {/* Copy (only for terminal tab) */}
+              {activeTab === 'terminal' && (
+                <button
+                  onClick={copyTerminalContent}
+                  className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                  title="Copy Selection"
+                >
+                  {copied ? (
+                    <Check className="w-4 h-4 text-green-400" />
+                  ) : (
+                    <Copy className="w-4 h-4 text-gray-400" />
+                  )}
+                </button>
+              )}
 
-              {/* Clear */}
-              <button
-                onClick={clearTerminal}
-                className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
-                title="Clear Terminal"
-              >
-                <Trash2 className="w-4 h-4 text-gray-400" />
-              </button>
+              {/* Clear (only for terminal tab) */}
+              {activeTab === 'terminal' && (
+                <button
+                  onClick={clearTerminal}
+                  className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                  title="Clear Terminal"
+                >
+                  <Trash2 className="w-4 h-4 text-gray-400" />
+                </button>
+              )}
 
-              {/* Reset */}
-              <button
-                onClick={resetTerminal}
-                className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
-                title="Reset Terminal"
-              >
-                <RefreshCw className="w-4 h-4 text-gray-400" />
-              </button>
+              {/* Reset (only for terminal tab) */}
+              {activeTab === 'terminal' && (
+                <button
+                  onClick={resetTerminal}
+                  className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                  title="Reset Terminal"
+                >
+                  <RefreshCw className="w-4 h-4 text-gray-400" />
+                </button>
+              )}
 
               <div className="w-px h-6 bg-white/10" />
 
@@ -823,9 +792,9 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             </div>
           </div>
 
-          {/* Quick Commands Palette */}
+          {/* Quick Commands Palette (only for terminal) */}
           <AnimatePresence>
-            {showCommandPalette && (
+            {showCommandPalette && activeTab === 'terminal' && (
               <motion.div
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: 'auto', opacity: 1 }}
@@ -857,10 +826,32 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             )}
           </AnimatePresence>
 
+          {/* Tabs */}
+          <div className="flex border-b border-white/10 bg-black/20">
+            {tabs.map(tab => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={clsx(
+                    "flex items-center gap-2 px-6 py-3 transition-all",
+                    activeTab === tab.id
+                      ? "bg-white/10 text-white border-b-2 border-purple-500"
+                      : "text-gray-400 hover:text-white hover:bg-white/5"
+                  )}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span className="text-sm font-medium">{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
           {/* Terminal Content */}
           <div className="flex-1 relative bg-black">
             {/* Error State */}
-            {displayError && (
+            {displayError && activeTab === 'terminal' && (
               <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="text-center p-6">
                   <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
@@ -877,7 +868,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             )}
 
             {/* Connecting State */}
-            {(isAuthenticating || hookIsConnecting || isSignatureLoading) && !hookTerminalReady && !displayError && (
+            {(isAuthenticating || hookIsConnecting || isSignatureLoading) && !hookTerminalReady && !displayError && activeTab === 'terminal' && (
               <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="text-center">
                   <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-3" />
@@ -898,7 +889,7 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
             )}
 
             {/* Node Offline State */}
-            {!isNodeOnline && !hookIsConnecting && !isAuthenticating && (
+            {!isNodeOnline && !hookIsConnecting && !isAuthenticating && activeTab === 'terminal' && (
               <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="text-center p-6">
                   <WifiOff className="w-12 h-12 text-gray-400 mx-auto mb-3" />
@@ -910,29 +901,51 @@ export default function RemoteManagement({ nodeReference, isOpen, onClose }) {
               </div>
             )}
 
-            {/* Terminal UI */}
-            <TerminalUI
-              ref={terminalRef}
-              theme="dark"
-              fontSize={14}
-              onInput={handleTerminalInput}
-              onReady={handleTerminalUIReady}
-              enableSearch={true}
-              enableLinks={true}
-              enableClipboard={true}
-              className="h-full"
-            />
+            {/* Tab Content */}
+            {activeTab === 'terminal' && (
+              <TerminalUI
+                ref={terminalRef}
+                theme="dark"
+                fontSize={14}
+                onInput={handleTerminalInput}
+                onReady={handleTerminalUIReady}
+                enableSearch={true}
+                enableLinks={true}
+                enableClipboard={true}
+                className="h-full"
+              />
+            )}
+
+            {activeTab === 'files' && (
+              <div className="h-full">
+                <FileManager
+                  nodeReference={nodeReference}
+                  sessionId={terminalSession}
+                  executeCommand={executeCommand}
+                  uploadFile={uploadFile}
+                />
+              </div>
+            )}
+
+            {activeTab === 'system' && (
+              <div className="h-full">
+                <SystemInfo
+                  nodeReference={nodeReference}
+                  executeCommand={executeCommand}
+                />
+              </div>
+            )}
           </div>
 
           {/* Status Bar */}
           <div className="px-4 py-2 border-t border-white/10 bg-black/40 backdrop-blur flex items-center justify-between text-xs">
             <div className="flex items-center gap-4">
               <span className="text-gray-400">
-                Session: {terminalSession || 'Not connected'}
+                Tab: {tabs.find(t => t.id === activeTab)?.label}
               </span>
               {terminalSession && (
                 <span className="text-gray-400">
-                  Node: {nodeReference}
+                  Session: {terminalSession}
                 </span>
               )}
             </div>
