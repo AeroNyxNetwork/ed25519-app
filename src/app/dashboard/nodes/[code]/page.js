@@ -3,9 +3,27 @@
  * File: src/app/dashboard/nodes/[code]/page.js
  * Path: src/app/dashboard/nodes/[code]/page.js
  * ============================================
- * UTILITY-FOCUSED VERSION - v4.0.3 - CLEAN (No Duplicates)
+ * COMPLETE VERSION - Clean File Manager Integration
  * 
- * Last Modified: v4.0.3 - Removed all duplicate component definitions
+ * Creation Reason: Node details page with comprehensive monitoring
+ * Modification Reason: Simplify File Manager panel to guide users to Remote Management
+ * Main Functionality: Display node metrics, health, and provide access to remote tools
+ * Dependencies: Next.js routing, WebSocket hooks, Remote Management component
+ * 
+ * Main Logical Flow:
+ * 1. Load node data via WebSocket
+ * 2. Calculate health metrics and insights
+ * 3. Display tabbed interface (Overview, System Info, Files, Terminal)
+ * 4. File Manager tab shows feature preview + opens Remote Management
+ * 5. All remote tools accessed through Remote Management modal
+ * 
+ * ⚠️ Important Note for Next Developer:
+ * - File Manager functionality is in Remote Management component
+ * - This page provides navigation and preview only
+ * - defaultTab prop opens Remote Management to specific tab
+ * - All existing functionality maintained
+ * 
+ * Last Modified: v4.1.0 - Simplified File Manager integration
  * ============================================
  */
 
@@ -16,8 +34,6 @@ import { useRouter } from 'next/navigation';
 import { useWallet } from '../../../../components/wallet/WalletProvider';
 import { useAeroNyxWebSocket } from '../../../../hooks/useAeroNyxWebSocket';
 import RemoteManagement from '../../../../components/nodes/RemoteManagement';
-import FileManager from '../../../../components/nodes/FileManager';
-import { useRemoteManagement } from '../../../../hooks/useRemoteManagement';
 import { motion, AnimatePresence } from 'framer-motion';
 import Link from 'next/link';
 import { 
@@ -42,9 +58,12 @@ import {
   TrendingDown,
   Info,
   AlertTriangle,
-  Settings,
-  FileText,
-  CheckCircle2
+  CheckCircle2,
+  Folder,
+  Edit,
+  Upload,
+  FolderOpen,
+  Monitor
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -210,48 +229,82 @@ function SystemInfoPanel({ node, onOpenRemote }) {
   );
 }
 
-// File Manager Panel Component - Integrated
-function FileManagerPanel({ node }) {
-  const { 
-    isConnected,
-    executeCommand,
-    uploadFile,
-    connect,
-    disconnect 
-  } = useRemoteManagement(node.code);
-
-  // Auto-connect when panel is shown
-  useEffect(() => {
-    if (!isConnected) {
-      connect();
+// File Manager Panel Component - Simplified (Fixed)
+function FileManagerPanel({ node, onOpenFileManager, isOnline }) {
+  const features = [
+    {
+      icon: FolderOpen,
+      title: 'Browse Files',
+      description: 'Navigate through directories and view file structure'
+    },
+    {
+      icon: Edit,
+      title: 'Edit Files',
+      description: 'Edit configuration files and scripts directly'
+    },
+    {
+      icon: Upload,
+      title: 'Upload Files',
+      description: 'Upload new files or update existing ones'
     }
-    
-    return () => {
-      // Optionally disconnect when leaving
-      // disconnect();
-    };
-  }, [connect, isConnected]);
-
-  if (!isConnected) {
-    return (
-      <div className="bg-white/5 rounded-xl p-8 border border-white/10 text-center">
-        <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4 animate-pulse" />
-        <h3 className="text-xl font-semibold mb-2">Connecting to Node...</h3>
-        <p className="text-gray-400">
-          Establishing secure connection for file management
-        </p>
-      </div>
-    );
-  }
+  ];
 
   return (
-    <div className="bg-white/5 rounded-xl border border-white/10 overflow-hidden">
-      <FileManager
-        nodeReference={node.code}
-        sessionId={null}
-        executeCommand={executeCommand}
-        uploadFile={uploadFile}
-      />
+    <div className="bg-white/5 rounded-xl p-8 border border-white/10">
+      {/* Header */}
+      <div className="text-center mb-8">
+        <div className="inline-flex p-3 bg-blue-500/10 rounded-xl mb-4">
+          <Folder className="w-8 h-8 text-blue-400" />
+        </div>
+        <h3 className="text-2xl font-semibold mb-2">File Manager</h3>
+        <p className="text-gray-400">
+          Manage your node's files remotely through our secure interface
+        </p>
+      </div>
+
+      {/* Features Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        {features.map((feature, index) => (
+          <motion.div
+            key={index}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.1 }}
+            className="bg-black/30 rounded-lg p-4 border border-white/10"
+          >
+            <feature.icon className="w-6 h-6 text-blue-400 mb-3" />
+            <h4 className="font-medium mb-2">{feature.title}</h4>
+            <p className="text-sm text-gray-400">{feature.description}</p>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* Action Button */}
+      <div className="text-center">
+        {isOnline ? (
+          <button
+            onClick={onOpenFileManager}
+            className="px-8 py-4 bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl text-white font-medium hover:from-purple-700 hover:to-blue-700 transition-all shadow-lg shadow-purple-500/20"
+          >
+            <span className="flex items-center gap-2">
+              <Folder className="w-5 h-5" />
+              Open File Manager
+            </span>
+          </button>
+        ) : (
+          <div className="px-8 py-4 bg-gray-700 text-gray-400 rounded-xl cursor-not-allowed">
+            <span className="flex items-center gap-2 justify-center">
+              <Folder className="w-5 h-5" />
+              File Manager Unavailable (Node Offline)
+            </span>
+          </div>
+        )}
+        <p className="text-xs text-gray-500 mt-3">
+          {isOnline 
+            ? 'Secure access through Remote Management' 
+            : 'Node must be online to access file manager'}
+        </p>
+      </div>
     </div>
   );
 }
@@ -296,6 +349,7 @@ export default function NodeDetailsPage({ params }) {
   const { wallet, isInitializing } = useWallet();
   const router = useRouter();
   const [showRemoteManagement, setShowRemoteManagement] = useState(false);
+  const [remoteManagementDefaultTab, setRemoteManagementDefaultTab] = useState('terminal');
   const [loadingState, setLoadingState] = useState('initializing');
   const [errorDetails, setErrorDetails] = useState(null);
   const [selectedTab, setSelectedTab] = useState('overview');
@@ -406,6 +460,12 @@ export default function NodeDetailsPage({ params }) {
       setLoadingState('error');
     }
   }, [wsError]);
+
+  // Handler to open Remote Management with specific tab
+  const openRemoteManagement = useCallback((defaultTab = 'terminal') => {
+    setRemoteManagementDefaultTab(defaultTab);
+    setShowRemoteManagement(true);
+  }, []);
 
   const loadingMessages = {
     'wallet_initializing': 'Restoring Wallet Connection...',
@@ -543,7 +603,7 @@ export default function NodeDetailsPage({ params }) {
   const tabs = [
     { id: 'overview', label: 'Overview', icon: BarChart3 },
     { id: 'system', label: 'System Info', icon: Activity },
-    { id: 'files', label: 'File Manager', icon: FileText },
+    { id: 'files', label: 'File Manager', icon: Folder },
     { id: 'terminal', label: 'Terminal', icon: Terminal }
   ];
 
@@ -625,7 +685,7 @@ export default function NodeDetailsPage({ params }) {
                   <motion.button
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    onClick={() => setShowRemoteManagement(true)}
+                    onClick={() => openRemoteManagement('terminal')}
                     className="flex items-center gap-2 px-5 py-2.5 rounded-xl transition-all font-medium text-sm bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
                   >
                     <Terminal className="w-4 h-4" />
@@ -810,18 +870,22 @@ export default function NodeDetailsPage({ params }) {
           {selectedTab === 'system' && (
             <SystemInfoPanel 
               node={node} 
-              onOpenRemote={() => setShowRemoteManagement(true)} 
+              onOpenRemote={() => openRemoteManagement('system')} 
             />
           )}
 
           {selectedTab === 'files' && (
-            <FileManagerPanel node={node} />
+            <FileManagerPanel 
+              node={node}
+              isOnline={isNodeOnline}
+              onOpenFileManager={() => openRemoteManagement('files')}
+            />
           )}
 
           {selectedTab === 'terminal' && (
             <TerminalPanel 
               isOnline={isNodeOnline} 
-              onOpenRemote={() => setShowRemoteManagement(true)} 
+              onOpenRemote={() => openRemoteManagement('terminal')} 
             />
           )}
         </div>
@@ -832,6 +896,7 @@ export default function NodeDetailsPage({ params }) {
           nodeReference={node.code}
           isOpen={showRemoteManagement}
           onClose={() => setShowRemoteManagement(false)}
+          defaultTab={remoteManagementDefaultTab}
         />
       )}
     </div>
