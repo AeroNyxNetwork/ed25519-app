@@ -26,16 +26,17 @@ import remoteAuthService from '../services/RemoteAuthService';
 import { useAeroNyxWebSocket } from './useAeroNyxWebSocket';
 
 /**
- * Remote Command Types (must match backend RemoteCommandData enum in Rust)
- * Backend: src/remote_command_handler.rs
+ * Remote Command Types (must match backend RemoteCommandData in remote_command_handler.rs)
+ * ✅ CRITICAL: These MUST match the command_type strings in the Rust backend!
+ * Backend match statement is at line 212-221 in remote_command_handler.rs
  */
 const REMOTE_COMMAND_TYPES = {
-  LIST_FILES: 'list_files',
-  READ_FILE: 'read_file',
-  WRITE_FILE: 'write_file',
-  DELETE_FILE: 'delete_file',
-  SYSTEM_INFO: 'system_info',
-  EXECUTE: 'execute'
+  LIST_FILES: 'list',        // ✅ FIXED: Backend expects "list" not "list_files"
+  READ_FILE: 'download',     // ✅ FIXED: Backend expects "download" not "read_file"
+  WRITE_FILE: 'upload',      // ✅ FIXED: Backend expects "upload" not "write_file"
+  DELETE_FILE: 'delete',     // Backend expects "delete"
+  SYSTEM_INFO: 'system_info', // ✅ Correct
+  EXECUTE: 'execute'          // ✅ Correct
 };
 
 /**
