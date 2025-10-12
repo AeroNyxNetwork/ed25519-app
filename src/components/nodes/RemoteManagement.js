@@ -98,11 +98,18 @@ export default function RemoteManagement({
     initializeTerminal,
     sendTerminalInput,
     closeTerminal,
-    executeCommand,
+    executeTerminalCommand, // For Terminal tab
     reconnectTerminal,
     tokenExpiry,
     nodes,
-    uploadFile
+    // Remote commands for File Manager and System Info
+    listDirectory,
+    readFile,
+    writeFile,
+    deleteFile,
+    uploadFile,
+    getSystemInfo,
+    executeCommand  // For System Info (NOT terminal!)
   } = useRemoteManagement(nodeReference);
   
   // Use hook's determination of node status
@@ -920,9 +927,10 @@ export default function RemoteManagement({
               <div className="h-full">
                 <FileManager
                   nodeReference={nodeReference}
-                  sessionId={terminalSession}
-                  executeCommand={executeCommand}
-                  uploadFile={uploadFile}
+                  listDirectory={listDirectory}
+                  readFile={readFile}
+                  writeFile={writeFile}
+                  deleteFile={deleteFile}
                 />
               </div>
             )}
@@ -931,6 +939,7 @@ export default function RemoteManagement({
               <div className="h-full">
                 <SystemInfo
                   nodeReference={nodeReference}
+                  getSystemInfo={getSystemInfo}
                   executeCommand={executeCommand}
                 />
               </div>
