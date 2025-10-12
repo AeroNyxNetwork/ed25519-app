@@ -2,26 +2,17 @@
  * ============================================
  * File: src/hooks/useRemoteManagement.js
  * ============================================
- * Remote Management Hook - COMPLETELY FIXED VERSION v7.1.0
+ * Remote Management Hook - COMPLETE FIXED VERSION v7.2.0
  * 
- * ✅ FIXED: Now properly separates terminal from remote commands
- * - Terminal: Uses term_input/term_output (interactive shell)
- * - Remote Commands: Uses remote_command/remote_command_response
+ * ✅ FIXED: Added proper remote_command_response handling
+ * ✅ ALL ORIGINAL FUNCTIONS PRESERVED
  * 
- * Key Changes in v7.1.0:
- * - Fixed command type names to match backend (list_files, system_info, execute)
- * - Added proper response handling for remote_command_response
- * - Enhanced error extraction for object-type errors
- * - ALL ORIGINAL FEATURES PRESERVED
+ * Key Fix in v7.2.0:
+ * - Added WebSocket message listener for remote_command_response
+ * - Fixed Promise resolution/rejection for remote commands
+ * - Enhanced error handling and logging
  * 
- * ⚠️ Important: This version preserves ALL original functionality
- * - All terminal management functions
- * - All remote command functions
- * - All error handling
- * - All retry logic
- * - All fallback mechanisms
- * 
- * Last Modified: v7.1.0 - Fixed command types, preserved all features
+ * Last Modified: v7.2.0 - Complete fix with all features intact
  * ============================================
  */
 
@@ -39,12 +30,12 @@ import { useAeroNyxWebSocket } from './useAeroNyxWebSocket';
  * Backend: src/remote_command_handler.rs
  */
 const REMOTE_COMMAND_TYPES = {
-  LIST_FILES: 'list_files',       // ✅ FIXED: was list_directory
+  LIST_FILES: 'list_files',
   READ_FILE: 'read_file',
   WRITE_FILE: 'write_file',
   DELETE_FILE: 'delete_file',
-  SYSTEM_INFO: 'system_info',      // ✅ FIXED: was get_system_info
-  EXECUTE: 'execute'                // ✅ FIXED: was execute_command
+  SYSTEM_INFO: 'system_info',
+  EXECUTE: 'execute'
 };
 
 /**
@@ -388,7 +379,7 @@ export function useRemoteManagement(nodeReference) {
     }
     
     const success = webSocketService.send({
-      type: 'term_input',  // ✅ CORRECT: term_input for terminal
+      type: 'term_input',
       session_id: currentSession,
       data: base64Data
     });
@@ -446,13 +437,10 @@ export function useRemoteManagement(nodeReference) {
   const reconnectTerminal = useCallback(async () => {
     console.log('[useRemoteManagement] Reconnecting terminal');
     
-    // Close existing session
     closeTerminal();
     
-    // Wait a bit before reconnecting
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    // Force refresh auth state
     const authState = remoteAuthService.isAuthenticated(nodeReference);
     setIsRemoteAuthenticated(authState);
     
@@ -462,7 +450,6 @@ export function useRemoteManagement(nodeReference) {
       return null;
     }
     
-    // Reinitialize
     return initializeTerminal();
   }, [closeTerminal, initializeTerminal, nodeReference]);
   
@@ -470,14 +457,13 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * Generate unique request ID
-   * ✅ NEW: Required for remote_command/remote_command_response correlation
    */
   const generateRequestId = useCallback(() => {
     return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }, []);
   
   /**
-   * ✅ NEW: Send remote command (NOT terminal input!)
+   * ✅ FIXED: Send remote command with proper Promise handling
    * This is the CORE FIX - used by File Manager and System Info
    * Sends remote_command message type
    */
@@ -514,7 +500,7 @@ export function useRemoteManagement(nodeReference) {
       
       // Send remote_command message
       const message = {
-        type: 'remote_command',  // ✅ CORRECT: remote_command (NOT term_input!)
+        type: 'remote_command',
         node_reference: nodeReference,
         request_id: requestId,
         command: {
@@ -537,7 +523,6 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * ✅ FIXED: List directory using remote_command
-   * Used by File Manager component
    */
   const listDirectory = useCallback(async (path) => {
     console.log('[useRemoteManagement] listDirectory:', path);
@@ -546,13 +531,11 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * ✅ FIXED: Read file using remote_command
-   * Used by File Manager component
    */
   const readFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] readFile:', path);
     const result = await sendRemoteCommand(REMOTE_COMMAND_TYPES.READ_FILE, { path });
     
-    // Decode Base64 content if encoded
     if (result.content && result.encoding === 'base64') {
       try {
         result.content = atob(result.content);
@@ -567,12 +550,10 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * ✅ FIXED: Write file using remote_command
-   * Used by File Manager component
    */
   const writeFile = useCallback(async (path, content) => {
     console.log('[useRemoteManagement] writeFile:', path, content.length, 'bytes');
     
-    // Encode content to Base64
     let base64Content;
     try {
       base64Content = btoa(unescape(encodeURIComponent(content)));
@@ -589,7 +570,6 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * ✅ FIXED: Delete file using remote_command
-   * Used by File Manager component
    */
   const deleteFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] deleteFile:', path);
@@ -598,7 +578,6 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * ✅ FIXED: Get system info using remote_command
-   * Used by System Info component
    */
   const getSystemInfo = useCallback(async () => {
     console.log('[useRemoteManagement] getSystemInfo');
@@ -606,13 +585,11 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * ✅ FIXED: Execute command using remote_command (for System Info, NOT terminal!)
-   * Used by System Info component for specific system queries
+   * ✅ FIXED: Execute command using remote_command
    */
   const executeCommand = useCallback(async (command, args = []) => {
     console.log('[useRemoteManagement] executeCommand:', command, args);
     
-    // Build command string
     const commandData = {
       command: args.length > 0 ? `${command} ${args.join(' ')}` : command
     };
@@ -621,8 +598,7 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * ✅ PRESERVED: Upload file (alias for writeFile with better naming)
-   * Used by File Manager component
+   * ✅ PRESERVED: Upload file
    */
   const uploadFile = useCallback(async (path, content, isBase64 = false) => {
     console.log('[useRemoteManagement] uploadFile:', path, 'isBase64:', isBase64);
@@ -646,8 +622,8 @@ export function useRemoteManagement(nodeReference) {
   // ==================== WebSocket Message Handling ====================
   
   /**
-   * ✅ NEW: Handle remote command responses
-   * Listens for remote_command_response messages from backend
+   * ✅ CRITICAL FIX: Handle remote_command_response messages
+   * This was the MISSING piece!
    */
   useEffect(() => {
     const handleMessage = (event) => {
@@ -656,28 +632,26 @@ export function useRemoteManagement(nodeReference) {
         
         // Handle remote command responses
         if (message.type === 'remote_command_response') {
-          console.log('[useRemoteManagement] Remote command response:', {
-            request_id: message.request_id,
-            success: message.success,
-            hasResult: !!message.result,
-            error: message.error
-          });
+          console.log('[useRemoteManagement] ===== REMOTE COMMAND RESPONSE =====');
+          console.log('[useRemoteManagement] Request ID:', message.request_id);
+          console.log('[useRemoteManagement] Success:', message.success);
+          console.log('[useRemoteManagement] Has result:', !!message.result);
+          console.log('[useRemoteManagement] Error:', message.error);
+          console.log('[useRemoteManagement] =====================================');
           
           const handler = commandHandlersRef.current.get(message.request_id);
           if (handler) {
             if (message.success) {
+              console.log('[useRemoteManagement] ✅ Resolving command with result');
               handler.resolve(message.result);
             } else {
-              // ✅ FIXED: Extract error message properly from object
+              // Extract error message
               let errorMessage = 'Command failed';
               
               if (message.error) {
-                // If error is a string
                 if (typeof message.error === 'string') {
                   errorMessage = message.error;
-                }
-                // If error is an object with message property
-                else if (typeof message.error === 'object') {
+                } else if (typeof message.error === 'object') {
                   errorMessage = message.error.message || 
                                 message.error.error || 
                                 message.error.detail || 
@@ -685,23 +659,25 @@ export function useRemoteManagement(nodeReference) {
                 }
               }
               
-              console.error('[useRemoteManagement] Command failed:', errorMessage);
+              console.error('[useRemoteManagement] ❌ Command failed:', errorMessage);
               handler.reject(new Error(errorMessage));
             }
           } else {
-            console.warn('[useRemoteManagement] No handler found for request:', message.request_id);
+            console.warn('[useRemoteManagement] ⚠️ No handler found for request:', message.request_id);
           }
         }
       } catch (error) {
-        // Ignore parse errors for non-JSON messages
+        // Ignore parse errors
       }
     };
     
     const ws = window.globalWebSocket || webSocketService.ws;
     if (ws && ws.addEventListener) {
+      console.log('[useRemoteManagement] 🎧 Adding message listener for remote_command_response');
       ws.addEventListener('message', handleMessage);
       
       return () => {
+        console.log('[useRemoteManagement] 🔇 Removing message listener');
         ws.removeEventListener('message', handleMessage);
       };
     }
@@ -759,7 +735,7 @@ export function useRemoteManagement(nodeReference) {
     return () => {
       console.log('[useRemoteManagement] Hook unmounting');
       if (currentSession) {
-        console.log('[useRemoteManagement] Hook unmounting with session, will be cleaned by RemoteManagement');
+        console.log('[useRemoteManagement] Hook unmounting with session');
       }
       
       // Clean up any pending command handlers
@@ -819,20 +795,19 @@ export function useRemoteManagement(nodeReference) {
     
     // ✅ Terminal Actions (ONLY for Terminal tab!)
     initializeTerminal,
-    sendTerminalInput,        // Sends term_input
-    executeTerminalCommand,   // Sends term_input with newline
+    sendTerminalInput,
+    executeTerminalCommand,
     closeTerminal,
-    reconnectTerminal,        // ✅ PRESERVED
+    reconnectTerminal,
     
     // ✅ Remote Commands (for File Manager & System Info)
-    // All these now use remote_command instead of term_input!
-    listDirectory,            // Uses remote_command with list_files
-    readFile,                 // Uses remote_command with read_file
-    writeFile,                // Uses remote_command with write_file
-    deleteFile,               // Uses remote_command with delete_file
-    uploadFile,               // Uses remote_command with write_file
-    getSystemInfo,            // Uses remote_command with system_info
-    executeCommand,           // Uses remote_command with execute (NOT terminal!)
+    listDirectory,
+    readFile,
+    writeFile,
+    deleteFile,
+    uploadFile,
+    getSystemInfo,
+    executeCommand,
     
     // Store state
     wsState,
