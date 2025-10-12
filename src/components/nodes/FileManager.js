@@ -1,8 +1,23 @@
 /**
- * File Manager Component
- * Complete implementation with all fixes
+ * ============================================
+ * File: src/components/nodes/FileManager.js
+ * ============================================
+ * File Manager Component - FIXED VERSION
  * 
- * File Path: src/components/nodes/FileManager.js
+ * Modification Reason: Use remote_command API instead of terminal commands
+ * Main Changes:
+ * - Now uses listDirectory() for browsing
+ * - Now uses readFile() for reading (with Base64 decoding)
+ * - Now uses writeFile() for saving (with Base64 encoding)
+ * - Now uses deleteFile() for deletion
+ * 
+ * ⚠️ Important Note:
+ * - All commands now send remote_command messages
+ * - No output will appear in Terminal tab
+ * - All operations are background commands
+ * 
+ * Last Modified: v5.0.0 - Fixed to use remote command API
+ * ============================================
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -34,10 +49,7 @@ import clsx from 'clsx';
 
 // File type icon mapping
 const FILE_ICONS = {
-  // Folders
   directory: Folder,
-  
-  // Code files
   js: FileCode,
   jsx: FileCode,
   ts: FileCode,
@@ -47,13 +59,10 @@ const FILE_ICONS = {
   cpp: FileCode,
   c: FileCode,
   h: FileCode,
-  hpp: FileCode,
   go: FileCode,
   rs: FileCode,
   php: FileCode,
   rb: FileCode,
-  
-  // Text files
   txt: FileText,
   md: FileText,
   log: FileText,
@@ -62,59 +71,37 @@ const FILE_ICONS = {
   xml: FileCode,
   yaml: FileCode,
   yml: FileCode,
-  toml: FileCode,
-  ini: FileCode,
-  conf: FileCode,
-  config: FileCode,
-  
-  // Images
   jpg: Image,
   jpeg: Image,
   png: Image,
   gif: Image,
   svg: Image,
-  webp: Image,
-  ico: Image,
-  bmp: Image,
-  
-  // Videos
   mp4: Film,
   avi: Film,
   mov: Film,
-  wmv: Film,
-  flv: Film,
-  mkv: Film,
-  webm: Film,
-  
-  // Audio
   mp3: Music,
   wav: Music,
-  flac: Music,
-  aac: Music,
-  ogg: Music,
-  m4a: Music,
-  
-  // Archives
   zip: Archive,
   tar: Archive,
-  gz: Archive,
-  rar: Archive,
-  '7z': Archive,
-  bz2: Archive,
-  xz: Archive
+  gz: Archive
 };
 
 // Editable file types
 const EDITABLE_EXTENSIONS = [
   'txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 
   'toml', 'ini', 'conf', 'config', 'js', 'jsx', 'ts', 'tsx', 
-  'py', 'java', 'cpp', 'c', 'h', 'hpp', 'go', 'rs', 'php', 
-  'rb', 'html', 'htm', 'css', 'scss', 'sass', 'less', 'sh', 
-  'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd', 'env', 'gitignore',
-  'dockerfile', 'makefile', 'readme', 'license'
+  'py', 'java', 'cpp', 'c', 'h', 'go', 'rs', 'php', 
+  'rb', 'html', 'htm', 'css', 'scss', 'sass', 'sh', 
+  'bash', 'env', 'gitignore', 'dockerfile'
 ];
 
-export default function FileManager({ nodeReference, sessionId, executeCommand, uploadFile }) {
+export default function FileManager({ 
+  nodeReference, 
+  listDirectory,   // From useRemoteManagement
+  readFile,        // From useRemoteManagement
+  writeFile,       // From useRemoteManagement
+  deleteFile       // From useRemoteManagement
+}) {
   const [currentPath, setCurrentPath] = useState('/');
   const [files, setFiles] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -126,11 +113,13 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   
-  // Add refs to prevent multiple loads
   const isLoadingRef = useRef(false);
   const hasInitialLoadRef = useRef(false);
+  const isMountedRef = useRef(true);
 
-  // Load directory contents with duplicate prevention
+  /**
+   * Load directory contents using remote_command API
+   */
   const loadDirectory = useCallback(async (path = '/') => {
     // Prevent multiple simultaneous loads
     if (isLoadingRef.current) {
@@ -138,9 +127,9 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       return;
     }
     
-    // Check if executeCommand is available
-    if (!executeCommand) {
-      console.log('[FileManager] executeCommand not available yet');
+    // Check if functions are available
+    if (!listDirectory) {
+      console.log('[FileManager] listDirectory not available yet');
       return;
     }
     
@@ -151,72 +140,43 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     try {
       console.log('[FileManager] Loading directory:', path);
       
-      const result = await executeCommand('ls', ['-la', path]);
+      // Call remote command API
+      const result = await listDirectory(path);
+      
       console.log('[FileManager] Directory listing result:', result);
       
-      // Check if result is in ApiResponse format
-      if (result && result.success === false) {
-        throw new Error(result.message || 'Failed to load directory');
-      }
-      
-      // Extract the actual result data
-      const output = result.data?.stdout || result.stdout || '';
-      
-      if (!output) {
+      // Parse response
+      if (result && result.entries) {
+        const items = result.entries.map(entry => ({
+          name: entry.name,
+          type: entry.is_directory ? 'directory' : 'file',
+          size: entry.size || 0,
+          permissions: entry.permissions || '',
+          isSymlink: entry.permissions?.startsWith('l') || false,
+          path: entry.path,
+          modified: entry.modified,
+          owner: entry.owner,
+          group: entry.group
+        }));
+        
+        // Sort: directories first, then files
+        items.sort((a, b) => {
+          if (a.type === b.type) return a.name.localeCompare(b.name);
+          return a.type === 'directory' ? -1 : 1;
+        });
+        
+        setFiles(items);
+        setCurrentPath(path);
+      } else {
         setFiles([]);
         setCurrentPath(path);
-        return;
       }
-      
-      // Parse ls output
-      const lines = output.split('\n').filter(line => line.trim());
-      const items = [];
-      
-      // Skip the first line (total) and process file entries
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i];
-        const parts = line.split(/\s+/);
-        
-        if (parts.length >= 9) {
-          const permissions = parts[0];
-          const size = parts[4];
-          const name = parts.slice(8).join(' ');
-          
-          // Skip . and .. entries
-          if (name === '.' || name === '..') continue;
-          
-          const isDirectory = permissions.startsWith('d');
-          const isSymlink = permissions.startsWith('l');
-          
-          items.push({
-            name,
-            type: isDirectory ? 'directory' : 'file',
-            size: parseInt(size) || 0,
-            permissions,
-            isSymlink,
-            path: path === '/' ? `/${name}` : `${path}/${name}`
-          });
-        }
-      }
-      
-      // Sort: directories first, then files
-      items.sort((a, b) => {
-        if (a.type === b.type) return a.name.localeCompare(b.name);
-        return a.type === 'directory' ? -1 : 1;
-      });
-      
-      setFiles(items);
-      setCurrentPath(path);
       
     } catch (err) {
       console.error('[FileManager] Failed to load directory:', err);
       
       let errorMessage = 'Failed to load directory';
-      
-      // Handle ApiResponse error format
-      if (err && typeof err === 'object' && err.message) {
-        errorMessage = err.message;
-      } else if (err instanceof Error) {
+      if (err && err.message) {
         errorMessage = err.message;
       }
       
@@ -226,21 +186,27 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       setIsLoading(false);
       isLoadingRef.current = false;
     }
-  }, [executeCommand]);
+  }, [listDirectory]);
 
-  // Navigate to directory
+  /**
+   * Navigate to directory
+   */
   const navigateToDirectory = useCallback((path) => {
     setSelectedFiles(new Set());
     loadDirectory(path);
   }, [loadDirectory]);
 
-  // Navigate to parent directory
+  /**
+   * Navigate to parent directory
+   */
   const navigateUp = useCallback(() => {
     const parentPath = currentPath.split('/').slice(0, -1).join('/') || '/';
     navigateToDirectory(parentPath);
   }, [currentPath, navigateToDirectory]);
 
-  // Get file icon
+  /**
+   * Get file icon
+   */
   const getFileIcon = (file) => {
     if (file.type === 'directory') return Folder;
     
@@ -248,7 +214,9 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     return FILE_ICONS[extension] || File;
   };
 
-  // Format file size
+  /**
+   * Format file size
+   */
   const formatSize = (bytes) => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -257,7 +225,9 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // Handle file click
+  /**
+   * Handle file click
+   */
   const handleFileClick = (file) => {
     if (file.type === 'directory') {
       navigateToDirectory(file.path);
@@ -270,20 +240,23 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     }
   };
 
-  // Edit file
+  /**
+   * Edit file using remote_command API
+   */
   const editFile = async (file) => {
     setIsLoading(true);
     setError(null);
     
     try {
-      const result = await executeCommand('cat', [file.path]);
+      console.log('[FileManager] Reading file:', file.path);
       
-      // Check if result is in ApiResponse format
-      if (result && result.success === false) {
-        throw new Error(result.message || 'Failed to read file');
-      }
+      // Call remote command API
+      const result = await readFile(file.path);
       
-      const content = result.data?.stdout || result.stdout || '';
+      console.log('[FileManager] File read result:', result);
+      
+      // Content is already decoded by the hook
+      const content = result.content || '';
       
       setEditingFile(file);
       setEditingContent(content);
@@ -291,9 +264,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       console.error('[FileManager] Failed to read file:', err);
       
       let errorMessage = 'Failed to read file';
-      if (err && typeof err === 'object' && err.message) {
-        errorMessage = err.message;
-      } else if (err instanceof Error) {
+      if (err && err.message) {
         errorMessage = err.message;
       }
       
@@ -303,7 +274,9 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     }
   };
 
-  // Save file
+  /**
+   * Save file using remote_command API
+   */
   const saveFile = async () => {
     if (!editingFile || editingContent === null) return;
     
@@ -313,46 +286,32 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     try {
       console.log('[FileManager] Saving file:', editingFile.path);
       
-      // Call uploadFile from useRemoteManagement
-      const response = await uploadFile(editingFile.path, editingContent, false);
+      // Call remote command API (encoding is handled by the hook)
+      const result = await writeFile(editingFile.path, editingContent);
       
-      console.log('[FileManager] Upload response:', response);
+      console.log('[FileManager] File write result:', result);
       
-      // Check if response indicates success
-      if (response && response.success === true) {
-        // Success - close editor and show success message
-        setEditingFile(null);
-        setEditingContent(null);
-        setSuccessMessage(response.message || 'File saved successfully');
-        setShowSuccessMessage(true);
-        
-        // Refresh current directory
-        await loadDirectory(currentPath);
-        
-        // Hide success message after 3 seconds
-        setTimeout(() => {
-          setShowSuccessMessage(false);
-          setSuccessMessage('');
-        }, 3000);
-      } else {
-        // This shouldn't happen if uploadFile is working correctly
-        throw new Error('Unexpected response format');
-      }
+      // Success - close editor and show success message
+      setEditingFile(null);
+      setEditingContent(null);
+      setSuccessMessage('File saved successfully');
+      setShowSuccessMessage(true);
+      
+      // Refresh current directory
+      await loadDirectory(currentPath);
+      
+      // Hide success message after 3 seconds
+      setTimeout(() => {
+        setShowSuccessMessage(false);
+        setSuccessMessage('');
+      }, 3000);
+      
     } catch (err) {
       console.error('[FileManager] Failed to save file:', err);
       
-      // Extract error message properly
       let errorMessage = 'Failed to save file';
-      
-      // Check if it's an ApiResponse error format
-      if (err && typeof err === 'object' && err.message) {
+      if (err && err.message) {
         errorMessage = err.message;
-      } else if (err && typeof err === 'object' && err.error && err.error.message) {
-        errorMessage = err.error.message;
-      } else if (err instanceof Error) {
-        errorMessage = err.message;
-      } else if (typeof err === 'string') {
-        errorMessage = err;
       }
       
       setError(errorMessage);
@@ -361,22 +320,20 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     }
   };
 
-  // Delete file
-  const deleteFile = async (file) => {
+  /**
+   * Delete file using remote_command API
+   */
+  const handleDeleteFile = async (file) => {
     if (!confirm(`Are you sure you want to delete ${file.name}?`)) return;
     
     setIsLoading(true);
     setError(null);
     
     try {
-      const command = file.type === 'directory' ? 'rmdir' : 'rm';
-      const args = file.type === 'directory' ? [file.path] : ['-f', file.path];
+      console.log('[FileManager] Deleting file:', file.path);
       
-      const result = await executeCommand(command, args);
-      
-      if (result && result.success === false) {
-        throw new Error(result.message || 'Failed to delete file');
-      }
+      // Call remote command API
+      await deleteFile(file.path);
       
       // Refresh directory
       await loadDirectory(currentPath);
@@ -392,9 +349,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
       console.error('[FileManager] Failed to delete file:', err);
       
       let errorMessage = `Failed to delete ${file.name}`;
-      if (err && typeof err === 'object' && err.message) {
-        errorMessage = err.message;
-      } else if (err instanceof Error) {
+      if (err && err.message) {
         errorMessage = err.message;
       }
       
@@ -404,13 +359,25 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
     }
   };
 
-  // Initial load - only once when executeCommand becomes available
+  /**
+   * Initial load
+   */
   useEffect(() => {
-    if (executeCommand && !hasInitialLoadRef.current) {
+    if (!hasInitialLoadRef.current && listDirectory) {
       hasInitialLoadRef.current = true;
       loadDirectory('/');
     }
-  }, [executeCommand, loadDirectory]);
+  }, [listDirectory, loadDirectory]);
+
+  /**
+   * Cleanup
+   */
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Breadcrumb navigation
   const breadcrumbParts = currentPath.split('/').filter(Boolean);
@@ -551,7 +518,7 @@ export default function FileManager({ nodeReference, sessionId, executeCommand, 
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            deleteFile(file);
+                            handleDeleteFile(file);
                           }}
                           className="p-1.5 hover:bg-white/10 rounded transition-colors"
                           title="Delete"
