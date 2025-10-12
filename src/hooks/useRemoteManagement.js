@@ -39,6 +39,19 @@ import remoteAuthService from '../services/RemoteAuthService';
 import { useAeroNyxWebSocket } from './useAeroNyxWebSocket';
 
 /**
+ * Remote Command Types (must match backend RemoteCommandData enum)
+ * Backend: src/remote_command_handler.rs
+ */
+const REMOTE_COMMAND_TYPES = {
+  LIST_FILES: 'list_files',       // List directory contents
+  READ_FILE: 'read_file',          // Read file content
+  WRITE_FILE: 'write_file',        // Write file content
+  DELETE_FILE: 'delete_file',      // Delete file or directory
+  SYSTEM_INFO: 'system_info',      // Get comprehensive system information
+  EXECUTE: 'execute'               // Execute system command (whitelisted)
+};
+
+/**
  * Remote Management Hook
  * Provides both terminal session management AND remote command execution
  */
@@ -511,7 +524,7 @@ export function useRemoteManagement(nodeReference) {
    */
   const listDirectory = useCallback(async (path) => {
     console.log('[useRemoteManagement] listDirectory:', path);
-    return sendRemoteCommand('list_directory', { path });
+    return sendRemoteCommand(REMOTE_COMMAND_TYPES.LIST_FILES, { path });
   }, [sendRemoteCommand]);
   
   /**
@@ -520,7 +533,7 @@ export function useRemoteManagement(nodeReference) {
    */
   const readFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] readFile:', path);
-    const result = await sendRemoteCommand('read_file', { path });
+    const result = await sendRemoteCommand(REMOTE_COMMAND_TYPES.READ_FILE, { path });
     
     // Decode Base64 content if encoded
     if (result.content && result.encoding === 'base64') {
@@ -551,7 +564,7 @@ export function useRemoteManagement(nodeReference) {
       throw new Error('Failed to encode file content');
     }
     
-    return sendRemoteCommand('write_file', { 
+    return sendRemoteCommand(REMOTE_COMMAND_TYPES.WRITE_FILE, { 
       path, 
       content: base64Content 
     });
@@ -563,7 +576,7 @@ export function useRemoteManagement(nodeReference) {
    */
   const deleteFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] deleteFile:', path);
-    return sendRemoteCommand('delete_file', { path });
+    return sendRemoteCommand(REMOTE_COMMAND_TYPES.DELETE_FILE, { path });
   }, [sendRemoteCommand]);
   
   /**
@@ -572,7 +585,7 @@ export function useRemoteManagement(nodeReference) {
    */
   const getSystemInfo = useCallback(async () => {
     console.log('[useRemoteManagement] getSystemInfo');
-    return sendRemoteCommand('get_system_info');
+    return sendRemoteCommand(REMOTE_COMMAND_TYPES.SYSTEM_INFO);
   }, [sendRemoteCommand]);
   
   /**
@@ -582,12 +595,12 @@ export function useRemoteManagement(nodeReference) {
   const executeCommand = useCallback(async (command, args = []) => {
     console.log('[useRemoteManagement] executeCommand:', command, args);
     
-    // Build command string
-    const fullCommand = args.length > 0 ? `${command} ${args.join(' ')}` : command;
+    // Backend expects command structure for "execute" type
+    const commandData = {
+      command: args.length > 0 ? `${command} ${args.join(' ')}` : command
+    };
     
-    return sendRemoteCommand('execute_command', { 
-      command: fullCommand 
-    });
+    return sendRemoteCommand(REMOTE_COMMAND_TYPES.EXECUTE, commandData);
   }, [sendRemoteCommand]);
   
   /**
