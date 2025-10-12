@@ -36,7 +36,7 @@ import useTerminalStore from '../stores/terminalStore';
 import terminalService from '../services/TerminalService';
 import webSocketService from '../services/WebSocketService';
 import remoteAuthService from '../services/RemoteAuthService';
-import { useAeroNyxWebSocket } from './useAeroNyxWebSocket'; { useAeroNyxWebSocket } from '../hooks/useAeroNyxWebSocket';
+import { useAeroNyxWebSocket } from './useAeroNyxWebSocket';
 
 /**
  * Remote Management Hook
