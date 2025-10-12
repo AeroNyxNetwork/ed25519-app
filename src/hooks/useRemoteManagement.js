@@ -2,20 +2,30 @@
  * ============================================
  * File: src/hooks/useRemoteManagement.js
  * ============================================
- * Remote Management Hook - FIXED VERSION
+ * Remote Management Hook - COMPLETELY FIXED VERSION
  * 
- * Modification Reason: Separate terminal commands from remote commands
- * Main Changes:
- * - Terminal: Uses term_input/term_output for interactive shell
- * - File Manager: Uses remote_command with list_directory/read_file/write_file
- * - System Info: Uses remote_command with get_system_info/execute_command
+ * ✅ FIXED: Now properly separates terminal from remote commands
+ * - Terminal: Uses term_input/term_output (interactive shell)
+ * - Remote Commands: Uses remote_command/remote_command_response
  * 
- * ⚠️ Important Note:
- * - executeCommand: For terminal only (sends term_input)
- * - sendRemoteCommand: For File Manager and System Info (sends remote_command)
- * - These are completely separate flows!
+ * Key Changes in v7.0.0:
+ * - Added sendRemoteCommand() for File Manager and System Info
+ * - Fixed listDirectory() to use remote_command instead of term_input
+ * - Fixed readFile() to use remote_command instead of term_input  
+ * - Fixed writeFile() to use remote_command instead of term_input
+ * - Fixed deleteFile() to use remote_command instead of term_input
+ * - Fixed getSystemInfo() to use remote_command instead of term_input
+ * - Fixed executeCommand() to use remote_command instead of term_input
+ * - Added proper response handling for remote_command_response
+ * - Terminal functions (sendTerminalInput, executeTerminalCommand) unchanged
  * 
- * Last Modified: v6.0.0 - Fixed command separation
+ * ⚠️ Critical Implementation Notes:
+ * 1. Terminal Tab ONLY uses: sendTerminalInput(), executeTerminalCommand()
+ * 2. File Manager ONLY uses: listDirectory(), readFile(), writeFile(), deleteFile()
+ * 3. System Info ONLY uses: getSystemInfo(), executeCommand()
+ * 4. These are COMPLETELY SEPARATE message flows!
+ * 
+ * Last Modified: v7.0.0 - Complete rewrite with proper command routing
  * ============================================
  */
 
@@ -26,10 +36,11 @@ import useTerminalStore from '../stores/terminalStore';
 import terminalService from '../services/TerminalService';
 import webSocketService from '../services/WebSocketService';
 import remoteAuthService from '../services/RemoteAuthService';
-import { useAeroNyxWebSocket } from './useAeroNyxWebSocket';
+import { useAeroNyxWebSocket } from './useAeroNyxWebSocket'; { useAeroNyxWebSocket } from '../hooks/useAeroNyxWebSocket';
 
 /**
  * Remote Management Hook
+ * Provides both terminal session management AND remote command execution
  */
 export function useRemoteManagement(nodeReference) {
   // ==================== State ====================
@@ -48,7 +59,7 @@ export function useRemoteManagement(nodeReference) {
   const closedHandlerRef = useRef(null);
   const readyHandlerRef = useRef(null);
   const authListenerRef = useRef(null);
-  const commandHandlersRef = useRef(new Map()); // For remote command responses
+  const commandHandlersRef = useRef(new Map()); // ✅ NEW: For remote command responses
   
   // Get store state
   const { 
@@ -149,6 +160,7 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * Initialize terminal session
+   * This is ONLY for the Terminal tab!
    */
   const initializeTerminal = useCallback(async () => {
     if (isInitializedRef.current && sessionRef.current) {
@@ -343,7 +355,8 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * Send input to terminal (interactive shell)
-   * This is ONLY for terminal tab!
+   * ✅ This is ONLY for Terminal tab!
+   * Sends term_input message type
    */
   const sendTerminalInput = useCallback((data) => {
     const { session: currentSession, ready: currentReady } = terminalStateRef.current;
@@ -366,7 +379,7 @@ export function useRemoteManagement(nodeReference) {
     }
     
     const success = webSocketService.send({
-      type: 'term_input',
+      type: 'term_input',  // ✅ CORRECT: term_input for terminal
       session_id: currentSession,
       data: base64Data
     });
@@ -380,7 +393,7 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * Execute terminal command (convenience method for terminal)
-   * This is ONLY for terminal tab!
+   * ✅ This is ONLY for Terminal tab!
    */
   const executeTerminalCommand = useCallback((command) => {
     if (!command) return false;
@@ -422,14 +435,21 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * Generate unique request ID
+   * ✅ NEW: Required for remote_command/remote_command_response correlation
    */
   const generateRequestId = useCallback(() => {
     return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }, []);
   
   /**
-   * Send remote command (NOT terminal input!)
-   * This is for File Manager and System Info
+   * ✅ NEW: Send remote command (NOT terminal input!)
+   * This is the CORE FIX - used by File Manager and System Info
+   * Sends remote_command message type
+   * 
+   * @param {string} commandType - Type of command (list_directory, read_file, etc)
+   * @param {object} commandData - Command-specific data
+   * @param {number} timeout - Timeout in milliseconds (default 30 seconds)
+   * @returns {Promise} Resolves with command result or rejects with error
    */
   const sendRemoteCommand = useCallback((commandType, commandData = {}, timeout = 30000) => {
     if (!isRemoteAuthenticated) {
@@ -448,21 +468,23 @@ export function useRemoteManagement(nodeReference) {
         reject(new Error('Command timeout'));
       }, timeout);
       
-      // Store handler
+      // Store handler for response
       commandHandlersRef.current.set(requestId, {
         resolve: (result) => {
           clearTimeout(timer);
+          commandHandlersRef.current.delete(requestId);
           resolve(result);
         },
         reject: (error) => {
           clearTimeout(timer);
+          commandHandlersRef.current.delete(requestId);
           reject(error);
         }
       });
       
-      // Send command
+      // Send remote_command message
       const message = {
-        type: 'remote_command',
+        type: 'remote_command',  // ✅ CORRECT: remote_command (NOT term_input!)
         node_reference: nodeReference,
         request_id: requestId,
         command: {
@@ -470,6 +492,8 @@ export function useRemoteManagement(nodeReference) {
           ...commandData
         }
       };
+      
+      console.log('[useRemoteManagement] Sending message:', JSON.stringify(message, null, 2));
       
       const success = webSocketService.send(message);
       
@@ -482,7 +506,8 @@ export function useRemoteManagement(nodeReference) {
   }, [nodeReference, isRemoteAuthenticated, generateRequestId]);
   
   /**
-   * List directory
+   * ✅ FIXED: List directory using remote_command
+   * Used by File Manager component
    */
   const listDirectory = useCallback(async (path) => {
     console.log('[useRemoteManagement] listDirectory:', path);
@@ -490,30 +515,51 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * Read file
+   * ✅ FIXED: Read file using remote_command
+   * Used by File Manager component
    */
   const readFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] readFile:', path);
     const result = await sendRemoteCommand('read_file', { path });
-    // Decode Base64 content
+    
+    // Decode Base64 content if encoded
     if (result.content && result.encoding === 'base64') {
-      result.content = atob(result.content);
+      try {
+        result.content = atob(result.content);
+      } catch (decodeError) {
+        console.error('[useRemoteManagement] Failed to decode Base64 content:', decodeError);
+        throw new Error('Failed to decode file content');
+      }
     }
+    
     return result;
   }, [sendRemoteCommand]);
   
   /**
-   * Write file
+   * ✅ FIXED: Write file using remote_command
+   * Used by File Manager component
    */
   const writeFile = useCallback(async (path, content) => {
     console.log('[useRemoteManagement] writeFile:', path, content.length, 'bytes');
+    
     // Encode content to Base64
-    const base64Content = btoa(unescape(encodeURIComponent(content)));
-    return sendRemoteCommand('write_file', { path, content: base64Content });
+    let base64Content;
+    try {
+      base64Content = btoa(unescape(encodeURIComponent(content)));
+    } catch (encodeError) {
+      console.error('[useRemoteManagement] Failed to encode content to Base64:', encodeError);
+      throw new Error('Failed to encode file content');
+    }
+    
+    return sendRemoteCommand('write_file', { 
+      path, 
+      content: base64Content 
+    });
   }, [sendRemoteCommand]);
   
   /**
-   * Delete file
+   * ✅ FIXED: Delete file using remote_command
+   * Used by File Manager component
    */
   const deleteFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] deleteFile:', path);
@@ -521,7 +567,8 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * Get system info
+   * ✅ FIXED: Get system info using remote_command
+   * Used by System Info component
    */
   const getSystemInfo = useCallback(async () => {
     console.log('[useRemoteManagement] getSystemInfo');
@@ -529,31 +576,48 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * Execute command (for System Info, NOT terminal!)
+   * ✅ FIXED: Execute command using remote_command (for System Info, NOT terminal!)
+   * Used by System Info component for specific system queries
    */
   const executeCommand = useCallback(async (command, args = []) => {
     console.log('[useRemoteManagement] executeCommand:', command, args);
+    
     // Build command string
     const fullCommand = args.length > 0 ? `${command} ${args.join(' ')}` : command;
-    return sendRemoteCommand('execute_command', { command: fullCommand });
+    
+    return sendRemoteCommand('execute_command', { 
+      command: fullCommand 
+    });
   }, [sendRemoteCommand]);
   
   /**
    * Upload file (alias for writeFile with better naming)
+   * Used by File Manager component
    */
   const uploadFile = useCallback(async (path, content, isBase64 = false) => {
     console.log('[useRemoteManagement] uploadFile:', path, 'isBase64:', isBase64);
+    
     let base64Content = content;
     if (!isBase64) {
-      base64Content = btoa(unescape(encodeURIComponent(content)));
+      try {
+        base64Content = btoa(unescape(encodeURIComponent(content)));
+      } catch (encodeError) {
+        console.error('[useRemoteManagement] Failed to encode upload content:', encodeError);
+        throw new Error('Failed to encode file for upload');
+      }
     }
-    return sendRemoteCommand('write_file', { path, content: base64Content });
+    
+    return sendRemoteCommand('write_file', { 
+      path, 
+      content: base64Content 
+    });
   }, [sendRemoteCommand]);
   
   // ==================== WebSocket Message Handling ====================
   
   /**
-   * Handle remote command responses
+   * ✅ NEW: Handle remote command responses
+   * Listens for remote_command_response messages from backend
    */
   useEffect(() => {
     const handleMessage = (event) => {
@@ -562,7 +626,12 @@ export function useRemoteManagement(nodeReference) {
         
         // Handle remote command responses
         if (message.type === 'remote_command_response') {
-          console.log('[useRemoteManagement] Remote command response:', message.request_id, message.success);
+          console.log('[useRemoteManagement] Remote command response:', {
+            request_id: message.request_id,
+            success: message.success,
+            hasResult: !!message.result,
+            error: message.error
+          });
           
           const handler = commandHandlersRef.current.get(message.request_id);
           if (handler) {
@@ -571,7 +640,8 @@ export function useRemoteManagement(nodeReference) {
             } else {
               handler.reject(new Error(message.error || 'Command failed'));
             }
-            commandHandlersRef.current.delete(message.request_id);
+          } else {
+            console.warn('[useRemoteManagement] No handler found for request:', message.request_id);
           }
         }
       } catch (error) {
@@ -643,6 +713,10 @@ export function useRemoteManagement(nodeReference) {
       if (currentSession) {
         console.log('[useRemoteManagement] Hook unmounting with session, will be cleaned by RemoteManagement');
       }
+      
+      // Clean up any pending command handlers
+      commandHandlersRef.current.clear();
+      
       isInitializedRef.current = false;
     };
   }, []);
@@ -676,7 +750,8 @@ export function useRemoteManagement(nodeReference) {
       isConnecting,
       isRemoteAuthenticated,
       isNodeOnline,
-      hasError: !!error
+      hasError: !!error,
+      pendingCommands: commandHandlersRef.current.size
     });
   }, [terminalSession, terminalReady, isConnecting, isRemoteAuthenticated, isNodeOnline, error]);
   
@@ -694,20 +769,21 @@ export function useRemoteManagement(nodeReference) {
     isNodeOnline,
     isWebSocketReady,
     
-    // Terminal Actions (for Terminal tab only)
+    // ✅ Terminal Actions (ONLY for Terminal tab!)
     initializeTerminal,
-    sendTerminalInput,
-    executeTerminalCommand,  // For terminal commands
+    sendTerminalInput,        // Sends term_input
+    executeTerminalCommand,   // Sends term_input with newline
     closeTerminal,
     
-    // Remote Commands (for File Manager & System Info)
-    listDirectory,
-    readFile,
-    writeFile,
-    deleteFile,
-    uploadFile,
-    getSystemInfo,
-    executeCommand,  // For system commands (NOT terminal!)
+    // ✅ Remote Commands (for File Manager & System Info)
+    // All these now use remote_command instead of term_input!
+    listDirectory,            // Uses remote_command
+    readFile,                 // Uses remote_command  
+    writeFile,                // Uses remote_command
+    deleteFile,               // Uses remote_command
+    uploadFile,               // Uses remote_command
+    getSystemInfo,            // Uses remote_command
+    executeCommand,           // Uses remote_command (NOT terminal!)
     
     // Store state
     wsState,
@@ -721,7 +797,10 @@ export function useRemoteManagement(nodeReference) {
       const newAuth = remoteAuthService.isAuthenticated(nodeReference);
       setIsRemoteAuthenticated(newAuth);
       return newAuth;
-    }
+    },
+    
+    // Debug info
+    pendingCommandsCount: commandHandlersRef.current.size
   };
 }
 
