@@ -532,13 +532,18 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * ✅ FIXED: Read file using remote_command
+   * Backend expects "download" command with "path" parameter
    */
   const readFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] readFile:', path);
+    
+    // Backend's handle_download expects { path: "..." }
     const result = await sendRemoteCommand(REMOTE_COMMAND_TYPES.READ_FILE, { path });
     
-    if (result.content && result.encoding === 'base64') {
+    // Backend returns base64 encoded content
+    if (result.content) {
       try {
+        // Decode base64 content
         result.content = atob(result.content);
       } catch (decodeError) {
         console.error('[useRemoteManagement] Failed to decode Base64 content:', decodeError);
@@ -551,10 +556,12 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * ✅ FIXED: Write file using remote_command
+   * Backend expects "upload" command with "path" and "content" (base64) parameters
    */
   const writeFile = useCallback(async (path, content) => {
     console.log('[useRemoteManagement] writeFile:', path, content.length, 'bytes');
     
+    // Encode content to Base64
     let base64Content;
     try {
       base64Content = btoa(unescape(encodeURIComponent(content)));
@@ -563,6 +570,7 @@ export function useRemoteManagement(nodeReference) {
       throw new Error('Failed to encode file content');
     }
     
+    // Backend's handle_upload expects { path: "...", content: "base64..." }
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.WRITE_FILE, { 
       path, 
       content: base64Content 
@@ -571,9 +579,12 @@ export function useRemoteManagement(nodeReference) {
   
   /**
    * ✅ FIXED: Delete file using remote_command
+   * Backend expects "delete" command with "path" parameter
    */
   const deleteFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] deleteFile:', path);
+    
+    // Backend's handle_delete expects { path: "..." }
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.DELETE_FILE, { path });
   }, [sendRemoteCommand]);
   
@@ -599,7 +610,8 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * ✅ PRESERVED: Upload file
+   * ✅ PRESERVED: Upload file (alias for writeFile with better naming)
+   * Backend expects "upload" command with "path" and "content" (base64) parameters
    */
   const uploadFile = useCallback(async (path, content, isBase64 = false) => {
     console.log('[useRemoteManagement] uploadFile:', path, 'isBase64:', isBase64);
@@ -614,6 +626,7 @@ export function useRemoteManagement(nodeReference) {
       }
     }
     
+    // Backend's handle_upload expects { path: "...", content: "base64..." }
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.WRITE_FILE, { 
       path, 
       content: base64Content 
