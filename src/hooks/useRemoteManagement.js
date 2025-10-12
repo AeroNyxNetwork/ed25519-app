@@ -630,7 +630,8 @@ export function useRemoteManagement(nodeReference) {
             request_id: message.request_id,
             success: message.success,
             hasResult: !!message.result,
-            error: message.error
+            error: message.error,
+            fullMessage: message  // ✅ Log full message for debugging
           });
           
           const handler = commandHandlersRef.current.get(message.request_id);
@@ -638,7 +639,25 @@ export function useRemoteManagement(nodeReference) {
             if (message.success) {
               handler.resolve(message.result);
             } else {
-              handler.reject(new Error(message.error || 'Command failed'));
+              // ✅ FIXED: Extract error message properly
+              let errorMessage = 'Command failed';
+              
+              if (message.error) {
+                // If error is a string
+                if (typeof message.error === 'string') {
+                  errorMessage = message.error;
+                }
+                // If error is an object with message property
+                else if (typeof message.error === 'object') {
+                  errorMessage = message.error.message || 
+                                message.error.error || 
+                                message.error.detail || 
+                                JSON.stringify(message.error);
+                }
+              }
+              
+              console.error('[useRemoteManagement] Command failed:', errorMessage);
+              handler.reject(new Error(errorMessage));
             }
           } else {
             console.warn('[useRemoteManagement] No handler found for request:', message.request_id);
