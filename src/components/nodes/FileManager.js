@@ -2,21 +2,19 @@
  * ============================================
  * File: src/components/nodes/FileManager.js
  * ============================================
- * File Manager Component - FIXED VERSION
+ * File Manager Component - COMPLETE FIXED VERSION v5.1.0
  * 
- * Modification Reason: Use remote_command API instead of terminal commands
- * Main Changes:
- * - Now uses listDirectory() for browsing
- * - Now uses readFile() for reading (with Base64 decoding)
- * - Now uses writeFile() for saving (with Base64 encoding)
- * - Now uses deleteFile() for deletion
+ * ✅ FIXED ISSUES:
+ * 1. Properly construct file paths (was causing "Missing 'path' field" error)
+ * 2. All remote commands now correctly pass required parameters
+ * 3. Better error handling and user feedback
  * 
- * ⚠️ Important Note:
- * - All commands now send remote_command messages
- * - No output will appear in Terminal tab
- * - All operations are background commands
+ * Main Changes from v5.0.0:
+ * - Fixed path construction: now builds full paths from currentPath + file.name
+ * - Added path validation and debugging logs
+ * - Improved error messages
  * 
- * Last Modified: v5.0.0 - Fixed to use remote command API
+ * Last Modified: v5.1.0 - Complete fix for path handling
  * ============================================
  */
 
@@ -95,6 +93,25 @@ const EDITABLE_EXTENSIONS = [
   'bash', 'env', 'gitignore', 'dockerfile'
 ];
 
+/**
+ * ✅ HELPER: Build full file path
+ */
+function buildPath(currentPath, fileName) {
+  // Normalize current path
+  const normalizedPath = currentPath.endsWith('/') && currentPath !== '/' 
+    ? currentPath.slice(0, -1) 
+    : currentPath;
+  
+  // Build full path
+  const fullPath = normalizedPath === '/' 
+    ? `/${fileName}` 
+    : `${normalizedPath}/${fileName}`;
+  
+  console.log('[FileManager] buildPath:', { currentPath, fileName, fullPath });
+  
+  return fullPath;
+}
+
 export default function FileManager({ 
   nodeReference, 
   listDirectory,   // From useRemoteManagement
@@ -118,7 +135,7 @@ export default function FileManager({
   const isMountedRef = useRef(true);
 
   /**
-   * Load directory contents using remote_command API
+   * ✅ FIXED: Load directory contents with proper path handling
    */
   const loadDirectory = useCallback(async (path = '/') => {
     // Prevent multiple simultaneous loads
@@ -147,17 +164,22 @@ export default function FileManager({
       
       // Parse response
       if (result && result.entries) {
-        const items = result.entries.map(entry => ({
-          name: entry.name,
-          type: entry.is_directory ? 'directory' : 'file',
-          size: entry.size || 0,
-          permissions: entry.permissions || '',
-          isSymlink: entry.permissions?.startsWith('l') || false,
-          path: entry.path,
-          modified: entry.modified,
-          owner: entry.owner,
-          group: entry.group
-        }));
+        const items = result.entries.map(entry => {
+          // ✅ FIX: Build full path from currentPath + entry.name
+          const fullPath = buildPath(path, entry.name);
+          
+          return {
+            name: entry.name,
+            type: entry.type === 'directory' || entry.is_directory ? 'directory' : 'file',
+            size: entry.size || 0,
+            permissions: entry.permissions || '',
+            isSymlink: entry.permissions?.startsWith('l') || false,
+            path: fullPath,  // ✅ Now correctly set
+            modified: entry.modified,
+            owner: entry.owner,
+            group: entry.group
+          };
+        });
         
         // Sort: directories first, then files
         items.sort((a, b) => {
@@ -165,9 +187,12 @@ export default function FileManager({
           return a.type === 'directory' ? -1 : 1;
         });
         
+        console.log('[FileManager] Parsed files:', items);
+        
         setFiles(items);
         setCurrentPath(path);
       } else {
+        console.log('[FileManager] No entries in result');
         setFiles([]);
         setCurrentPath(path);
       }
@@ -192,6 +217,7 @@ export default function FileManager({
    * Navigate to directory
    */
   const navigateToDirectory = useCallback((path) => {
+    console.log('[FileManager] Navigating to:', path);
     setSelectedFiles(new Set());
     loadDirectory(path);
   }, [loadDirectory]);
@@ -200,7 +226,11 @@ export default function FileManager({
    * Navigate to parent directory
    */
   const navigateUp = useCallback(() => {
-    const parentPath = currentPath.split('/').slice(0, -1).join('/') || '/';
+    const parts = currentPath.split('/').filter(Boolean);
+    const parentPath = parts.length > 0 
+      ? '/' + parts.slice(0, -1).join('/') 
+      : '/';
+    console.log('[FileManager] Navigating up from', currentPath, 'to', parentPath);
     navigateToDirectory(parentPath);
   }, [currentPath, navigateToDirectory]);
 
@@ -226,37 +256,54 @@ export default function FileManager({
   };
 
   /**
-   * Handle file click
+   * ✅ FIXED: Handle file click with path validation
    */
   const handleFileClick = (file) => {
+    console.log('[FileManager] File clicked:', file);
+    
     if (file.type === 'directory') {
+      // For directories, use the full path
       navigateToDirectory(file.path);
     } else {
       // Check if file is editable
       const extension = file.name.split('.').pop().toLowerCase();
       if (EDITABLE_EXTENSIONS.includes(extension) || !extension) {
         editFile(file);
+      } else {
+        setError(`Cannot edit ${extension} files`);
+        setTimeout(() => setError(null), 3000);
       }
     }
   };
 
   /**
-   * Edit file using remote_command API
+   * ✅ FIXED: Edit file with path validation
    */
   const editFile = async (file) => {
+    console.log('[FileManager] Editing file:', file);
+    
+    // ✅ Validate file path
+    if (!file.path) {
+      console.error('[FileManager] File path is missing:', file);
+      setError('File path is missing');
+      return;
+    }
+    
     setIsLoading(true);
     setError(null);
     
     try {
-      console.log('[FileManager] Reading file:', file.path);
+      console.log('[FileManager] Reading file with path:', file.path);
       
-      // Call remote command API
+      // Call remote command API with explicit path
       const result = await readFile(file.path);
       
       console.log('[FileManager] File read result:', result);
       
       // Content is already decoded by the hook
       const content = result.content || '';
+      
+      console.log('[FileManager] File content length:', content.length);
       
       setEditingFile(file);
       setEditingContent(content);
@@ -275,16 +322,27 @@ export default function FileManager({
   };
 
   /**
-   * Save file using remote_command API
+   * ✅ FIXED: Save file with path validation
    */
   const saveFile = async () => {
-    if (!editingFile || editingContent === null) return;
+    if (!editingFile || editingContent === null) {
+      console.error('[FileManager] Cannot save: missing file or content');
+      return;
+    }
+    
+    // ✅ Validate file path
+    if (!editingFile.path) {
+      console.error('[FileManager] File path is missing:', editingFile);
+      setError('File path is missing');
+      return;
+    }
     
     setIsSaving(true);
     setError(null);
     
     try {
       console.log('[FileManager] Saving file:', editingFile.path);
+      console.log('[FileManager] Content length:', editingContent.length);
       
       // Call remote command API (encoding is handled by the hook)
       const result = await writeFile(editingFile.path, editingContent);
@@ -302,8 +360,10 @@ export default function FileManager({
       
       // Hide success message after 3 seconds
       setTimeout(() => {
-        setShowSuccessMessage(false);
-        setSuccessMessage('');
+        if (isMountedRef.current) {
+          setShowSuccessMessage(false);
+          setSuccessMessage('');
+        }
       }, 3000);
       
     } catch (err) {
@@ -321,9 +381,18 @@ export default function FileManager({
   };
 
   /**
-   * Delete file using remote_command API
+   * ✅ FIXED: Delete file with path validation
    */
   const handleDeleteFile = async (file) => {
+    console.log('[FileManager] Delete requested for:', file);
+    
+    // ✅ Validate file path
+    if (!file.path) {
+      console.error('[FileManager] File path is missing:', file);
+      setError('File path is missing');
+      return;
+    }
+    
     if (!confirm(`Are you sure you want to delete ${file.name}?`)) return;
     
     setIsLoading(true);
@@ -335,14 +404,18 @@ export default function FileManager({
       // Call remote command API
       await deleteFile(file.path);
       
+      console.log('[FileManager] File deleted successfully');
+      
       // Refresh directory
       await loadDirectory(currentPath);
       
       setSuccessMessage(`${file.name} deleted successfully`);
       setShowSuccessMessage(true);
       setTimeout(() => {
-        setShowSuccessMessage(false);
-        setSuccessMessage('');
+        if (isMountedRef.current) {
+          setShowSuccessMessage(false);
+          setSuccessMessage('');
+        }
       }, 3000);
       
     } catch (err) {
@@ -364,6 +437,7 @@ export default function FileManager({
    */
   useEffect(() => {
     if (!hasInitialLoadRef.current && listDirectory) {
+      console.log('[FileManager] Initial load');
       hasInitialLoadRef.current = true;
       loadDirectory('/');
     }
@@ -398,6 +472,7 @@ export default function FileManager({
           onClick={() => loadDirectory(currentPath)}
           disabled={isLoading}
           className="p-2 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
+          title="Refresh"
         >
           <RefreshCw className={clsx("w-4 h-4 text-gray-400", isLoading && "animate-spin")} />
         </button>
@@ -444,6 +519,12 @@ export default function FileManager({
           >
             <AlertCircle className="w-5 h-5 text-red-400" />
             <p className="text-red-400 text-sm">{error}</p>
+            <button
+              onClick={() => setError(null)}
+              className="ml-auto p-1 hover:bg-white/10 rounded transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -599,6 +680,7 @@ export default function FileManager({
                   onChange={(e) => setEditingContent(e.target.value)}
                   className="w-full h-full bg-black/50 border border-white/10 rounded-lg p-4 text-sm text-white font-mono resize-none focus:outline-none focus:border-purple-500"
                   spellCheck={false}
+                  placeholder="File content will appear here..."
                 />
               </div>
             </motion.div>
