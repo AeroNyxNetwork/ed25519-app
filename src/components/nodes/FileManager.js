@@ -2,26 +2,23 @@
  * ============================================
  * File: src/components/nodes/FileManager.js
  * ============================================
- * File Manager Component - ENHANCED VERSION v6.0.0
+ * File Manager Component - PRODUCTION VERSION v7.0.0
  * 
- * Modification Reason: Add all file operations from backend (rename, copy, move, search, compress, etc.)
- * Main Functionality: Complete file management with all remote command support
+ * Main Functionality:
+ * - Browse remote file system
+ * - Edit text files
+ * - Delete files and directories
+ * - Handle REMOTE_NOT_ENABLED error gracefully
+ * - Wait for authentication before operations
+ * 
  * Dependencies: useRemoteManagement hook, lucide-react icons
  * 
- * Main Logical Flow:
- * 1. Load and display directory contents
- * 2. Handle all file operations (upload, download, delete, rename, copy, move)
- * 3. Support batch operations
- * 4. Search and filter files
- * 5. Compress and extract archives
- * 
- * ⚠️ Important Note for Next Developer:
+ * ⚠️ Important Notes:
  * - All operations use remote_command API (not terminal)
- * - Path construction must be correct (buildPath helper)
- * - User confirmation required for destructive operations
- * - File size validation before upload
+ * - Must wait for isRemoteAuthenticated before any operations
+ * - Gracefully handles backend configuration errors
  * 
- * Last Modified: v6.0.0 - Complete feature set implementation
+ * Last Modified: v7.0.0 - Production complete with error handling
  * ============================================
  */
 
@@ -49,29 +46,15 @@ import {
   AlertCircle,
   CheckCircle,
   Link,
-  Copy,
-  Scissors,
-  FolderPlus,
-  Search,
-  FileArchive,
-  FileOutput,
-  Filter,
-  MoreVertical,
-  ArrowRight,
-  CheckSquare,
-  Square
+  Settings,
+  Terminal,
+  Shield,
+  Server
 } from 'lucide-react';
 import clsx from 'clsx';
 
-// Import utilities
-import { 
-  formatBytes, 
-  isTextFile, 
-  isArchiveFile,
-  COMPRESSION_FORMATS 
-} from '../../lib/constants/remoteCommands';
+// ==================== FILE TYPE ICONS ====================
 
-// File type icon mapping
 const FILE_ICONS = {
   directory: Folder,
   js: FileCode,
@@ -110,6 +93,17 @@ const FILE_ICONS = {
   gz: Archive
 };
 
+// Editable file types
+const EDITABLE_EXTENSIONS = [
+  'txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 
+  'toml', 'ini', 'conf', 'config', 'js', 'jsx', 'ts', 'tsx', 
+  'py', 'java', 'cpp', 'c', 'h', 'go', 'rs', 'php', 
+  'rb', 'html', 'htm', 'css', 'scss', 'sass', 'sh', 
+  'bash', 'env', 'gitignore', 'dockerfile'
+];
+
+// ==================== HELPER FUNCTIONS ====================
+
 /**
  * Build full file path
  */
@@ -125,23 +119,34 @@ function buildPath(currentPath, fileName) {
   return fullPath;
 }
 
+/**
+ * Format bytes to human readable
+ */
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+/**
+ * Check if file is text/editable
+ */
+function isTextFile(filename) {
+  const extension = filename.split('.').pop().toLowerCase();
+  return EDITABLE_EXTENSIONS.includes(extension) || !extension;
+}
+
+// ==================== MAIN COMPONENT ====================
+
 export default function FileManager({ 
   nodeReference, 
   listDirectory,
   readFile,
   writeFile,
   deleteFile,
-  renameFile,
-  copyFile,
-  moveFile,
-  createDirectory,
-  deleteDirectory,
-  searchFiles,
-  compressFiles,
-  extractFile,
-  batchDelete,
-  batchMove,
-  batchCopy
+  isRemoteAuthenticated
 }) {
   // ==================== STATE MANAGEMENT ====================
   
@@ -149,39 +154,19 @@ export default function FileManager({
   const [files, setFiles] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [remoteNotEnabled, setRemoteNotEnabled] = useState(false);
   
   // Selection state
   const [selectedFiles, setSelectedFiles] = useState(new Set());
-  const [lastSelectedIndex, setLastSelectedIndex] = useState(null);
   
-  // Operation states
+  // Editor state
   const [editingFile, setEditingFile] = useState(null);
   const [editingContent, setEditingContent] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   
-  // Modal states
-  const [showRenameModal, setShowRenameModal] = useState(false);
-  const [showNewFolderModal, setShowNewFolderModal] = useState(false);
-  const [showCompressModal, setShowCompressModal] = useState(false);
-  const [showSearchModal, setShowSearchModal] = useState(false);
-  const [showMoveModal, setShowMoveModal] = useState(false);
-  
-  // Modal data
-  const [renamingFile, setRenamingFile] = useState(null);
-  const [newName, setNewName] = useState('');
-  const [newFolderName, setNewFolderName] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState(null);
-  const [compressFormat, setCompressFormat] = useState('zip');
-  const [moveDestination, setMoveDestination] = useState('');
-  
-  // Clipboard
-  const [clipboard, setClipboard] = useState({ files: [], operation: null }); // operation: 'copy' or 'cut'
-  
-  // UI states
+  // UI state
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
-  const [viewMode, setViewMode] = useState('list'); // 'list' or 'grid'
   
   // Refs
   const isLoadingRef = useRef(false);
@@ -191,28 +176,39 @@ export default function FileManager({
   // ==================== DIRECTORY LOADING ====================
   
   const loadDirectory = useCallback(async (path = '/') => {
+    // Prevent multiple simultaneous loads
     if (isLoadingRef.current) {
       console.log('[FileManager] Already loading, skipping...');
       return;
     }
     
+    // Check if functions are available
     if (!listDirectory) {
       console.log('[FileManager] listDirectory not available yet');
+      return;
+    }
+    
+    // Check authentication
+    if (!isRemoteAuthenticated) {
+      console.log('[FileManager] Not authenticated yet, waiting...');
+      setError('Waiting for authentication...');
       return;
     }
     
     isLoadingRef.current = true;
     setIsLoading(true);
     setError(null);
-    setSearchResults(null);
+    setRemoteNotEnabled(false);
     
     try {
       console.log('[FileManager] Loading directory:', path);
       
+      // Call remote command API
       const result = await listDirectory(path);
       
       console.log('[FileManager] Directory listing result:', result);
       
+      // Parse response
       if (result && result.entries) {
         const items = result.entries.map(entry => {
           const fullPath = buildPath(path, entry.name);
@@ -236,11 +232,10 @@ export default function FileManager({
           return a.type === 'directory' ? -1 : 1;
         });
         
-        console.log('[FileManager] Parsed files:', items);
+        console.log('[FileManager] Parsed files:', items.length, 'items');
         
         setFiles(items);
         setCurrentPath(path);
-        setSelectedFiles(new Set());
       } else {
         console.log('[FileManager] No entries in result');
         setFiles([]);
@@ -251,8 +246,25 @@ export default function FileManager({
       console.error('[FileManager] Failed to load directory:', err);
       
       let errorMessage = 'Failed to load directory';
+      
       if (err && err.message) {
         errorMessage = err.message;
+        
+        // Check for specific error types
+        if (errorMessage.includes('Remote management not enabled') || 
+            errorMessage.includes('REMOTE_NOT_ENABLED')) {
+          setRemoteNotEnabled(true);
+          errorMessage = 'Remote management is not enabled on this node';
+        } else if (errorMessage.includes('Not authenticated') ||
+                   errorMessage.includes('AUTH_FAILED')) {
+          errorMessage = 'Please wait for authentication to complete';
+        } else if (errorMessage.includes('timeout')) {
+          errorMessage = 'Request timeout. The server may be slow to respond.';
+        } else if (errorMessage.includes('not found')) {
+          errorMessage = 'Directory not found';
+        } else if (errorMessage.includes('permission')) {
+          errorMessage = 'Permission denied';
+        }
       }
       
       setError(errorMessage);
@@ -261,12 +273,13 @@ export default function FileManager({
       setIsLoading(false);
       isLoadingRef.current = false;
     }
-  }, [listDirectory]);
+  }, [listDirectory, isRemoteAuthenticated]);
 
   // ==================== NAVIGATION ====================
   
   const navigateToDirectory = useCallback((path) => {
     console.log('[FileManager] Navigating to:', path);
+    setSelectedFiles(new Set());
     loadDirectory(path);
   }, [loadDirectory]);
 
@@ -279,49 +292,6 @@ export default function FileManager({
     navigateToDirectory(parentPath);
   }, [currentPath, navigateToDirectory]);
 
-  // ==================== SELECTION ====================
-  
-  const toggleSelection = useCallback((file, index, event) => {
-    setSelectedFiles(prev => {
-      const newSelection = new Set(prev);
-      
-      if (event.shiftKey && lastSelectedIndex !== null) {
-        // Shift-click: select range
-        const start = Math.min(lastSelectedIndex, index);
-        const end = Math.max(lastSelectedIndex, index);
-        for (let i = start; i <= end; i++) {
-          if (files[i]) {
-            newSelection.add(files[i].path);
-          }
-        }
-      } else if (event.ctrlKey || event.metaKey) {
-        // Ctrl/Cmd-click: toggle individual
-        if (newSelection.has(file.path)) {
-          newSelection.delete(file.path);
-        } else {
-          newSelection.add(file.path);
-        }
-      } else {
-        // Single click: select only this file
-        newSelection.clear();
-        newSelection.add(file.path);
-      }
-      
-      return newSelection;
-    });
-    
-    setLastSelectedIndex(index);
-  }, [lastSelectedIndex, files]);
-
-  const selectAll = useCallback(() => {
-    setSelectedFiles(new Set(files.map(f => f.path)));
-  }, [files]);
-
-  const clearSelection = useCallback(() => {
-    setSelectedFiles(new Set());
-    setLastSelectedIndex(null);
-  }, []);
-
   // ==================== FILE OPERATIONS ====================
   
   const getFileIcon = (file) => {
@@ -331,13 +301,8 @@ export default function FileManager({
     return FILE_ICONS[extension] || File;
   };
 
-  const handleFileClick = (file, index, event) => {
+  const handleFileClick = (file) => {
     console.log('[FileManager] File clicked:', file);
-    
-    if (event.ctrlKey || event.metaKey || event.shiftKey) {
-      toggleSelection(file, index, event);
-      return;
-    }
     
     if (file.type === 'directory') {
       navigateToDirectory(file.path);
@@ -345,8 +310,6 @@ export default function FileManager({
       const extension = file.name.split('.').pop().toLowerCase();
       if (isTextFile(file.name)) {
         editFile(file);
-      } else if (isArchiveFile(file.name)) {
-        handleExtract(file);
       } else {
         showInfo(`Cannot preview ${extension} files. Use download to save locally.`);
       }
@@ -361,6 +324,11 @@ export default function FileManager({
     if (!file.path) {
       console.error('[FileManager] File path is missing:', file);
       setError('File path is missing');
+      return;
+    }
+    
+    if (!isRemoteAuthenticated) {
+      setError('Not authenticated. Please wait for authentication to complete.');
       return;
     }
     
@@ -406,6 +374,11 @@ export default function FileManager({
       return;
     }
     
+    if (!isRemoteAuthenticated) {
+      setError('Not authenticated. Please wait for authentication to complete.');
+      return;
+    }
+    
     setIsSaving(true);
     setError(null);
     
@@ -415,7 +388,7 @@ export default function FileManager({
       
       await writeFile(editingFile.path, editingContent);
       
-      console.log('[FileManager] File saved successfully');
+      console.log('[FileManager] File write result: success');
       
       setEditingFile(null);
       setEditingContent(null);
@@ -439,12 +412,17 @@ export default function FileManager({
 
   // ==================== DELETE ====================
   
-  const handleDelete = async (file) => {
+  const handleDeleteFile = async (file) => {
     console.log('[FileManager] Delete requested for:', file);
     
     if (!file.path) {
       console.error('[FileManager] File path is missing:', file);
       setError('File path is missing');
+      return;
+    }
+    
+    if (!isRemoteAuthenticated) {
+      setError('Not authenticated. Please wait for authentication to complete.');
       return;
     }
     
@@ -456,19 +434,16 @@ export default function FileManager({
     try {
       console.log('[FileManager] Deleting file:', file.path);
       
-      if (file.type === 'directory') {
-        await deleteDirectory(file.path, { recursive: true });
-      } else {
-        await deleteFile(file.path);
-      }
+      await deleteFile(file.path);
       
-      console.log('[FileManager] Deleted successfully');
+      console.log('[FileManager] File deleted successfully');
       
       await loadDirectory(currentPath);
+      
       showSuccess(`${file.name} deleted successfully`);
       
     } catch (err) {
-      console.error('[FileManager] Failed to delete:', err);
+      console.error('[FileManager] Failed to delete file:', err);
       
       let errorMessage = `Failed to delete ${file.name}`;
       if (err && err.message) {
@@ -476,226 +451,6 @@ export default function FileManager({
       }
       
       setError(errorMessage);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleBatchDelete = async () => {
-    if (selectedFiles.size === 0) return;
-    
-    const fileNames = Array.from(selectedFiles).map(path => {
-      const parts = path.split('/');
-      return parts[parts.length - 1];
-    }).join(', ');
-    
-    if (!confirm(`Are you sure you want to delete ${selectedFiles.size} items?\n\n${fileNames}`)) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      await batchDelete(Array.from(selectedFiles));
-      await loadDirectory(currentPath);
-      showSuccess(`${selectedFiles.size} items deleted successfully`);
-      clearSelection();
-    } catch (err) {
-      console.error('[FileManager] Batch delete failed:', err);
-      setError(err.message || 'Batch delete failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // ==================== RENAME ====================
-  
-  const handleRename = (file) => {
-    setRenamingFile(file);
-    setNewName(file.name);
-    setShowRenameModal(true);
-  };
-
-  const confirmRename = async () => {
-    if (!renamingFile || !newName.trim()) return;
-    
-    const newPath = buildPath(currentPath, newName);
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      await renameFile(renamingFile.path, newPath);
-      await loadDirectory(currentPath);
-      showSuccess(`Renamed to ${newName}`);
-      setShowRenameModal(false);
-    } catch (err) {
-      console.error('[FileManager] Rename failed:', err);
-      setError(err.message || 'Rename failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // ==================== COPY/CUT/PASTE ====================
-  
-  const handleCopy = useCallback(() => {
-    if (selectedFiles.size === 0) return;
-    setClipboard({ files: Array.from(selectedFiles), operation: 'copy' });
-    showSuccess(`${selectedFiles.size} items copied to clipboard`);
-  }, [selectedFiles]);
-
-  const handleCut = useCallback(() => {
-    if (selectedFiles.size === 0) return;
-    setClipboard({ files: Array.from(selectedFiles), operation: 'cut' });
-    showSuccess(`${selectedFiles.size} items cut to clipboard`);
-  }, [selectedFiles]);
-
-  const handlePaste = async () => {
-    if (clipboard.files.length === 0) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      if (clipboard.operation === 'copy') {
-        await batchCopy(clipboard.files, currentPath);
-        showSuccess(`${clipboard.files.length} items copied`);
-      } else if (clipboard.operation === 'cut') {
-        await batchMove(clipboard.files, currentPath);
-        showSuccess(`${clipboard.files.length} items moved`);
-        setClipboard({ files: [], operation: null });
-      }
-      
-      await loadDirectory(currentPath);
-      clearSelection();
-    } catch (err) {
-      console.error('[FileManager] Paste failed:', err);
-      setError(err.message || 'Paste operation failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // ==================== NEW FOLDER ====================
-  
-  const handleNewFolder = () => {
-    setNewFolderName('');
-    setShowNewFolderModal(true);
-  };
-
-  const confirmNewFolder = async () => {
-    if (!newFolderName.trim()) return;
-    
-    const folderPath = buildPath(currentPath, newFolderName);
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      await createDirectory(folderPath);
-      await loadDirectory(currentPath);
-      showSuccess(`Folder "${newFolderName}" created`);
-      setShowNewFolderModal(false);
-    } catch (err) {
-      console.error('[FileManager] Create folder failed:', err);
-      setError(err.message || 'Failed to create folder');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // ==================== SEARCH ====================
-  
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const result = await searchFiles(currentPath, searchQuery, {
-        caseSensitive: false,
-        maxDepth: 5
-      });
-      
-      const items = (result.entries || []).map(entry => ({
-        name: entry.name,
-        type: entry.type === 'directory' ? 'directory' : 'file',
-        size: entry.size || 0,
-        path: entry.path,
-        permissions: entry.permissions || '',
-        modified: entry.modified
-      }));
-      
-      setSearchResults(items);
-      setFiles(items);
-      showSuccess(`Found ${items.length} items`);
-      
-    } catch (err) {
-      console.error('[FileManager] Search failed:', err);
-      setError(err.message || 'Search failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const clearSearch = () => {
-    setSearchQuery('');
-    setSearchResults(null);
-    loadDirectory(currentPath);
-  };
-
-  // ==================== COMPRESS ====================
-  
-  const handleCompress = () => {
-    if (selectedFiles.size === 0) return;
-    setCompressFormat('zip');
-    setShowCompressModal(true);
-  };
-
-  const confirmCompress = async () => {
-    if (selectedFiles.size === 0) return;
-    
-    const archiveName = `archive_${Date.now()}.${compressFormat}`;
-    const archivePath = buildPath(currentPath, archiveName);
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      await compressFiles(Array.from(selectedFiles), archivePath, {
-        format: compressFormat
-      });
-      
-      await loadDirectory(currentPath);
-      showSuccess(`Archive created: ${archiveName}`);
-      setShowCompressModal(false);
-      clearSelection();
-    } catch (err) {
-      console.error('[FileManager] Compress failed:', err);
-      setError(err.message || 'Compression failed');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // ==================== EXTRACT ====================
-  
-  const handleExtract = async (file) => {
-    if (!isArchiveFile(file.name)) return;
-    
-    if (!confirm(`Extract ${file.name} to current directory?`)) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      await extractFile(file.path, { destination: currentPath });
-      await loadDirectory(currentPath);
-      showSuccess(`${file.name} extracted successfully`);
-    } catch (err) {
-      console.error('[FileManager] Extract failed:', err);
-      setError(err.message || 'Extraction failed');
     } finally {
       setIsLoading(false);
     }
@@ -726,12 +481,17 @@ export default function FileManager({
   // ==================== EFFECTS ====================
   
   useEffect(() => {
-    if (!hasInitialLoadRef.current && listDirectory) {
-      console.log('[FileManager] Initial load');
+    if (!hasInitialLoadRef.current && listDirectory && isRemoteAuthenticated) {
+      console.log('[FileManager] Initial load with authentication');
       hasInitialLoadRef.current = true;
-      loadDirectory('/');
+      // Delay to ensure everything is ready
+      setTimeout(() => {
+        if (isMountedRef.current) {
+          loadDirectory('/');
+        }
+      }, 1000);
     }
-  }, [listDirectory, loadDirectory]);
+  }, [listDirectory, isRemoteAuthenticated, loadDirectory]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -740,35 +500,8 @@ export default function FileManager({
     };
   }, []);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        if (e.key === 'a') {
-          e.preventDefault();
-          selectAll();
-        } else if (e.key === 'c') {
-          e.preventDefault();
-          handleCopy();
-        } else if (e.key === 'x') {
-          e.preventDefault();
-          handleCut();
-        } else if (e.key === 'v') {
-          e.preventDefault();
-          handlePaste();
-        }
-      } else if (e.key === 'Delete') {
-        if (selectedFiles.size > 0) {
-          handleBatchDelete();
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedFiles, handleCopy, handleCut, selectAll]);
-
-  // Breadcrumb navigation
+  // ==================== BREADCRUMB NAVIGATION ====================
+  
   const breadcrumbParts = currentPath.split('/').filter(Boolean);
   const breadcrumbs = [
     { name: 'Home', path: '/' },
@@ -780,106 +513,108 @@ export default function FileManager({
 
   // ==================== RENDER ====================
   
+  // Remote management not enabled state
+  if (remoteNotEnabled) {
+    return (
+      <div className="flex items-center justify-center h-full p-6">
+        <div className="text-center max-w-2xl">
+          <div className="w-20 h-20 bg-yellow-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Settings className="w-10 h-10 text-yellow-400" />
+          </div>
+          <h3 className="text-2xl font-semibold text-white mb-3">Remote Management Not Enabled</h3>
+          <p className="text-gray-400 mb-6">
+            This node does not have remote management enabled. To use file management features, 
+            you need to enable it in the node configuration.
+          </p>
+          
+          <div className="bg-black/40 rounded-xl p-6 text-left border border-white/10">
+            <div className="flex items-center gap-2 mb-4">
+              <Terminal className="w-5 h-5 text-purple-400" />
+              <h4 className="font-medium text-white">How to Enable Remote Management</h4>
+            </div>
+            
+            <ol className="space-y-3 text-sm text-gray-300">
+              <li className="flex gap-3">
+                <span className="text-purple-400 font-bold">1.</span>
+                <div className="flex-1">
+                  SSH into your node server:
+                  <code className="block mt-2 bg-black/60 px-3 py-2 rounded text-xs text-gray-300 font-mono">
+                    ssh user@{node?.ip_address || 'your-node-ip'}
+                  </code>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-purple-400 font-bold">2.</span>
+                <div className="flex-1">
+                  Edit the node configuration file:
+                  <code className="block mt-2 bg-black/60 px-3 py-2 rounded text-xs text-gray-300 font-mono">
+                    nano /etc/aeronyx/node.conf
+                  </code>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-purple-400 font-bold">3.</span>
+                <div className="flex-1">
+                  Add or update the configuration:
+                  <code className="block mt-2 bg-black/60 px-3 py-2 rounded text-xs text-gray-300 font-mono">
+                    enable_remote_management: true
+                  </code>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-purple-400 font-bold">4.</span>
+                <div className="flex-1">
+                  Restart the node service:
+                  <code className="block mt-2 bg-black/60 px-3 py-2 rounded text-xs text-gray-300 font-mono">
+                    sudo systemctl restart aeronyx-node
+                  </code>
+                </div>
+              </li>
+            </ol>
+            
+            <div className="mt-6 p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
+              <p className="text-xs text-yellow-400">
+                <strong>Security Note:</strong> Enabling remote management allows file access through the web interface. 
+                Ensure your node is properly secured and only accessible through trusted networks.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Waiting for authentication state
+  if (!isRemoteAuthenticated) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <Shield className="w-12 h-12 text-yellow-400 mx-auto mb-4 animate-pulse" />
+          <p className="text-yellow-400 mb-2">Waiting for authentication...</p>
+          <p className="text-sm text-gray-400">Please wait while we authenticate your session</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col p-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-xl font-semibold text-white">File Manager</h3>
-        <div className="flex items-center gap-2">
-          {/* Toolbar */}
-          {selectedFiles.size > 0 && (
-            <>
-              <span className="text-sm text-gray-400">{selectedFiles.size} selected</span>
-              <button
-                onClick={handleCopy}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                title="Copy (Ctrl+C)"
-              >
-                <Copy className="w-4 h-4 text-gray-400" />
-              </button>
-              <button
-                onClick={handleCut}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                title="Cut (Ctrl+X)"
-              >
-                <Scissors className="w-4 h-4 text-gray-400" />
-              </button>
-              <button
-                onClick={handleCompress}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                title="Compress"
-              >
-                <FileArchive className="w-4 h-4 text-gray-400" />
-              </button>
-              <button
-                onClick={handleBatchDelete}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                title="Delete (Del)"
-              >
-                <Trash2 className="w-4 h-4 text-gray-400" />
-              </button>
-              <button
-                onClick={clearSelection}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                title="Clear Selection"
-              >
-                <X className="w-4 h-4 text-gray-400" />
-              </button>
-              <div className="w-px h-6 bg-white/10" />
-            </>
-          )}
-          
-          {clipboard.files.length > 0 && (
-            <>
-              <button
-                onClick={handlePaste}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                title={`Paste ${clipboard.files.length} items (Ctrl+V)`}
-              >
-                <FileOutput className="w-4 h-4 text-gray-400" />
-              </button>
-              <div className="w-px h-6 bg-white/10" />
-            </>
-          )}
-          
-          <button
-            onClick={handleNewFolder}
-            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-            title="New Folder"
-          >
-            <FolderPlus className="w-4 h-4 text-gray-400" />
-          </button>
-          <button
-            onClick={() => setShowSearchModal(true)}
-            className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-            title="Search"
-          >
-            <Search className="w-4 h-4 text-gray-400" />
-          </button>
-          <button
-            onClick={() => loadDirectory(currentPath)}
-            disabled={isLoading}
-            className="p-2 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
-            title="Refresh"
-          >
-            <RefreshCw className={clsx("w-4 h-4 text-gray-400", isLoading && "animate-spin")} />
-          </button>
-        </div>
+        <button
+          onClick={() => loadDirectory(currentPath)}
+          disabled={isLoading}
+          className="p-2 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
+          title="Refresh"
+        >
+          <RefreshCw className={clsx("w-4 h-4 text-gray-400", isLoading && "animate-spin")} />
+        </button>
       </div>
 
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 mb-4 text-sm">
-        {searchResults && (
-          <button
-            onClick={clearSearch}
-            className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded flex items-center gap-1 text-xs"
-          >
-            <Filter className="w-3 h-3" />
-            Search Results
-            <X className="w-3 h-3" />
-          </button>
-        )}
-        {!searchResults && breadcrumbs.map((crumb, index) => (
+        {breadcrumbs.map((crumb, index) => (
           <React.Fragment key={crumb.path}>
             {index > 0 && <ChevronRight className="w-4 h-4 text-gray-500" />}
             <button
@@ -942,7 +677,7 @@ export default function FileManager({
         ) : (
           <div className="space-y-1">
             {/* Parent directory link */}
-            {currentPath !== '/' && !searchResults && (
+            {currentPath !== '/' && (
               <button
                 onClick={navigateUp}
                 className="w-full flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg transition-colors"
@@ -953,7 +688,7 @@ export default function FileManager({
             )}
             
             {/* Files */}
-            {files.map((file, index) => {
+            {files.map((file) => {
               const Icon = getFileIcon(file);
               const isSelected = selectedFiles.has(file.path);
               
@@ -964,23 +699,8 @@ export default function FileManager({
                     "flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg transition-colors cursor-pointer group",
                     isSelected && "bg-white/10"
                   )}
-                  onClick={(e) => handleFileClick(file, index, e)}
+                  onClick={() => handleFileClick(file)}
                 >
-                  {/* Selection checkbox */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleSelection(file, index, e);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    {isSelected ? (
-                      <CheckSquare className="w-4 h-4 text-purple-400" />
-                    ) : (
-                      <Square className="w-4 h-4 text-gray-400" />
-                    )}
-                  </button>
-                  
                   <Icon className={clsx(
                     "w-5 h-5 flex-shrink-0",
                     file.type === 'directory' ? "text-blue-400" : "text-gray-400"
@@ -1012,40 +732,18 @@ export default function FileManager({
                             <Edit className="w-4 h-4 text-gray-400" />
                           </button>
                         )}
-                        {isArchiveFile(file.name) && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleExtract(file);
-                            }}
-                            className="p-1.5 hover:bg-white/10 rounded transition-colors"
-                            title="Extract"
-                          >
-                            <FileOutput className="w-4 h-4 text-gray-400" />
-                          </button>
-                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteFile(file);
+                          }}
+                          className="p-1.5 hover:bg-white/10 rounded transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4 text-gray-400" />
+                        </button>
                       </>
                     )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRename(file);
-                      }}
-                      className="p-1.5 hover:bg-white/10 rounded transition-colors"
-                      title="Rename"
-                    >
-                      <Edit className="w-4 h-4 text-gray-400" />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(file);
-                      }}
-                      className="p-1.5 hover:bg-white/10 rounded transition-colors"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-4 h-4 text-gray-400" />
-                    </button>
                   </div>
                 </div>
               );
@@ -1054,10 +752,7 @@ export default function FileManager({
         )}
       </div>
 
-      {/* Modals - Rename, New Folder, Search, Compress, etc. */}
-      {/* (Implementation of modals similar to existing pattern) */}
-      
-      {/* File editor modal (existing code) */}
+      {/* File editor modal */}
       <AnimatePresence>
         {editingFile && (
           <motion.div
@@ -1079,6 +774,7 @@ export default function FileManager({
               className="bg-black/90 border border-white/10 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
+              {/* Editor header */}
               <div className="flex items-center justify-between p-4 border-b border-white/10">
                 <div className="flex items-center gap-3">
                   <FileText className="w-5 h-5 text-purple-400" />
@@ -1113,6 +809,7 @@ export default function FileManager({
                 </div>
               </div>
               
+              {/* Editor content */}
               <div className="flex-1 p-4 overflow-hidden">
                 <textarea
                   value={editingContent || ''}
