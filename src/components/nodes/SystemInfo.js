@@ -2,19 +2,28 @@
  * ============================================
  * File: src/components/nodes/SystemInfo.js
  * ============================================
- * System Information Component - COMPLETE v4.0.0
+ * System Information Component - PRODUCTION VERSION v5.0.0
  * 
- * Main Functionality: Display comprehensive system information with real-time updates
+ * Main Functionality:
+ * - Display comprehensive system information
+ * - Real-time metrics with auto-refresh
+ * - Handle authentication requirements
+ * - Display execution time for performance monitoring
+ * 
  * Dependencies: useRemoteManagement hook, lucide-react icons
  * 
- * 🔧 KEY FIX: Wait for isRemoteAuthenticated before loading data
+ * ⚠️ Important Notes:
+ * - All commands use remote_command API (not terminal)
+ * - Must wait for isRemoteAuthenticated before loading
+ * - Execution time displayed for monitoring
+ * - Auto-refresh with configurable intervals
  * 
- * Last Modified: v4.0.0 - Complete working version
+ * Last Modified: v5.0.0 - Production complete
  * ============================================
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Loader2, 
   RefreshCw, 
@@ -33,11 +42,37 @@ import {
   Network,
   Shield,
   Thermometer,
-  Terminal
+  Terminal,
+  Settings
 } from 'lucide-react';
 import clsx from 'clsx';
 
-import { formatBytes } from '../../lib/constants/remoteCommands';
+// ==================== HELPER FUNCTIONS ====================
+
+function formatBytes(bytes) {
+  if (bytes === 0 || !bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatUptime(seconds) {
+  if (!seconds) return 'Unknown';
+  
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  
+  return parts.join(' ') || '< 1m';
+}
+
+// ==================== MAIN COMPONENT ====================
 
 export default function SystemInfo({ 
   nodeReference, 
@@ -45,10 +80,12 @@ export default function SystemInfo({
   executeCommand,
   isRemoteAuthenticated
 }) {
-  // State
+  // ==================== STATE MANAGEMENT ====================
+  
   const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [remoteNotEnabled, setRemoteNotEnabled] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(30);
   const [lastUpdate, setLastUpdate] = useState(null);
@@ -70,22 +107,8 @@ export default function SystemInfo({
   const previousMetricsRef = useRef(null);
   const hasLoadedRef = useRef(false);
 
-  // Utilities
-  const formatUptime = useCallback((seconds) => {
-    if (!seconds) return 'Unknown';
-    
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    
-    const parts = [];
-    if (days > 0) parts.push(`${days}d`);
-    if (hours > 0) parts.push(`${hours}h`);
-    if (minutes > 0) parts.push(`${minutes}m`);
-    
-    return parts.join(' ') || '< 1m';
-  }, []);
-
+  // ==================== UTILITIES ====================
+  
   const calculateTrend = useCallback((current, previous) => {
     if (!previous) return 'stable';
     const diff = current - previous;
@@ -94,15 +117,31 @@ export default function SystemInfo({
     return 'stable';
   }, []);
 
-  // Load system info
+  const getStatusColor = useCallback((percent) => {
+    if (percent >= 90) return 'text-red-400';
+    if (percent >= 70) return 'text-yellow-400';
+    if (percent >= 50) return 'text-blue-400';
+    return 'text-green-400';
+  }, []);
+
+  const getTrendIcon = useCallback((trend) => {
+    switch (trend) {
+      case 'up': return <TrendingUp className="w-4 h-4 text-red-400" />;
+      case 'down': return <TrendingDown className="w-4 h-4 text-green-400" />;
+      default: return <Minus className="w-4 h-4 text-gray-400" />;
+    }
+  }, []);
+
+  // ==================== LOAD SYSTEM INFO ====================
+  
   const loadSystemInfo = useCallback(async () => {
     if (!getSystemInfo) {
-      console.log('[SystemInfo] getSystemInfo not available');
+      console.log('[SystemInfo] getSystemInfo not available yet');
       return;
     }
     
     if (!isRemoteAuthenticated) {
-      console.log('[SystemInfo] Not authenticated yet, skipping load');
+      console.log('[SystemInfo] Not authenticated yet, waiting...');
       setError('Waiting for authentication...');
       return;
     }
@@ -116,6 +155,7 @@ export default function SystemInfo({
     
     setLoading(true);
     setError(null);
+    setRemoteNotEnabled(false);
     
     const startTime = Date.now();
     
@@ -129,8 +169,10 @@ export default function SystemInfo({
       const execTime = Date.now() - startTime;
       setExecutionTime(execTime);
       
-      console.log('[SystemInfo] System info loaded in', execTime, 'ms');
+      console.log('[SystemInfo] System info result:', result);
+      console.log('[SystemInfo] Execution time:', execTime, 'ms');
       
+      // Parse system data
       const systemData = {
         hostname: result.hostname || 'Unknown',
         kernel: result.os?.kernel || result.os?.version || 'Unknown',
@@ -213,9 +255,23 @@ export default function SystemInfo({
       
       if (isMountedRef.current && !signal.aborted) {
         let errorMessage = 'Failed to load system information';
+        
         if (err && err.message) {
           errorMessage = err.message;
+          
+          // Check for specific errors
+          if (errorMessage.includes('Remote management not enabled') ||
+              errorMessage.includes('REMOTE_NOT_ENABLED')) {
+            setRemoteNotEnabled(true);
+            errorMessage = 'Remote management is not enabled on this node';
+          } else if (errorMessage.includes('Not authenticated') ||
+                     errorMessage.includes('AUTH_FAILED')) {
+            errorMessage = 'Please wait for authentication to complete';
+          } else if (errorMessage.includes('timeout')) {
+            errorMessage = 'Request timeout. The server may be slow to respond.';
+          }
         }
+        
         setError(errorMessage);
       }
     } finally {
@@ -224,13 +280,14 @@ export default function SystemInfo({
       }
       abortControllerRef.current = null;
     }
-  }, [getSystemInfo, isRemoteAuthenticated, formatUptime, calculateTrend]);
+  }, [getSystemInfo, isRemoteAuthenticated, calculateTrend]);
 
+  // ==================== AUTO-REFRESH ====================
+  
   const toggleAutoRefresh = useCallback(() => {
     setAutoRefresh(prev => !prev);
   }, []);
 
-  // Auto-refresh
   useEffect(() => {
     if (autoRefresh && refreshInterval > 0 && getSystemInfo && isRemoteAuthenticated) {
       intervalRef.current = setInterval(() => {
@@ -250,11 +307,19 @@ export default function SystemInfo({
     };
   }, [autoRefresh, refreshInterval, getSystemInfo, isRemoteAuthenticated, loadSystemInfo]);
 
-  // Initial load - only when authenticated
+  // ==================== LIFECYCLE ====================
+  
   useEffect(() => {
     if (!hasLoadedRef.current && getSystemInfo && isRemoteAuthenticated) {
       console.log('[SystemInfo] Initial load with authentication');
-      loadSystemInfo();
+      // Delay to ensure everything is ready
+      const timer = setTimeout(() => {
+        if (isMountedRef.current && !hasLoadedRef.current) {
+          loadSystemInfo();
+        }
+      }, 1000);
+      
+      return () => clearTimeout(timer);
     }
   }, [getSystemInfo, isRemoteAuthenticated, loadSystemInfo]);
 
@@ -262,8 +327,34 @@ export default function SystemInfo({
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
+
+  // ==================== RENDER ====================
+  
+  // Remote management not enabled state
+  if (remoteNotEnabled) {
+    return (
+      <div className="flex items-center justify-center h-full p-6">
+        <div className="text-center max-w-2xl">
+          <div className="w-20 h-20 bg-yellow-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Settings className="w-10 h-10 text-yellow-400" />
+          </div>
+          <h3 className="text-2xl font-semibold text-white mb-3">Remote Management Not Enabled</h3>
+          <p className="text-gray-400 mb-6">
+            This node does not have remote management enabled. To use system information features, 
+            please enable it in the node configuration.
+          </p>
+          <div className="bg-black/40 rounded-xl p-4 text-left text-sm text-gray-300 border border-white/10">
+            <p className="mb-2">To enable remote management, configure your node settings and restart the service.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Loading state
   if (loading && !info) {
@@ -277,12 +368,12 @@ export default function SystemInfo({
     );
   }
 
-  // Waiting for auth
+  // Waiting for authentication
   if (!isRemoteAuthenticated && !info) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
-          <Shield className="w-12 h-12 text-yellow-400 mx-auto mb-4" />
+          <Shield className="w-12 h-12 text-yellow-400 mx-auto mb-4 animate-pulse" />
           <p className="text-yellow-400 mb-2">Waiting for authentication...</p>
           <p className="text-sm text-gray-400">Please wait while we authenticate your session</p>
         </div>
@@ -334,6 +425,7 @@ export default function SystemInfo({
         </div>
         
         <div className="flex items-center gap-3">
+          {/* Auto-refresh toggle */}
           <div className="flex items-center gap-2">
             <button
               onClick={toggleAutoRefresh}
@@ -368,6 +460,7 @@ export default function SystemInfo({
             )}
           </div>
           
+          {/* Manual refresh */}
           <button
             onClick={loadSystemInfo}
             disabled={loading || !isRemoteAuthenticated}
