@@ -2,30 +2,19 @@
  * ============================================
  * File: src/components/nodes/SystemInfo.js
  * ============================================
- * System Information Component - ENHANCED VERSION v4.0.0
+ * System Information Component - COMPLETE v4.0.0
  * 
- * Modification Reason: Use remote_command API with execution time display
  * Main Functionality: Display comprehensive system information with real-time updates
  * Dependencies: useRemoteManagement hook, lucide-react icons
  * 
- * Main Logical Flow:
- * 1. Fetch system information using getSystemInfo command
- * 2. Parse and display CPU, memory, disk, network metrics
- * 3. Support auto-refresh with configurable intervals
- * 4. Display execution time for performance monitoring
+ * 🔧 KEY FIX: Wait for isRemoteAuthenticated before loading data
  * 
- * ⚠️ Important Note for Next Developer:
- * - All commands use remote_command API (not terminal)
- * - Execution time (execution_time_ms) is displayed for monitoring
- * - Auto-refresh can be toggled on/off
- * - System info shows comprehensive data from backend
- * 
- * Last Modified: v4.0.0 - Enhanced with execution time and better metrics
+ * Last Modified: v4.0.0 - Complete working version
  * ============================================
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { 
   Loader2, 
   RefreshCw, 
@@ -36,38 +25,32 @@ import {
   Activity,
   Wifi,
   Server,
-  Zap,
-  MemoryStick,
-  Gauge,
   AlertCircle,
   CheckCircle,
   TrendingUp,
   TrendingDown,
   Minus,
-  BarChart3,
   Network,
   Shield,
   Thermometer,
-  Terminal,
-  Settings
+  Terminal
 } from 'lucide-react';
 import clsx from 'clsx';
 
-// Import utilities
 import { formatBytes } from '../../lib/constants/remoteCommands';
 
 export default function SystemInfo({ 
   nodeReference, 
   getSystemInfo,
-  executeCommand
+  executeCommand,
+  isRemoteAuthenticated
 }) {
-  // ==================== STATE MANAGEMENT ====================
-  
+  // State
   const [info, setInfo] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
-  const [refreshInterval, setRefreshInterval] = useState(30); // seconds
+  const [refreshInterval, setRefreshInterval] = useState(30);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [executionTime, setExecutionTime] = useState(null);
   
@@ -85,12 +68,9 @@ export default function SystemInfo({
   const abortControllerRef = useRef(null);
   const isMountedRef = useRef(true);
   const previousMetricsRef = useRef(null);
+  const hasLoadedRef = useRef(false);
 
-  // ==================== UTILITIES ====================
-  
-  /**
-   * Format uptime seconds to readable string
-   */
+  // Utilities
   const formatUptime = useCallback((seconds) => {
     if (!seconds) return 'Unknown';
     
@@ -106,9 +86,6 @@ export default function SystemInfo({
     return parts.join(' ') || '< 1m';
   }, []);
 
-  /**
-   * Calculate trend based on previous metrics
-   */
   const calculateTrend = useCallback((current, previous) => {
     if (!previous) return 'stable';
     const diff = current - previous;
@@ -117,33 +94,19 @@ export default function SystemInfo({
     return 'stable';
   }, []);
 
-  /**
-   * Get status color based on percentage
-   */
-  const getStatusColor = useCallback((percent) => {
-    if (percent >= 90) return 'text-red-400';
-    if (percent >= 70) return 'text-yellow-400';
-    if (percent >= 50) return 'text-blue-400';
-    return 'text-green-400';
-  }, []);
-
-  /**
-   * Get trend icon
-   */
-  const getTrendIcon = useCallback((trend) => {
-    switch (trend) {
-      case 'up': return <TrendingUp className="w-4 h-4 text-red-400" />;
-      case 'down': return <TrendingDown className="w-4 h-4 text-green-400" />;
-      default: return <Minus className="w-4 h-4 text-gray-400" />;
-    }
-  }, []);
-
-  // ==================== LOAD SYSTEM INFO ====================
-  
-  /**
-   * Load comprehensive system information
-   */
+  // Load system info
   const loadSystemInfo = useCallback(async () => {
+    if (!getSystemInfo) {
+      console.log('[SystemInfo] getSystemInfo not available');
+      return;
+    }
+    
+    if (!isRemoteAuthenticated) {
+      console.log('[SystemInfo] Not authenticated yet, skipping load');
+      setError('Waiting for authentication...');
+      return;
+    }
+    
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -163,14 +126,11 @@ export default function SystemInfo({
       
       if (signal.aborted) return;
       
-      // Calculate execution time
       const execTime = Date.now() - startTime;
       setExecutionTime(execTime);
       
-      console.log('[SystemInfo] System info result:', result);
-      console.log('[SystemInfo] Execution time:', execTime, 'ms');
+      console.log('[SystemInfo] System info loaded in', execTime, 'ms');
       
-      // Parse system data
       const systemData = {
         hostname: result.hostname || 'Unknown',
         kernel: result.os?.kernel || result.os?.version || 'Unknown',
@@ -179,7 +139,6 @@ export default function SystemInfo({
         temperature: result.cpu?.temperature || null
       };
       
-      // Parse CPU data
       const cpuData = {
         usage: Math.round(result.cpu?.usage_percent || 0),
         cores: result.cpu?.cores || 0,
@@ -190,7 +149,6 @@ export default function SystemInfo({
           : 'stable'
       };
       
-      // Parse memory data
       const memoryData = {
         used: formatBytes((result.memory?.used_mb || 0) * 1024 * 1024),
         total: formatBytes((result.memory?.total_mb || 0) * 1024 * 1024),
@@ -201,7 +159,6 @@ export default function SystemInfo({
           : 'stable'
       };
       
-      // Parse disk data (primary disk)
       const primaryDisk = result.disks?.[0] || {};
       const diskData = {
         used: `${primaryDisk.used_gb || 0} GB`,
@@ -213,7 +170,6 @@ export default function SystemInfo({
           : 'stable'
       };
       
-      // Parse network data
       const networkData = {
         interfaces: (result.network?.interfaces || []).map(iface => ({
           name: iface.name,
@@ -224,7 +180,6 @@ export default function SystemInfo({
         active: result.network?.interfaces?.length > 0 || false
       };
       
-      // Process stats (if available)
       const processData = {
         total: result.processes?.total || 0,
         running: result.processes?.running || 0,
@@ -232,14 +187,12 @@ export default function SystemInfo({
         zombie: result.processes?.zombie || 0
       };
       
-      // Store current metrics for trend calculation
       previousMetricsRef.current = {
         cpu: cpuData,
         memory: memoryData,
         disk: diskData
       };
       
-      // Update state
       if (isMountedRef.current) {
         setMetrics({
           cpu: cpuData,
@@ -252,6 +205,7 @@ export default function SystemInfo({
         
         setInfo(result);
         setLastUpdate(new Date());
+        hasLoadedRef.current = true;
       }
       
     } catch (err) {
@@ -270,16 +224,15 @@ export default function SystemInfo({
       }
       abortControllerRef.current = null;
     }
-  }, [getSystemInfo, formatUptime, calculateTrend]);
+  }, [getSystemInfo, isRemoteAuthenticated, formatUptime, calculateTrend]);
 
-  // ==================== AUTO-REFRESH ====================
-  
   const toggleAutoRefresh = useCallback(() => {
     setAutoRefresh(prev => !prev);
   }, []);
 
+  // Auto-refresh
   useEffect(() => {
-    if (autoRefresh && refreshInterval > 0 && getSystemInfo) {
+    if (autoRefresh && refreshInterval > 0 && getSystemInfo && isRemoteAuthenticated) {
       intervalRef.current = setInterval(() => {
         loadSystemInfo();
       }, refreshInterval * 1000);
@@ -295,21 +248,15 @@ export default function SystemInfo({
         clearInterval(intervalRef.current);
       }
     };
-  }, [autoRefresh, refreshInterval, getSystemInfo, loadSystemInfo]);
+  }, [autoRefresh, refreshInterval, getSystemInfo, isRemoteAuthenticated, loadSystemInfo]);
 
-  // ==================== LIFECYCLE ====================
-  
+  // Initial load - only when authenticated
   useEffect(() => {
-    if (getSystemInfo) {
+    if (!hasLoadedRef.current && getSystemInfo && isRemoteAuthenticated) {
+      console.log('[SystemInfo] Initial load with authentication');
       loadSystemInfo();
     }
-    
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [getSystemInfo, loadSystemInfo]);
+  }, [getSystemInfo, isRemoteAuthenticated, loadSystemInfo]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -318,8 +265,6 @@ export default function SystemInfo({
     };
   }, []);
 
-  // ==================== RENDER ====================
-  
   // Loading state
   if (loading && !info) {
     return (
@@ -332,6 +277,19 @@ export default function SystemInfo({
     );
   }
 
+  // Waiting for auth
+  if (!isRemoteAuthenticated && !info) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <Shield className="w-12 h-12 text-yellow-400 mx-auto mb-4" />
+          <p className="text-yellow-400 mb-2">Waiting for authentication...</p>
+          <p className="text-sm text-gray-400">Please wait while we authenticate your session</p>
+        </div>
+      </div>
+    );
+  }
+
   // Error state
   if (error && !info) {
     return (
@@ -339,12 +297,14 @@ export default function SystemInfo({
         <div className="text-center">
           <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
           <p className="text-red-400 mb-4">{error}</p>
-          <button
-            onClick={loadSystemInfo}
-            className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg transition-colors text-red-400"
-          >
-            Retry
-          </button>
+          {isRemoteAuthenticated && (
+            <button
+              onClick={loadSystemInfo}
+              className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg transition-colors text-red-400"
+            >
+              Retry
+            </button>
+          )}
         </div>
       </div>
     );
@@ -374,7 +334,6 @@ export default function SystemInfo({
         </div>
         
         <div className="flex items-center gap-3">
-          {/* Auto-refresh toggle */}
           <div className="flex items-center gap-2">
             <button
               onClick={toggleAutoRefresh}
@@ -409,10 +368,9 @@ export default function SystemInfo({
             )}
           </div>
           
-          {/* Manual refresh */}
           <button
             onClick={loadSystemInfo}
-            disabled={loading}
+            disabled={loading || !isRemoteAuthenticated}
             className="p-2 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
           >
             <RefreshCw className={clsx("w-4 h-4 text-gray-400", loading && "animate-spin")} />
@@ -498,7 +456,7 @@ export default function SystemInfo({
           />
         </div>
 
-        {/* Temperature (if available) */}
+        {/* Temperature */}
         {metrics.system.temperature !== null && (
           <div className="bg-white/5 rounded-xl p-4 border border-white/10">
             <div className="flex items-center gap-2 mb-2">
@@ -561,9 +519,24 @@ function SystemOverviewCard({ icon: Icon, iconColor, label, value, subtitle, sta
 
 function ResourceCard({ title, icon: Icon, value, color, trend, details }) {
   const colorMap = {
-    purple: { bg: 'from-purple-900/20 to-purple-800/10', text: 'text-purple-400', bar: 'bg-purple-500', border: 'border-purple-500/20' },
-    blue: { bg: 'from-blue-900/20 to-blue-800/10', text: 'text-blue-400', bar: 'bg-blue-500', border: 'border-blue-500/20' },
-    green: { bg: 'from-green-900/20 to-green-800/10', text: 'text-green-400', bar: 'bg-green-500', border: 'border-green-500/20' }
+    purple: { 
+      bg: 'from-purple-900/20 to-purple-800/10', 
+      text: 'text-purple-400', 
+      bar: 'bg-purple-500', 
+      border: 'border-purple-500/20' 
+    },
+    blue: { 
+      bg: 'from-blue-900/20 to-blue-800/10', 
+      text: 'text-blue-400', 
+      bar: 'bg-blue-500', 
+      border: 'border-blue-500/20' 
+    },
+    green: { 
+      bg: 'from-green-900/20 to-green-800/10', 
+      text: 'text-green-400', 
+      bar: 'bg-green-500', 
+      border: 'border-green-500/20' 
+    }
   };
 
   const colors = colorMap[color] || colorMap.blue;
@@ -593,7 +566,6 @@ function ResourceCard({ title, icon: Icon, value, color, trend, details }) {
         </div>
       </div>
       
-      {/* Progress Bar */}
       <div className="h-2 bg-black/30 rounded-full overflow-hidden mb-3">
         <motion.div
           initial={{ width: 0 }}
@@ -603,7 +575,6 @@ function ResourceCard({ title, icon: Icon, value, color, trend, details }) {
         />
       </div>
 
-      {/* Details */}
       <div className="space-y-1">
         {details.map((detail, i) => (
           <div key={i} className="flex justify-between text-xs">
