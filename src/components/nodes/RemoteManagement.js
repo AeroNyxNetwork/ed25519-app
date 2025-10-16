@@ -931,6 +931,7 @@ export default function RemoteManagement({
                   readFile={readFile}
                   writeFile={writeFile}
                   deleteFile={deleteFile}
+                  isRemoteAuthenticated={isRemoteAuthenticated}  // Add this line
                 />
               </div>
             )}
@@ -941,6 +942,7 @@ export default function RemoteManagement({
                   nodeReference={nodeReference}
                   getSystemInfo={getSystemInfo}
                   executeCommand={executeCommand}
+                  isRemoteAuthenticated={isRemoteAuthenticated}
                 />
               </div>
             )}
