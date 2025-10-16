@@ -2,25 +2,18 @@
  * ============================================
  * File: src/hooks/useRemoteManagement.js
  * ============================================
- * Remote Management Hook - ENHANCED VERSION v9.0.0
+ * Remote Management Hook - FIXED VERSION v9.1.0
  * 
- * Modification Reason: Add all remote command support from backend
- * Main Functionality: Complete remote management with all command types
- * Dependencies: useTerminalStore, terminalService, webSocketService, remoteAuthService
+ * 🔧 FIX APPLIED:
+ * - Fixed createSession return value handling
+ * - Fixed terminalService.createSession compatibility
+ * - Properly handle session object vs sessionId string
  * 
- * Main Logical Flow:
- * 1. Terminal session management (for Terminal tab)
- * 2. Remote command execution (for File Manager & System Info)
- * 3. WebSocket connection monitoring
- * 4. Authentication state management
+ * ⚠️ CRITICAL FIX:
+ * The issue was assuming createSession returns { sessionId: string }
+ * Actually it returns the session object directly or just the sessionId string
  * 
- * ⚠️ CRITICAL NOTES:
- * - Terminal input uses 'term_input' message type
- * - Remote commands use 'remote_command' message type
- * - These are SEPARATE systems - do not mix them!
- * - All new commands follow the same pattern as existing ones
- * 
- * Last Modified: v9.0.0 - Added all backend command support
+ * Last Modified: v9.1.0 - Fixed terminal initialization bug
  * ============================================
  */
 
@@ -114,9 +107,6 @@ const decodeFromBase64 = (base64, allowBinary = false) => {
 // ==================== MAIN HOOK ====================
 
 export function useRemoteManagement(nodeReference) {
-  // ... (keeping all existing state and refs from previous version)
-  // ... (keeping all existing authentication and initialization logic)
-  
   // State Management
   const [terminalSession, setTerminalSession] = useState(null);
   const [terminalReady, setTerminalReady] = useState(false);
@@ -192,7 +182,308 @@ export function useRemoteManagement(nodeReference) {
     return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }, []);
   
-  // ==================== ENHANCED SEND REMOTE COMMAND ====================
+  // ==================== AUTHENTICATION MANAGEMENT ====================
+  
+  useEffect(() => {
+    const initialAuth = remoteAuthService.isAuthenticated(nodeReference);
+    setIsRemoteAuthenticated(initialAuth);
+    console.log('[useRemoteManagement] Initial auth state:', nodeReference, initialAuth);
+    
+    const handleAuthenticated = () => {
+      console.log('[useRemoteManagement] Node authenticated:', nodeReference);
+      if (isMountedRef.current) {
+        setIsRemoteAuthenticated(true);
+        setError(null);
+      }
+    };
+    
+    const handleError = (error) => {
+      console.log('[useRemoteManagement] Auth error:', nodeReference, error);
+      if (isMountedRef.current) {
+        setIsRemoteAuthenticated(false);
+        setError(error.message || 'Authentication failed');
+      }
+    };
+    
+    const handleExpired = () => {
+      console.log('[useRemoteManagement] Token expired:', nodeReference);
+      if (isMountedRef.current) {
+        setIsRemoteAuthenticated(false);
+        setError('Authentication token expired');
+      }
+    };
+    
+    remoteAuthService.on(nodeReference, 'authenticated', handleAuthenticated);
+    remoteAuthService.on(nodeReference, 'error', handleError);
+    remoteAuthService.on(nodeReference, 'expired', handleExpired);
+    
+    return () => {
+      remoteAuthService.off(nodeReference, 'authenticated', handleAuthenticated);
+      remoteAuthService.off(nodeReference, 'error', handleError);
+      remoteAuthService.off(nodeReference, 'expired', handleExpired);
+    };
+  }, [nodeReference]);
+  
+  // ==================== TERMINAL INITIALIZATION (FIXED) ====================
+  
+  /**
+   * 🔧 FIXED: Initialize terminal with proper session handling
+   */
+  const initializeTerminal = useCallback(async () => {
+    if (initPromiseRef.current) {
+      console.log('[useRemoteManagement] Init already in progress, waiting...');
+      return initPromiseRef.current;
+    }
+    
+    if (isInitializedRef.current && sessionRef.current) {
+      console.log('[useRemoteManagement] Already initialized:', sessionRef.current);
+      return { sessionId: sessionRef.current };
+    }
+    
+    if (!nodeReference) {
+      const errorMsg = 'No node reference provided';
+      setError(errorMsg);
+      return null;
+    }
+    
+    initPromiseRef.current = (async () => {
+      try {
+        setIsConnecting(true);
+        setError(null);
+        
+        // Wait for WebSocket
+        if (!isWebSocketReady) {
+          console.log('[useRemoteManagement] Waiting for WebSocket...');
+          setError('Connecting to server, please wait...');
+          
+          let waitTime = 0;
+          while (waitTime < TIMEOUTS.WS_CONNECTION && !isWebSocketReady) {
+            await new Promise(resolve => setTimeout(resolve, TIMEOUTS.WS_CHECK_INTERVAL));
+            waitTime += TIMEOUTS.WS_CHECK_INTERVAL;
+          }
+          
+          if (!isWebSocketReady) {
+            throw new Error('Connection timeout. Please check your network and try again.');
+          }
+          
+          setError(null);
+        }
+        
+        // Wait for authentication
+        const currentAuthState = remoteAuthService.isAuthenticated(nodeReference);
+        if (!currentAuthState) {
+          console.log('[useRemoteManagement] Waiting for authentication...');
+          setError('Authenticating remote access, please wait...');
+          
+          let authWaitTime = 0;
+          const maxAuthWait = TIMEOUTS.WS_AUTH;
+          
+          while (authWaitTime < maxAuthWait && !remoteAuthService.isAuthenticated(nodeReference)) {
+            await new Promise(resolve => setTimeout(resolve, TIMEOUTS.WS_CHECK_INTERVAL));
+            authWaitTime += TIMEOUTS.WS_CHECK_INTERVAL;
+          }
+          
+          if (!remoteAuthService.isAuthenticated(nodeReference)) {
+            throw new Error('Remote authentication required. Please authenticate to use terminal.');
+          }
+          
+          setError(null);
+        }
+        
+        isInitializedRef.current = true;
+        
+        console.log('[useRemoteManagement] Creating terminal session:', nodeReference);
+        
+        // 🔧 FIX: Properly handle createSession return value
+        let newSessionId;
+        let sessionResult;
+        
+        try {
+          // Call createSession from store
+          sessionResult = await createSession(nodeReference, {
+            rows: TERMINAL_CONFIG.DEFAULT_ROWS,
+            cols: TERMINAL_CONFIG.DEFAULT_COLS
+          });
+          
+          console.log('[useRemoteManagement] createSession result:', sessionResult);
+          
+          // Handle different return formats
+          if (typeof sessionResult === 'string') {
+            // Case 1: Returns sessionId directly as string
+            newSessionId = sessionResult;
+          } else if (sessionResult && typeof sessionResult === 'object') {
+            // Case 2: Returns object with sessionId property
+            newSessionId = sessionResult.sessionId || sessionResult.session_id;
+            
+            // Case 3: Returns session object with sessionId property
+            if (!newSessionId && sessionResult.sessionId) {
+              newSessionId = sessionResult.sessionId;
+            }
+          }
+          
+          if (!newSessionId) {
+            throw new Error('Failed to get session ID from createSession');
+          }
+          
+        } catch (createError) {
+          console.error('[useRemoteManagement] createSession error:', createError);
+          throw new Error(`Failed to create terminal session: ${createError.message}`);
+        }
+        
+        console.log('[useRemoteManagement] Terminal session created:', newSessionId);
+        
+        sessionRef.current = newSessionId;
+        
+        if (isMountedRef.current) {
+          setTerminalSession(newSessionId);
+        }
+        
+        // Get session from terminalService
+        let session = terminalService.getSession(newSessionId);
+        
+        if (!session) {
+          console.warn('[useRemoteManagement] Session not found after creation, retrying...');
+          
+          // Try direct creation
+          try {
+            const manualSession = await terminalService.createSession(nodeReference, {
+              rows: TERMINAL_CONFIG.DEFAULT_ROWS,
+              cols: TERMINAL_CONFIG.DEFAULT_COLS
+            });
+            
+            // Handle TerminalSession object
+            if (manualSession && typeof manualSession === 'object') {
+              // If it's a TerminalSession instance with sessionId
+              if (manualSession.sessionId) {
+                newSessionId = manualSession.sessionId;
+                session = terminalService.getSession(newSessionId);
+              } else {
+                // It might be the session itself
+                session = manualSession;
+                newSessionId = session.sessionId;
+              }
+            }
+            
+            if (newSessionId !== sessionRef.current) {
+              sessionRef.current = newSessionId;
+              if (isMountedRef.current) {
+                setTerminalSession(newSessionId);
+              }
+            }
+          } catch (manualError) {
+            console.warn('[useRemoteManagement] Manual session creation failed:', manualError);
+          }
+        }
+        
+        if (session) {
+          console.log('[useRemoteManagement] Session verified:', session.getInfo ? session.getInfo() : session);
+          
+          const handlers = {
+            output: (data) => {
+              console.log('[useRemoteManagement] Terminal output:', data?.length || 0, 'bytes');
+            },
+            error: (err) => {
+              console.error('[useRemoteManagement] Terminal error:', err);
+              if (isMountedRef.current) {
+                setError(err?.message || err);
+                setTerminalReady(false);
+              }
+            },
+            closed: () => {
+              console.log('[useRemoteManagement] Terminal session closed');
+              if (isMountedRef.current) {
+                setTerminalReady(false);
+                setTerminalSession(null);
+                sessionRef.current = null;
+                isInitializedRef.current = false;
+              }
+            },
+            ready: () => {
+              console.log('[useRemoteManagement] Terminal session ready');
+              if (isMountedRef.current) {
+                setTerminalReady(true);
+              }
+            }
+          };
+          
+          eventHandlersRef.current = handlers;
+          
+          // Attach event handlers if session has event emitter
+          if (session.on && typeof session.on === 'function') {
+            Object.entries(handlers).forEach(([event, handler]) => {
+              session.on(event, handler);
+            });
+          }
+          
+          // Wait for ready
+          await new Promise((resolve) => {
+            const readyTimeout = setTimeout(() => {
+              if (isMountedRef.current && newSessionId) {
+                setTerminalReady(true);
+                console.log('[useRemoteManagement] Terminal ready (timeout)');
+              }
+              resolve();
+            }, TIMEOUTS.TERMINAL_READY);
+            
+            if (session.once && typeof session.once === 'function') {
+              session.once('ready', () => {
+                clearTimeout(readyTimeout);
+                if (isMountedRef.current) {
+                  setTerminalReady(true);
+                  console.log('[useRemoteManagement] Terminal ready (event)');
+                }
+                resolve();
+              });
+            }
+          });
+        } else {
+          console.log('[useRemoteManagement] Working in WebSocket mode');
+          
+          setTimeout(() => {
+            if (isMountedRef.current && newSessionId) {
+              setTerminalReady(true);
+            }
+          }, 500);
+        }
+        
+        if (isMountedRef.current) {
+          setIsConnecting(false);
+        }
+        
+        return { sessionId: newSessionId };
+        
+      } catch (error) {
+        console.error('[useRemoteManagement] Failed to initialize terminal:', error);
+        
+        if (isMountedRef.current) {
+          let errorMessage = error.message || 'Failed to initialize terminal';
+          
+          if (errorMessage.includes('not connected') || errorMessage.includes('send')) {
+            errorMessage = 'Connection lost. Please refresh the page and try again.';
+          } else if (errorMessage.includes('authentication') || errorMessage.includes('auth')) {
+            errorMessage = 'Authentication failed. Please authenticate and try again.';
+          } else if (errorMessage.includes('timeout')) {
+            errorMessage = 'Connection timeout. Please check your network and try again.';
+          }
+          
+          setError(errorMessage);
+          setIsConnecting(false);
+          setTerminalSession(null);
+          setTerminalReady(false);
+          isInitializedRef.current = false;
+          sessionRef.current = null;
+        }
+        
+        return null;
+      } finally {
+        initPromiseRef.current = null;
+      }
+    })();
+    
+    return initPromiseRef.current;
+  }, [nodeReference, isWebSocketReady, createSession]);
+  
+  // ==================== REMOTE COMMAND EXECUTION ====================
   
   const sendRemoteCommand = useCallback((commandType, commandData = {}, customTimeout = null) => {
     if (!isRemoteAuthenticated) {
@@ -246,12 +537,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== FILE OPERATIONS ====================
   
-  /**
-   * List directory contents
-   * @param {string} path - Directory path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const listDirectory = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] listDirectory:', path);
     
@@ -267,12 +552,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Read/Download file
-   * @param {string} path - File path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const readFile = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] readFile:', path);
     
@@ -298,13 +577,6 @@ export function useRemoteManagement(nodeReference) {
     }
   }, [sendRemoteCommand]);
   
-  /**
-   * Write/Upload file
-   * @param {string} path - File path
-   * @param {string} content - File content
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const writeFile = useCallback(async (path, content, options = {}) => {
     console.log('[useRemoteManagement] writeFile:', path, content.length, 'bytes');
     
@@ -333,11 +605,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Delete file
-   * @param {string} path - File path
-   * @returns {Promise}
-   */
   const deleteFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] deleteFile:', path);
     
@@ -349,13 +616,6 @@ export function useRemoteManagement(nodeReference) {
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.DELETE, { path });
   }, [sendRemoteCommand]);
   
-  /**
-   * Rename file or directory
-   * @param {string} oldPath - Current path
-   * @param {string} newPath - New path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const renameFile = useCallback(async (oldPath, newPath, options = {}) => {
     console.log('[useRemoteManagement] renameFile:', oldPath, '->', newPath);
     
@@ -376,13 +636,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Copy file or directory
-   * @param {string} sourcePath - Source path
-   * @param {string} destPath - Destination path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const copyFile = useCallback(async (sourcePath, destPath, options = {}) => {
     console.log('[useRemoteManagement] copyFile:', sourcePath, '->', destPath);
     
@@ -404,13 +657,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Move file or directory
-   * @param {string} sourcePath - Source path
-   * @param {string} destPath - Destination path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const moveFile = useCallback(async (sourcePath, destPath, options = {}) => {
     console.log('[useRemoteManagement] moveFile:', sourcePath, '->', destPath);
     
@@ -433,12 +679,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== DIRECTORY OPERATIONS ====================
   
-  /**
-   * Create directory
-   * @param {string} path - Directory path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const createDirectory = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] createDirectory:', path);
     
@@ -453,12 +693,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Delete directory
-   * @param {string} path - Directory path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const deleteDirectory = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] deleteDirectory:', path);
     
@@ -475,13 +709,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== SEARCH ====================
   
-  /**
-   * Search files
-   * @param {string} path - Search path
-   * @param {string} query - Search query
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const searchFiles = useCallback(async (path, query, options = {}) => {
     console.log('[useRemoteManagement] searchFiles:', path, query);
     
@@ -501,13 +728,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== COMPRESSION ====================
   
-  /**
-   * Compress files
-   * @param {Array} paths - Array of file paths
-   * @param {string} destination - Output archive path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const compressFiles = useCallback(async (paths, destination, options = {}) => {
     console.log('[useRemoteManagement] compressFiles:', paths, '->', destination);
     
@@ -528,12 +748,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Extract archive
-   * @param {string} path - Archive path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const extractFile = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] extractFile:', path);
     
@@ -551,13 +765,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== PERMISSIONS ====================
   
-  /**
-   * Change file permissions
-   * @param {string} path - File path
-   * @param {string} mode - Permission mode (e.g., "0755")
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const changePermissions = useCallback(async (path, mode, options = {}) => {
     console.log('[useRemoteManagement] changePermissions:', path, mode);
     
@@ -573,12 +780,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Change file owner
-   * @param {string} path - File path
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const changeOwner = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] changeOwner:', path);
     
@@ -597,11 +798,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== BATCH OPERATIONS ====================
   
-  /**
-   * Batch delete files
-   * @param {Array} paths - Array of file paths
-   * @returns {Promise}
-   */
   const batchDelete = useCallback(async (paths) => {
     console.log('[useRemoteManagement] batchDelete:', paths.length, 'files');
     
@@ -613,12 +809,6 @@ export function useRemoteManagement(nodeReference) {
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.BATCH_DELETE, { paths });
   }, [sendRemoteCommand]);
   
-  /**
-   * Batch move files
-   * @param {Array} paths - Array of source paths
-   * @param {string} destination - Destination directory
-   * @returns {Promise}
-   */
   const batchMove = useCallback(async (paths, destination) => {
     console.log('[useRemoteManagement] batchMove:', paths.length, 'files ->', destination);
     
@@ -635,12 +825,6 @@ export function useRemoteManagement(nodeReference) {
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.BATCH_MOVE, { paths, destination });
   }, [sendRemoteCommand]);
   
-  /**
-   * Batch copy files
-   * @param {Array} paths - Array of source paths
-   * @param {string} destination - Destination directory
-   * @returns {Promise}
-   */
   const batchCopy = useCallback(async (paths, destination) => {
     console.log('[useRemoteManagement] batchCopy:', paths.length, 'files ->', destination);
     
@@ -659,11 +843,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== SYSTEM & EXECUTION ====================
   
-  /**
-   * Get system information
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const getSystemInfo = useCallback(async (options = {}) => {
     console.log('[useRemoteManagement] getSystemInfo');
     
@@ -672,12 +851,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Execute command
-   * @param {string} command - Command to execute
-   * @param {Object} options - Optional parameters
-   * @returns {Promise}
-   */
   const executeCommand = useCallback(async (command, options = {}) => {
     console.log('[useRemoteManagement] executeCommand:', command);
     
@@ -690,13 +863,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Upload file (alias for writeFile with validation)
-   * @param {string} path - File path
-   * @param {string} content - File content
-   * @param {boolean} isBase64 - Whether content is already base64 encoded
-   * @returns {Promise}
-   */
   const uploadFile = useCallback(async (path, content, isBase64 = false) => {
     console.log('[useRemoteManagement] uploadFile:', path, 'isBase64:', isBase64);
     
@@ -715,13 +881,193 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  // ... (Keep all existing terminal-related code)
-  // ... (Keep all existing effects and lifecycle management)
+  // ==================== TERMINAL OPERATIONS ====================
+  
+  const terminalStateRef = useRef({ session: null, ready: false });
+  
+  useEffect(() => {
+    terminalStateRef.current = {
+      session: terminalSession || sessionRef.current,
+      ready: terminalReady
+    };
+  }, [terminalSession, terminalReady]);
+  
+  const sendTerminalInput = useCallback((data) => {
+    const { session: currentSession } = terminalStateRef.current;
+    
+    if (!currentSession) {
+      console.warn('[useRemoteManagement] Cannot send input - no session');
+      return false;
+    }
+    
+    console.log('[useRemoteManagement] Sending terminal input:', currentSession);
+    
+    let base64Data;
+    try {
+      base64Data = encodeToBase64(data);
+    } catch (error) {
+      console.error('[useRemoteManagement] Failed to encode input:', error);
+      return false;
+    }
+    
+    const success = webSocketService.send({
+      type: WS_MESSAGE_TYPES.TERM_INPUT,
+      session_id: currentSession,
+      data: base64Data
+    });
+    
+    if (!success) {
+      console.error('[useRemoteManagement] Failed to send input via WebSocket');
+    }
+    
+    return success;
+  }, []);
+  
+  const executeTerminalCommand = useCallback((command) => {
+    if (!command) return false;
+    const commandWithNewline = command.endsWith('\n') ? command : `${command}\n`;
+    return sendTerminalInput(commandWithNewline);
+  }, [sendTerminalInput]);
+  
+  const closeTerminal = useCallback(() => {
+    const currentSession = terminalSession || sessionRef.current;
+    
+    console.log('[useRemoteManagement] Closing terminal:', currentSession);
+    
+    if (currentSession) {
+      const session = terminalService.getSession(currentSession);
+      
+      if (session && eventHandlersRef.current) {
+        Object.entries(eventHandlersRef.current).forEach(([event, handler]) => {
+          if (session.off && typeof session.off === 'function') {
+            session.off(event, handler);
+          }
+        });
+      }
+      
+      if (closeSession && typeof closeSession === 'function') {
+        closeSession(currentSession);
+      }
+    }
+    
+    setTerminalSession(null);
+    setTerminalReady(false);
+    setError(null);
+    sessionRef.current = null;
+    isInitializedRef.current = false;
+    eventHandlersRef.current = {};
+  }, [terminalSession, closeSession]);
+  
+  const reconnectTerminal = useCallback(async () => {
+    console.log('[useRemoteManagement] Reconnecting terminal...');
+    
+    closeTerminal();
+    
+    await new Promise(resolve => setTimeout(resolve, TIMEOUTS.RECONNECT_DELAY));
+    
+    if (!isWebSocketReady) {
+      setError('Waiting for connection...');
+      return null;
+    }
+    
+    const authState = remoteAuthService.isAuthenticated(nodeReference);
+    setIsRemoteAuthenticated(authState);
+    
+    if (!authState) {
+      setError('Authentication required. Please authenticate to use terminal.');
+      return null;
+    }
+    
+    return initializeTerminal();
+  }, [closeTerminal, initializeTerminal, nodeReference, isWebSocketReady]);
+  
+  // ==================== WEBSOCKET MESSAGE HANDLING ====================
+  
+  useEffect(() => {
+    if (!isOpen || !terminalSession) return;
+
+    const handleMessage = (event) => {
+      try {
+        const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        
+        if (message.type === WS_MESSAGE_TYPES.REMOTE_COMMAND_RESPONSE) {
+          console.log('[useRemoteManagement] Remote command response:', message.request_id);
+          
+          const handler = commandHandlersRef.current.get(message.request_id);
+          if (handler) {
+            if (message.success) {
+              console.log('[useRemoteManagement] ✅ Command succeeded');
+              handler.resolve(message.result || {});
+            } else {
+              let errorMessage = 'Command failed';
+              
+              if (message.error) {
+                if (typeof message.error === 'string') {
+                  errorMessage = message.error;
+                } else if (typeof message.error === 'object') {
+                  errorMessage = message.error.message || 
+                                message.error.error || 
+                                message.error.detail || 
+                                JSON.stringify(message.error);
+                }
+              }
+              
+              console.error('[useRemoteManagement] ❌ Command failed:', errorMessage);
+              handler.reject(new Error(errorMessage));
+            }
+          } else {
+            console.warn('[useRemoteManagement] ⚠️ No handler for request:', message.request_id);
+          }
+        }
+      } catch (error) {
+        // Ignore parse errors
+      }
+    };
+    
+    const ws = getWebSocket();
+    if (ws?.addEventListener) {
+      console.log('[useRemoteManagement] 🎧 Adding message listener');
+      ws.addEventListener('message', handleMessage);
+      wsMessageListenerRef.current = handleMessage;
+      
+      return () => {
+        const currentWs = getWebSocket();
+        if (currentWs?.removeEventListener && wsMessageListenerRef.current) {
+          console.log('[useRemoteManagement] 🔇 Removing message listener');
+          currentWs.removeEventListener('message', wsMessageListenerRef.current);
+          wsMessageListenerRef.current = null;
+        }
+      };
+    }
+  }, [getWebSocket]);
+  
+  // ==================== LIFECYCLE MANAGEMENT ====================
+  
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+  
+  useEffect(() => {
+    return () => {
+      console.log('[useRemoteManagement] Hook unmounting');
+      
+      commandHandlersRef.current.forEach(handler => {
+        handler.reject(new Error('Component unmounted'));
+      });
+      commandHandlersRef.current.clear();
+      
+      isInitializedRef.current = false;
+      initPromiseRef.current = null;
+    };
+  }, []);
   
   // ==================== RETURN API ====================
   
   return {
-    // Terminal State (for Terminal tab only)
+    // Terminal State
     terminalSession: terminalSession || sessionRef.current,
     terminalReady,
     isConnecting,
@@ -731,6 +1077,13 @@ export function useRemoteManagement(nodeReference) {
     isRemoteAuthenticated,
     isNodeOnline,
     isWebSocketReady,
+    
+    // Terminal Actions
+    initializeTerminal,
+    sendTerminalInput,
+    executeTerminalCommand,
+    closeTerminal,
+    reconnectTerminal,
     
     // File Operations
     listDirectory,
@@ -772,6 +1125,43 @@ export function useRemoteManagement(nodeReference) {
     
     // JWT token info
     tokenExpiry: remoteAuthService.getFormattedExpiry(nodeReference),
+    
+    // Utility functions
+    waitForWebSocketReady: async () => {
+      // Implementation for waiting
+      return isWebSocketReady;
+    },
+    refreshAuthState: () => {
+      const newAuth = remoteAuthService.isAuthenticated(nodeReference);
+      setIsRemoteAuthenticated(newAuth);
+      return newAuth;
+    },
+    
+    isWebSocketConnected: () => {
+      const ws = getWebSocket();
+      return ws && ws.readyState === WebSocket.OPEN;
+    },
+    isWebSocketConnecting: () => {
+      const ws = getWebSocket();
+      return ws && ws.readyState === WebSocket.CONNECTING;
+    },
+    
+    // Debug helper
+    debugState: () => {
+      console.log('[useRemoteManagement] === DEBUG STATE ===');
+      console.log('Terminal Session:', terminalSession || sessionRef.current);
+      console.log('Terminal Ready:', terminalReady);
+      console.log('Is Connecting:', isConnecting);
+      console.log('Is Authenticated:', isRemoteAuthenticated);
+      console.log('Is Node Online:', isNodeOnline);
+      console.log('WebSocket Ready:', isWebSocketReady);
+      console.log('Error:', error);
+      console.log('Pending Commands:', commandHandlersRef.current.size);
+      
+      const ws = getWebSocket();
+      console.log('WebSocket State:', ws?.readyState);
+      console.log('=========================');
+    },
     
     // Debug info
     pendingCommandsCount: commandHandlersRef.current.size
