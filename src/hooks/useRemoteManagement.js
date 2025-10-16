@@ -40,7 +40,7 @@ import {
   validatePath,
   validateFileSize,
   validateBatchOperation
-} from '../constants/remoteCommands';
+} from '../lib/constants/remoteCommands';
 
 import { 
   RemoteCommandError,
