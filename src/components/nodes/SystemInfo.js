@@ -2,20 +2,25 @@
  * ============================================
  * File: src/components/nodes/SystemInfo.js
  * ============================================
- * System Information Component - FIXED VERSION
+ * System Information Component - ENHANCED VERSION v4.0.0
  * 
- * Modification Reason: Use remote_command API instead of terminal commands
- * Main Changes:
- * - Now uses getSystemInfo() for comprehensive system data
- * - Falls back to executeCommand() for individual metrics if needed
- * - All commands use remote_command (not terminal)
+ * Modification Reason: Use remote_command API with execution time display
+ * Main Functionality: Display comprehensive system information with real-time updates
+ * Dependencies: useRemoteManagement hook, lucide-react icons
  * 
- * ⚠️ Important Note:
- * - Prefers getSystemInfo() for efficiency (one call gets all data)
- * - executeCommand() is for specific queries only
- * - No output will appear in Terminal tab
+ * Main Logical Flow:
+ * 1. Fetch system information using getSystemInfo command
+ * 2. Parse and display CPU, memory, disk, network metrics
+ * 3. Support auto-refresh with configurable intervals
+ * 4. Display execution time for performance monitoring
  * 
- * Last Modified: v3.0.0 - Fixed to use remote command API
+ * ⚠️ Important Note for Next Developer:
+ * - All commands use remote_command API (not terminal)
+ * - Execution time (execution_time_ms) is displayed for monitoring
+ * - Auto-refresh can be toggled on/off
+ * - System info shows comprehensive data from backend
+ * 
+ * Last Modified: v4.0.0 - Enhanced with execution time and better metrics
  * ============================================
  */
 
@@ -42,47 +47,47 @@ import {
   BarChart3,
   Network,
   Shield,
-  Thermometer
+  Thermometer,
+  Terminal,
+  Settings
 } from 'lucide-react';
 import clsx from 'clsx';
 
+// Import utilities
+import { formatBytes } from '../../constants/remoteCommands';
+
 export default function SystemInfo({ 
   nodeReference, 
-  getSystemInfo,    // From useRemoteManagement
-  executeCommand    // From useRemoteManagement (fallback)
+  getSystemInfo,
+  executeCommand
 }) {
-  // State Management
+  // ==================== STATE MANAGEMENT ====================
+  
   const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(30); // seconds
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [executionTime, setExecutionTime] = useState(null);
+  
   const [metrics, setMetrics] = useState({
-    cpu: { usage: 0, cores: 0, loadAvg: [0, 0, 0], trend: 'stable' },
+    cpu: { usage: 0, cores: 0, loadAvg: [0, 0, 0], trend: 'stable', model: '' },
     memory: { used: 0, total: 0, percent: 0, available: 0, trend: 'stable' },
     disk: { used: 0, total: 0, percent: 0, available: 0, trend: 'stable' },
     network: { interfaces: [], active: false },
     processes: { total: 0, running: 0, sleeping: 0, zombie: 0 },
-    system: { hostname: '', kernel: '', uptime: '', temperature: null }
+    system: { hostname: '', kernel: '', uptime: '', temperature: null, platform: '' }
   });
 
   // Refs
   const intervalRef = useRef(null);
   const abortControllerRef = useRef(null);
   const isMountedRef = useRef(true);
+  const previousMetricsRef = useRef(null);
 
-  /**
-   * Format bytes to human readable
-   */
-  const formatBytes = useCallback((bytes) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  }, []);
-
+  // ==================== UTILITIES ====================
+  
   /**
    * Format uptime seconds to readable string
    */
@@ -102,10 +107,43 @@ export default function SystemInfo({
   }, []);
 
   /**
-   * Load comprehensive system information using getSystemInfo
+   * Calculate trend based on previous metrics
+   */
+  const calculateTrend = useCallback((current, previous) => {
+    if (!previous) return 'stable';
+    const diff = current - previous;
+    if (diff > 5) return 'up';
+    if (diff < -5) return 'down';
+    return 'stable';
+  }, []);
+
+  /**
+   * Get status color based on percentage
+   */
+  const getStatusColor = useCallback((percent) => {
+    if (percent >= 90) return 'text-red-400';
+    if (percent >= 70) return 'text-yellow-400';
+    if (percent >= 50) return 'text-blue-400';
+    return 'text-green-400';
+  }, []);
+
+  /**
+   * Get trend icon
+   */
+  const getTrendIcon = useCallback((trend) => {
+    switch (trend) {
+      case 'up': return <TrendingUp className="w-4 h-4 text-red-400" />;
+      case 'down': return <TrendingDown className="w-4 h-4 text-green-400" />;
+      default: return <Minus className="w-4 h-4 text-gray-400" />;
+    }
+  }, []);
+
+  // ==================== LOAD SYSTEM INFO ====================
+  
+  /**
+   * Load comprehensive system information
    */
   const loadSystemInfo = useCallback(async () => {
-    // Don't start a new load if one is in progress
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -116,68 +154,92 @@ export default function SystemInfo({
     setLoading(true);
     setError(null);
     
+    const startTime = Date.now();
+    
     try {
       console.log('[SystemInfo] Loading system information...');
       
-      // Call remote command API - get comprehensive system info
       const result = await getSystemInfo();
       
-      // Check if aborted
       if (signal.aborted) return;
       
-      console.log('[SystemInfo] System info result:', result);
+      // Calculate execution time
+      const execTime = Date.now() - startTime;
+      setExecutionTime(execTime);
       
-      // Parse the result
+      console.log('[SystemInfo] System info result:', result);
+      console.log('[SystemInfo] Execution time:', execTime, 'ms');
+      
+      // Parse system data
       const systemData = {
         hostname: result.hostname || 'Unknown',
         kernel: result.os?.kernel || result.os?.version || 'Unknown',
+        platform: result.os?.name || 'Unknown',
         uptime: result.uptime_seconds ? formatUptime(result.uptime_seconds) : 'Unknown',
         temperature: result.cpu?.temperature || null
       };
       
+      // Parse CPU data
       const cpuData = {
         usage: Math.round(result.cpu?.usage_percent || 0),
         cores: result.cpu?.cores || 0,
+        model: result.cpu?.model || 'Unknown',
         loadAvg: result.load_average || [0, 0, 0],
-        trend: 'stable' // Calculate from history if available
+        trend: previousMetricsRef.current 
+          ? calculateTrend(result.cpu?.usage_percent || 0, previousMetricsRef.current.cpu?.usage || 0)
+          : 'stable'
       };
       
+      // Parse memory data
       const memoryData = {
         used: formatBytes((result.memory?.used_mb || 0) * 1024 * 1024),
         total: formatBytes((result.memory?.total_mb || 0) * 1024 * 1024),
         percent: Math.round(result.memory?.usage_percent || 0),
         available: formatBytes((result.memory?.available_mb || 0) * 1024 * 1024),
-        trend: 'stable'
+        trend: previousMetricsRef.current
+          ? calculateTrend(result.memory?.usage_percent || 0, previousMetricsRef.current.memory?.percent || 0)
+          : 'stable'
       };
       
-      // Get primary disk info
+      // Parse disk data (primary disk)
       const primaryDisk = result.disks?.[0] || {};
       const diskData = {
-        used: `${primaryDisk.used_gb || 0}GB`,
-        total: `${primaryDisk.total_gb || 0}GB`,
+        used: `${primaryDisk.used_gb || 0} GB`,
+        total: `${primaryDisk.total_gb || 0} GB`,
         percent: Math.round(primaryDisk.usage_percent || 0),
-        available: `${primaryDisk.available_gb || 0}GB`,
-        trend: 'stable'
+        available: `${primaryDisk.available_gb || 0} GB`,
+        trend: previousMetricsRef.current
+          ? calculateTrend(primaryDisk.usage_percent || 0, previousMetricsRef.current.disk?.percent || 0)
+          : 'stable'
       };
       
+      // Parse network data
       const networkData = {
         interfaces: (result.network?.interfaces || []).map(iface => ({
           name: iface.name,
           ip: iface.ip_address,
-          type: iface.name.includes('wlan') ? 'wireless' : 'ethernet'
+          type: iface.name.includes('wlan') ? 'wireless' : 'ethernet',
+          status: iface.status || 'up'
         })),
         active: result.network?.interfaces?.length > 0 || false
       };
       
-      // Calculate process stats (if not provided, use estimates)
+      // Process stats (if available)
       const processData = {
-        total: 0,
-        running: 0,
-        sleeping: 0,
-        zombie: 0
+        total: result.processes?.total || 0,
+        running: result.processes?.running || 0,
+        sleeping: result.processes?.sleeping || 0,
+        zombie: result.processes?.zombie || 0
       };
       
-      // Update state if still mounted
+      // Store current metrics for trend calculation
+      previousMetricsRef.current = {
+        cpu: cpuData,
+        memory: memoryData,
+        disk: diskData
+      };
+      
+      // Update state
       if (isMountedRef.current) {
         setMetrics({
           cpu: cpuData,
@@ -208,54 +270,14 @@ export default function SystemInfo({
       }
       abortControllerRef.current = null;
     }
-  }, [getSystemInfo, formatUptime, formatBytes]);
+  }, [getSystemInfo, formatUptime, calculateTrend]);
 
-  /**
-   * Toggle auto-refresh
-   */
+  // ==================== AUTO-REFRESH ====================
+  
   const toggleAutoRefresh = useCallback(() => {
     setAutoRefresh(prev => !prev);
   }, []);
 
-  /**
-   * Get status color based on percentage
-   */
-  const getStatusColor = useCallback((percent) => {
-    if (percent >= 90) return 'text-red-400';
-    if (percent >= 70) return 'text-yellow-400';
-    if (percent >= 50) return 'text-blue-400';
-    return 'text-green-400';
-  }, []);
-
-  /**
-   * Get status icon based on trend
-   */
-  const getTrendIcon = useCallback((trend) => {
-    switch (trend) {
-      case 'up': return <TrendingUp className="w-4 h-4 text-red-400" />;
-      case 'down': return <TrendingDown className="w-4 h-4 text-green-400" />;
-      default: return <Minus className="w-4 h-4 text-gray-400" />;
-    }
-  }, []);
-
-  /**
-   * Initial load
-   */
-  useEffect(() => {
-    if (getSystemInfo) {
-      loadSystemInfo();
-    }
-    
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [getSystemInfo, loadSystemInfo]);
-
-  /**
-   * Auto-refresh
-   */
   useEffect(() => {
     if (autoRefresh && refreshInterval > 0 && getSystemInfo) {
       intervalRef.current = setInterval(() => {
@@ -275,9 +297,20 @@ export default function SystemInfo({
     };
   }, [autoRefresh, refreshInterval, getSystemInfo, loadSystemInfo]);
 
-  /**
-   * Cleanup
-   */
+  // ==================== LIFECYCLE ====================
+  
+  useEffect(() => {
+    if (getSystemInfo) {
+      loadSystemInfo();
+    }
+    
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [getSystemInfo, loadSystemInfo]);
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -285,7 +318,9 @@ export default function SystemInfo({
     };
   }, []);
 
-  // Render loading state
+  // ==================== RENDER ====================
+  
+  // Loading state
   if (loading && !info) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -297,7 +332,7 @@ export default function SystemInfo({
     );
   }
 
-  // Render error state
+  // Error state
   if (error && !info) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -324,7 +359,16 @@ export default function SystemInfo({
           <p className="text-sm text-gray-400 mt-1">
             Node: {nodeReference}
             {lastUpdate && (
-              <span className="ml-2">• Last updated: {lastUpdate.toLocaleTimeString()}</span>
+              <>
+                <span className="mx-2">•</span>
+                Last updated: {lastUpdate.toLocaleTimeString()}
+              </>
+            )}
+            {executionTime && (
+              <>
+                <span className="mx-2">•</span>
+                Execution: {executionTime}ms
+              </>
             )}
           </p>
         </div>
@@ -380,51 +424,35 @@ export default function SystemInfo({
       <div className="flex-1 overflow-auto space-y-6">
         {/* System Overview */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-white/5 backdrop-blur rounded-xl p-4 border border-white/10"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <Server className="w-5 h-5 text-purple-400" />
-              <CheckCircle className="w-4 h-4 text-green-400" />
-            </div>
-            <h4 className="text-sm text-gray-400 mb-1">Hostname</h4>
-            <p className="text-lg font-mono text-white">{metrics.system.hostname}</p>
-          </motion.div>
+          <SystemOverviewCard
+            icon={Server}
+            iconColor="text-purple-400"
+            label="Hostname"
+            value={metrics.system.hostname}
+            statusIcon={CheckCircle}
+            statusColor="text-green-400"
+          />
 
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="bg-white/5 backdrop-blur rounded-xl p-4 border border-white/10"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <Clock className="w-5 h-5 text-blue-400" />
-              <Activity className="w-4 h-4 text-green-400" />
-            </div>
-            <h4 className="text-sm text-gray-400 mb-1">Uptime</h4>
-            <p className="text-lg font-mono text-white">{metrics.system.uptime}</p>
-          </motion.div>
+          <SystemOverviewCard
+            icon={Clock}
+            iconColor="text-blue-400"
+            label="Uptime"
+            value={metrics.system.uptime}
+            statusIcon={Activity}
+            statusColor="text-green-400"
+          />
 
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="bg-white/5 backdrop-blur rounded-xl p-4 border border-white/10"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <Shield className="w-5 h-5 text-green-400" />
-              <span className="text-xs text-gray-500">Kernel</span>
-            </div>
-            <h4 className="text-sm text-gray-400 mb-1">System</h4>
-            <p className="text-sm font-mono text-white truncate">{metrics.system.kernel}</p>
-          </motion.div>
+          <SystemOverviewCard
+            icon={Shield}
+            iconColor="text-green-400"
+            label="Platform"
+            value={metrics.system.platform}
+            subtitle={metrics.system.kernel}
+          />
         </div>
 
         {/* Resource Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* CPU Usage */}
           <ResourceCard
             title="CPU"
             icon={Cpu}
@@ -433,11 +461,11 @@ export default function SystemInfo({
             trend={metrics.cpu.trend}
             details={[
               { label: 'Cores', value: metrics.cpu.cores },
+              { label: 'Model', value: metrics.cpu.model },
               { label: 'Load Avg', value: metrics.cpu.loadAvg.map(l => l.toFixed(2)).join(', ') }
             ]}
           />
 
-          {/* Memory Usage */}
           <ResourceCard
             title="Memory"
             icon={Database}
@@ -446,11 +474,11 @@ export default function SystemInfo({
             trend={metrics.memory.trend}
             details={[
               { label: 'Used', value: metrics.memory.used },
-              { label: 'Available', value: metrics.memory.available }
+              { label: 'Available', value: metrics.memory.available },
+              { label: 'Total', value: metrics.memory.total }
             ]}
           />
 
-          {/* Disk Usage */}
           <ResourceCard
             title="Disk"
             icon={HardDrive}
@@ -459,42 +487,15 @@ export default function SystemInfo({
             trend={metrics.disk.trend}
             details={[
               { label: 'Used', value: metrics.disk.used },
-              { label: 'Available', value: metrics.disk.available }
+              { label: 'Available', value: metrics.disk.available },
+              { label: 'Total', value: metrics.disk.total }
             ]}
           />
 
-          {/* Network */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.3 }}
-            className="bg-gradient-to-br from-cyan-900/20 to-cyan-800/10 backdrop-blur rounded-xl p-4 border border-cyan-500/20"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Network className="w-5 h-5 text-cyan-400" />
-                <span className="text-sm font-medium text-white">Network</span>
-              </div>
-              {metrics.network.active ? (
-                <CheckCircle className="w-4 h-4 text-green-400" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-gray-400" />
-              )}
-            </div>
-            
-            <div className="space-y-2">
-              {metrics.network.interfaces.length > 0 ? (
-                metrics.network.interfaces.map((iface, i) => (
-                  <div key={i} className="flex justify-between text-xs">
-                    <span className="text-gray-400">{iface.name}</span>
-                    <span className="text-white font-mono">{iface.ip}</span>
-                  </div>
-                ))
-              ) : (
-                <p className="text-xs text-gray-400">No active interfaces</p>
-              )}
-            </div>
-          </motion.div>
+          <NetworkCard
+            interfaces={metrics.network.interfaces}
+            active={metrics.network.active}
+          />
         </div>
 
         {/* Temperature (if available) */}
@@ -517,8 +518,44 @@ export default function SystemInfo({
             </div>
           </div>
         )}
+
+        {/* Process Information */}
+        {metrics.processes.total > 0 && (
+          <div className="bg-white/5 rounded-xl p-4 border border-white/10">
+            <div className="flex items-center gap-2 mb-4">
+              <Terminal className="w-5 h-5 text-cyan-400" />
+              <h4 className="font-medium text-white">Processes</h4>
+            </div>
+            <div className="grid grid-cols-4 gap-4">
+              <ProcessStat label="Total" value={metrics.processes.total} color="blue" />
+              <ProcessStat label="Running" value={metrics.processes.running} color="green" />
+              <ProcessStat label="Sleeping" value={metrics.processes.sleeping} color="gray" />
+              <ProcessStat label="Zombie" value={metrics.processes.zombie} color="red" />
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+// ==================== SUB-COMPONENTS ====================
+
+function SystemOverviewCard({ icon: Icon, iconColor, label, value, subtitle, statusIcon: StatusIcon, statusColor }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="bg-white/5 backdrop-blur rounded-xl p-4 border border-white/10"
+    >
+      <div className="flex items-center justify-between mb-3">
+        <Icon className={clsx("w-5 h-5", iconColor)} />
+        {StatusIcon && <StatusIcon className={clsx("w-4 h-4", statusColor)} />}
+      </div>
+      <h4 className="text-sm text-gray-400 mb-1">{label}</h4>
+      <p className="text-lg font-mono text-white truncate">{value}</p>
+      {subtitle && <p className="text-xs text-gray-500 mt-1 truncate">{subtitle}</p>}
+    </motion.div>
   );
 }
 
@@ -531,6 +568,14 @@ function ResourceCard({ title, icon: Icon, value, color, trend, details }) {
 
   const colors = colorMap[color] || colorMap.blue;
 
+  const getTrendIcon = (trend) => {
+    switch (trend) {
+      case 'up': return <TrendingUp className="w-4 h-4 text-red-400" />;
+      case 'down': return <TrendingDown className="w-4 h-4 text-green-400" />;
+      default: return <Minus className="w-4 h-4 text-gray-400" />;
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.9 }}
@@ -542,7 +587,10 @@ function ResourceCard({ title, icon: Icon, value, color, trend, details }) {
           <Icon className={`w-5 h-5 ${colors.text}`} />
           <span className="text-sm font-medium text-white">{title}</span>
         </div>
-        <div className="text-2xl font-bold text-white">{value}%</div>
+        <div className="flex items-center gap-2">
+          {getTrendIcon(trend)}
+          <div className="text-2xl font-bold text-white">{value}%</div>
+        </div>
       </div>
       
       {/* Progress Bar */}
@@ -560,10 +608,66 @@ function ResourceCard({ title, icon: Icon, value, color, trend, details }) {
         {details.map((detail, i) => (
           <div key={i} className="flex justify-between text-xs">
             <span className="text-gray-400">{detail.label}</span>
-            <span className="text-white">{detail.value}</span>
+            <span className="text-white truncate ml-2">{detail.value}</span>
           </div>
         ))}
       </div>
     </motion.div>
+  );
+}
+
+function NetworkCard({ interfaces, active }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="bg-gradient-to-br from-cyan-900/20 to-cyan-800/10 backdrop-blur rounded-xl p-4 border border-cyan-500/20"
+    >
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Network className="w-5 h-5 text-cyan-400" />
+          <span className="text-sm font-medium text-white">Network</span>
+        </div>
+        {active ? (
+          <CheckCircle className="w-4 h-4 text-green-400" />
+        ) : (
+          <AlertCircle className="w-4 h-4 text-gray-400" />
+        )}
+      </div>
+      
+      <div className="space-y-2">
+        {interfaces.length > 0 ? (
+          interfaces.map((iface, i) => (
+            <div key={i} className="flex justify-between items-center text-xs">
+              <div className="flex items-center gap-2">
+                <Wifi className="w-3 h-3 text-cyan-400" />
+                <span className="text-gray-400">{iface.name}</span>
+              </div>
+              <span className="text-white font-mono text-xs">{iface.ip}</span>
+            </div>
+          ))
+        ) : (
+          <p className="text-xs text-gray-400">No active interfaces</p>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+function ProcessStat({ label, value, color }) {
+  const colorMap = {
+    blue: 'text-blue-400',
+    green: 'text-green-400',
+    gray: 'text-gray-400',
+    red: 'text-red-400'
+  };
+
+  return (
+    <div className="text-center">
+      <div className={clsx("text-2xl font-bold", colorMap[color] || 'text-white')}>
+        {value}
+      </div>
+      <div className="text-xs text-gray-400 mt-1">{label}</div>
+    </div>
   );
 }
