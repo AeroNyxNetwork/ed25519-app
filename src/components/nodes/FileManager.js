@@ -69,7 +69,7 @@ import {
   isTextFile, 
   isArchiveFile,
   COMPRESSION_FORMATS 
-} from '../../constants/remoteCommands';
+} from '../../lib/constants/remoteCommands';
 
 // File type icon mapping
 const FILE_ICONS = {
