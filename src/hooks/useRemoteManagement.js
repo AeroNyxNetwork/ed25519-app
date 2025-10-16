@@ -65,8 +65,8 @@ import { useAeroNyxWebSocket } from './useAeroNyxWebSocket';
  */
 const REMOTE_COMMAND_TYPES = {
   LIST_FILES: 'list',
-  READ_FILE: 'download',
-  WRITE_FILE: 'upload',
+  READ_FILE: 'read',
+  WRITE_FILE: 'write',
   DELETE_FILE: 'delete',
   RENAME_FILE: 'rename',         // ✨ NEW
   COPY_FILE: 'copy',             // ✨ NEW
