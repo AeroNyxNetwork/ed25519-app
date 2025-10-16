@@ -54,7 +54,7 @@ import {
 import clsx from 'clsx';
 
 // Import utilities
-import { formatBytes } from '../../constants/remoteCommands';
+import { formatBytes } from '../../lib/constants/remoteCommands';
 
 export default function SystemInfo({ 
   nodeReference, 
