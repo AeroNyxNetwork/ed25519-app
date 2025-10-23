@@ -366,29 +366,26 @@ export default function RemoteManagement({
   // ==================== Terminal Handlers ====================
   
   const handleTerminalUIReady = useCallback(() => {
-    console.log('[RemoteManagement] Terminal UI is ready');
+    console.log('[RemoteManagement] Terminal UI onReady callback triggered');
     
-    // ✅ FIX: Only set UI ready if terminal session exists
-    if (!terminalSession) {
-      console.log('[RemoteManagement] UI ready but no session yet, will set ready after session creation');
-      return;
-    }
-    
+    // ✅ SIMPLIFIED: Always set UI ready when callback fires
+    // The conditional rendering ensures this only happens when session exists
     setTerminalUIReady(true);
     
-    if (terminalRef.current) {
-      terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
-      terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
-      terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
-      terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
-      
-      if (outputBufferRef.current) {
-        try {
+    if (terminalSession && terminalRef.current) {
+      console.log('[RemoteManagement] Writing welcome message to terminal');
+      try {
+        terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
+        terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
+        terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
+        terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
+        
+        if (outputBufferRef.current) {
           terminalRef.current.write(outputBufferRef.current);
           outputBufferRef.current = '';
-        } catch (error) {
-          console.error('[RemoteManagement] Error writing buffered output:', error);
         }
+      } catch (error) {
+        console.error('[RemoteManagement] Error writing welcome message:', error);
       }
     }
   }, [nodeReference, terminalSession]);
@@ -500,37 +497,7 @@ export default function RemoteManagement({
     };
   }, [isOpen, isFullscreen, showCommandPalette]);
 
-  // ✅ FIXED: Watch for session creation, then mark UI as ready
-  useEffect(() => {
-    if (terminalSession && terminalRef.current && !terminalUIReady) {
-      console.log('[RemoteManagement] Session exists and terminal UI mounted, marking as ready');
-      
-      // Small delay to ensure terminal is fully rendered
-      const timer = setTimeout(() => {
-        if (isMountedRef.current && terminalRef.current) {
-          setTerminalUIReady(true);
-          
-          // Write welcome message
-          try {
-            terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
-            terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
-            terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
-            terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
-            
-            if (outputBufferRef.current) {
-              terminalRef.current.write(outputBufferRef.current);
-              outputBufferRef.current = '';
-            }
-          } catch (error) {
-            console.error('[RemoteManagement] Error writing welcome message:', error);
-          }
-        }
-      }, 100);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [terminalSession, nodeReference]);
-  // ✅ CRITICAL: Remove terminalUIReady from dependencies to avoid re-triggering
+  // ✅ REMOVED: No longer needed - conditional rendering handles this
   
   // ==================== Cleanup ====================
   
@@ -854,17 +821,34 @@ export default function RemoteManagement({
 
             {/* Tab Content - NO WRAPPER DIVS */}
             {activeTab === 'terminal' && (
-              <TerminalUI
-                ref={terminalRef}
-                theme="dark"
-                fontSize={14}
-                onInput={handleTerminalInput}
-                onReady={handleTerminalUIReady}
-                enableSearch={true}
-                enableLinks={true}
-                enableClipboard={true}
-                className="h-full"
-              />
+              <>
+                {/* ✅ FIX: Only render TerminalUI when session is ready */}
+                {terminalSession && terminalReady ? (
+                  <TerminalUI
+                    ref={terminalRef}
+                    theme="dark"
+                    fontSize={14}
+                    onInput={handleTerminalInput}
+                    onReady={handleTerminalUIReady}
+                    enableSearch={true}
+                    enableLinks={true}
+                    enableClipboard={true}
+                    className="h-full"
+                  />
+                ) : (
+                  <div className="absolute inset-0 bg-black flex items-center justify-center">
+                    <div className="text-center">
+                      <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-3" />
+                      <p className="text-white mb-1">Initializing Terminal</p>
+                      <p className="text-xs text-gray-400">
+                        {!terminalSession ? 'Creating session...' : 
+                         !terminalReady ? 'Connecting...' : 
+                         'Loading UI...'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             {activeTab === 'files' && (
