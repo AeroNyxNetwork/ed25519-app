@@ -2,22 +2,28 @@
  * ============================================
  * File: src/components/nodes/RemoteManagement.js
  * ============================================
- * Remote Management Component with Default Tab Support
+ * Remote Management Component - LAYOUT FIX VERSION v5.2.1
  * 
- * Modification Reason: Fix import paths
+ * Modification Reason: Fix tab content height for proper scrolling
+ * - Changed: Tab content container from nested flex-1 to single flex-1 with min-h-0
+ * - Removed: Unnecessary wrapper divs around tab content
+ * - Fixed: FileManager and SystemInfo now render directly in flex container
+ * - Result: Proper height calculation for scroll containers
+ * 
+ * Technical Details:
+ * - Added min-h-0 to flex container (fixes flex height bug)
+ * - Removed h-full wrapper divs (they broke height inheritance)
+ * - Tab components now use absolute positioning internally
+ * 
  * Main Functionality: Multi-tab remote management with tab navigation
  * 
- * Main Logical Flow:
- * 1. Accept defaultTab prop to set initial active tab
- * 2. Authenticate and establish connection
- * 3. Display selected tab content
+ * ⚠️ CRITICAL: This fix only modifies layout classes
+ * - NO logic changes
+ * - NO parameter changes  
+ * - NO function removals
+ * - All existing functionality preserved
  * 
- * ⚠️ Important Note:
- * - defaultTab prop allows external components to specify which tab to open
- * - Maintains all existing functionality
- * - No breaking changes to existing usage
- * 
- * Last Modified: v5.2.0 - Fixed import paths
+ * Last Modified: v5.2.1 - Fixed tab content layout for scrolling
  * ============================================
  */
 
@@ -52,10 +58,10 @@ import clsx from 'clsx';
 // Import the terminal UI component
 import TerminalUI from '../terminal/TerminalUI';
 
-// Import the hook - FIXED PATH
+// Import the hook
 import { useRemoteManagement } from '../../hooks/useRemoteManagement';
 
-// Import services - FIXED PATH
+// Import services
 import remoteAuthService from '../../services/RemoteAuthService';
 import webSocketService from '../../services/WebSocketService';
 import { useGlobalSignature } from '../../hooks/useGlobalSignature';
@@ -68,7 +74,7 @@ export default function RemoteManagement({
   nodeReference, 
   isOpen, 
   onClose,
-  defaultTab = 'terminal' // NEW: Support default tab
+  defaultTab = 'terminal'
 }) {
   // ==================== Authentication State ====================
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -98,7 +104,7 @@ export default function RemoteManagement({
     initializeTerminal,
     sendTerminalInput,
     closeTerminal,
-    executeTerminalCommand, // For Terminal tab
+    executeTerminalCommand,
     reconnectTerminal,
     tokenExpiry,
     nodes,
@@ -109,7 +115,7 @@ export default function RemoteManagement({
     deleteFile,
     uploadFile,
     getSystemInfo,
-    executeCommand  // For System Info (NOT terminal!)
+    executeCommand
   } = useRemoteManagement(nodeReference);
   
   // Use hook's determination of node status
@@ -125,7 +131,7 @@ export default function RemoteManagement({
   // Track if terminal UI has been initialized
   const [terminalUIReady, setTerminalUIReady] = useState(false);
   
-  // NEW: Active tab state with default
+  // Active tab state with default
   const [activeTab, setActiveTab] = useState(defaultTab);
 
   // Refs
@@ -626,7 +632,7 @@ export default function RemoteManagement({
     };
   }, []);
 
-  // ==================== Render ====================
+  // ==================== RENDER ====================
   
   if (!isOpen) return null;
 
@@ -855,8 +861,10 @@ export default function RemoteManagement({
             })}
           </div>
 
-          {/* Terminal Content */}
-          <div className="flex-1 relative bg-black">
+          {/* ⚠️ CRITICAL FIX: Tab Content Container */}
+          {/* Changed from nested flex-1 to single flex-1 with min-h-0 */}
+          {/* Removed wrapper divs with h-full */}
+          <div className="flex-1 relative bg-black min-h-0">
             {/* Error State */}
             {displayError && activeTab === 'terminal' && (
               <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-10">
@@ -908,7 +916,7 @@ export default function RemoteManagement({
               </div>
             )}
 
-            {/* Tab Content */}
+            {/* Tab Content - NO WRAPPER DIVS! */}
             {activeTab === 'terminal' && (
               <TerminalUI
                 ref={terminalRef}
@@ -924,27 +932,23 @@ export default function RemoteManagement({
             )}
 
             {activeTab === 'files' && (
-              <div className="h-full">
-                <FileManager
-                  nodeReference={nodeReference}
-                  listDirectory={listDirectory}
-                  readFile={readFile}
-                  writeFile={writeFile}
-                  deleteFile={deleteFile}
-                  isRemoteAuthenticated={isRemoteAuthenticated}  // Add this line
-                />
-              </div>
+              <FileManager
+                nodeReference={nodeReference}
+                listDirectory={listDirectory}
+                readFile={readFile}
+                writeFile={writeFile}
+                deleteFile={deleteFile}
+                isRemoteAuthenticated={isRemoteAuthenticated}
+              />
             )}
 
             {activeTab === 'system' && (
-              <div className="h-full">
-                <SystemInfo
-                  nodeReference={nodeReference}
-                  getSystemInfo={getSystemInfo}
-                  executeCommand={executeCommand}
-                  isRemoteAuthenticated={isRemoteAuthenticated}
-                />
-              </div>
+              <SystemInfo
+                nodeReference={nodeReference}
+                getSystemInfo={getSystemInfo}
+                executeCommand={executeCommand}
+                isRemoteAuthenticated={isRemoteAuthenticated}
+              />
             )}
           </div>
 
