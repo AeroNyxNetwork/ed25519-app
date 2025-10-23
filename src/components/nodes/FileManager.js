@@ -2,34 +2,32 @@
  * ============================================
  * File: src/components/nodes/FileManager.js
  * ============================================
- * File Manager Component - SCROLL FIX VERSION v8.1.0
+ * File Manager Component - WITH CODEMIRROR EDITOR v9.0.0
  * 
- * Modification Reason: Fix scroll container height issue
- * - Changed: Root container from h-full to absolute positioning
- * - Fixed: Scroll container now properly fills available space
- * - Reason: Parent flex-1 container doesn't provide explicit height
- * 
- * Technical Details:
- * - Using absolute inset-0 to fill parent container
- * - This bypasses flexbox height calculation issues
- * - Ensures scroll container has proper constraints
+ * Modification Reason: Integrate professional CodeMirror 6 editor
+ * - Changed: Replaced textarea with CodeEditor component
+ * - Added: Syntax highlighting and advanced editing features
+ * - Improved: User experience with professional editor
  * 
  * Main Functionality:
  * - Browse remote file system
- * - Edit text files
+ * - Edit files with professional code editor
+ * - Markdown files get specialized editor with preview
  * - Delete files and directories
- * - Handle REMOTE_NOT_ENABLED error gracefully
- * - Wait for authentication before operations
  * 
- * Dependencies: useRemoteManagement hook, lucide-react icons
+ * Dependencies: 
+ * - useRemoteManagement hook
+ * - lucide-react icons
+ * - CodeEditor component (NEW)
+ * - MarkdownEditor component (NEW)
  * 
  * ⚠️ Important Notes:
  * - All operations use remote_command API (not terminal)
  * - Must wait for isRemoteAuthenticated before any operations
+ * - Editor automatically detects file language
  * - All existing functionality preserved
- * - DO NOT change back to h-full - it breaks scrolling!
  * 
- * Last Modified: v8.1.0 - Fixed scroll with absolute positioning
+ * Last Modified: v9.0.0 - Integrated CodeMirror 6 editor
  * ============================================
  */
 
@@ -64,6 +62,9 @@ import {
   Info
 } from 'lucide-react';
 import clsx from 'clsx';
+
+// Import the new editor components
+import CodeEditor from '../editor/CodeEditor';
 
 // ==================== FILE TYPE ICONS ====================
 
@@ -116,9 +117,6 @@ const EDITABLE_EXTENSIONS = [
 
 // ==================== HELPER FUNCTIONS ====================
 
-/**
- * Build full file path
- */
 function buildPath(currentPath, fileName) {
   const normalizedPath = currentPath.endsWith('/') && currentPath !== '/' 
     ? currentPath.slice(0, -1) 
@@ -131,9 +129,6 @@ function buildPath(currentPath, fileName) {
   return fullPath;
 }
 
-/**
- * Format bytes to human readable
- */
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -142,9 +137,6 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-/**
- * Check if file is text/editable
- */
 function isTextFile(filename) {
   const extension = filename.split('.').pop().toLowerCase();
   return EDITABLE_EXTENSIONS.includes(extension) || !extension;
@@ -168,7 +160,6 @@ export default function FileManager({
   const [error, setError] = useState(null);
   const [remoteNotEnabled, setRemoteNotEnabled] = useState(false);
   
-  // Selection state
   const [selectedFiles, setSelectedFiles] = useState(new Set());
   
   // Editor state
@@ -176,11 +167,9 @@ export default function FileManager({
   const [editingContent, setEditingContent] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   
-  // UI state
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   
-  // Refs
   const isLoadingRef = useRef(false);
   const hasInitialLoadRef = useRef(false);
   const isMountedRef = useRef(true);
@@ -189,19 +178,16 @@ export default function FileManager({
   // ==================== DIRECTORY LOADING ====================
   
   const loadDirectory = useCallback(async (path = '/') => {
-    // Prevent multiple simultaneous loads
     if (isLoadingRef.current) {
       console.log('[FileManager] Already loading, skipping...');
       return;
     }
     
-    // Check if functions are available
     if (!listDirectory) {
       console.log('[FileManager] listDirectory not available yet');
       return;
     }
     
-    // Check authentication
     if (!isRemoteAuthenticated) {
       console.log('[FileManager] Not authenticated yet, waiting...');
       setError('Waiting for authentication...');
@@ -216,12 +202,10 @@ export default function FileManager({
     try {
       console.log('[FileManager] Loading directory:', path);
       
-      // Call remote command API
       const result = await listDirectory(path);
       
       console.log('[FileManager] Directory listing result:', result);
       
-      // Parse response
       if (result && result.entries) {
         const items = result.entries.map(entry => {
           const fullPath = buildPath(path, entry.name);
@@ -239,7 +223,6 @@ export default function FileManager({
           };
         });
         
-        // Sort: directories first, then files
         items.sort((a, b) => {
           if (a.type === b.type) return a.name.localeCompare(b.name);
           return a.type === 'directory' ? -1 : 1;
@@ -250,7 +233,6 @@ export default function FileManager({
         setFiles(items);
         setCurrentPath(path);
         
-        // Scroll to top after loading
         if (scrollContainerRef.current) {
           scrollContainerRef.current.scrollTop = 0;
         }
@@ -268,7 +250,6 @@ export default function FileManager({
       if (err && err.message) {
         errorMessage = err.message;
         
-        // Check for specific error types
         if (errorMessage.includes('Remote management not enabled') || 
             errorMessage.includes('REMOTE_NOT_ENABLED')) {
           setRemoteNotEnabled(true);
@@ -283,7 +264,7 @@ export default function FileManager({
         } else if (errorMessage.includes('permission')) {
           errorMessage = 'Permission denied';
         } else if (errorMessage.includes('forbidden')) {
-          errorMessage = errorMessage; // Keep the original message for forbidden paths
+          errorMessage = errorMessage;
         }
       }
       
@@ -382,8 +363,8 @@ export default function FileManager({
     }
   };
 
-  const saveFile = async () => {
-    if (!editingFile || editingContent === null) {
+  const saveFile = useCallback(async (content) => {
+    if (!editingFile || content === null || content === undefined) {
       console.error('[FileManager] Cannot save: missing file or content');
       return;
     }
@@ -404,16 +385,15 @@ export default function FileManager({
     
     try {
       console.log('[FileManager] Saving file:', editingFile.path);
-      console.log('[FileManager] Content length:', editingContent.length);
+      console.log('[FileManager] Content length:', content.length);
       
-      await writeFile(editingFile.path, editingContent);
+      await writeFile(editingFile.path, content);
       
       console.log('[FileManager] File write result: success');
       
-      setEditingFile(null);
-      setEditingContent(null);
       showSuccess('File saved successfully');
       
+      // Refresh directory listing
       await loadDirectory(currentPath);
       
     } catch (err) {
@@ -425,10 +405,16 @@ export default function FileManager({
       }
       
       setError(errorMessage);
+      throw err; // Re-throw for CodeEditor to handle
     } finally {
       setIsSaving(false);
     }
-  };
+  }, [editingFile, isRemoteAuthenticated, writeFile, currentPath, loadDirectory]);
+
+  const closeEditor = useCallback(() => {
+    setEditingFile(null);
+    setEditingContent(null);
+  }, []);
 
   // ==================== DELETE ====================
   
@@ -504,7 +490,6 @@ export default function FileManager({
     if (!hasInitialLoadRef.current && listDirectory && isRemoteAuthenticated) {
       console.log('[FileManager] Initial load with authentication');
       hasInitialLoadRef.current = true;
-      // Delay to ensure everything is ready
       setTimeout(() => {
         if (isMountedRef.current) {
           loadDirectory('/');
@@ -541,7 +526,6 @@ export default function FileManager({
 
   // ==================== RENDER ====================
   
-  // Remote management not enabled state
   if (remoteNotEnabled) {
     return (
       <div className="absolute inset-0 flex items-center justify-center p-6">
@@ -612,7 +596,6 @@ export default function FileManager({
     );
   }
 
-  // Waiting for authentication state
   if (!isRemoteAuthenticated) {
     return (
       <div className="absolute inset-0 flex items-center justify-center">
@@ -712,7 +695,7 @@ export default function FileManager({
         )}
       </AnimatePresence>
 
-      {/* File list - OPTIMIZED SCROLL CONTAINER */}
+      {/* File list */}
       <div 
         ref={scrollContainerRef}
         className="flex-1 overflow-y-auto px-6 py-4 min-h-0"
@@ -753,7 +736,6 @@ export default function FileManager({
           </div>
         ) : (
           <div className="space-y-1">
-            {/* Parent directory link */}
             {currentPath !== '/' && (
               <button
                 onClick={navigateUp}
@@ -765,7 +747,6 @@ export default function FileManager({
               </button>
             )}
             
-            {/* Files */}
             {files.map((file) => {
               const Icon = getFileIcon(file);
               const isSelected = selectedFiles.has(file.path);
@@ -834,7 +815,7 @@ export default function FileManager({
         )}
       </div>
 
-      {/* Status bar at bottom */}
+      {/* Status bar */}
       {!isLoading && files.length > 0 && (
         <div className="px-6 py-3 border-t border-white/10 bg-black/20 flex items-center justify-between text-xs flex-shrink-0">
           <div className="flex items-center gap-2 text-gray-400">
@@ -849,18 +830,21 @@ export default function FileManager({
         </div>
       )}
 
-      {/* File editor modal */}
+      {/* Professional Code Editor Modal */}
       <AnimatePresence>
-        {editingFile && (
+        {editingFile && editingContent !== null && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-            onClick={() => {
-              if (!isSaving) {
-                setEditingFile(null);
-                setEditingContent(null);
+            onClick={(e) => {
+              // Only close if clicking the backdrop, not the editor
+              if (e.target === e.currentTarget && !isSaving) {
+                const hasUnsavedChanges = editingContent !== initialContent;
+                if (!hasUnsavedChanges || window.confirm('You have unsaved changes. Close anyway?')) {
+                  closeEditor();
+                }
               }
             }}
           >
@@ -868,56 +852,20 @@ export default function FileManager({
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-black/90 border border-white/10 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl"
+              className="bg-black/95 border border-white/10 rounded-xl w-full max-w-6xl h-[90vh] flex flex-col shadow-2xl overflow-hidden"
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Editor header */}
-              <div className="flex items-center justify-between p-4 border-b border-white/10 bg-gradient-to-r from-purple-900/20 to-blue-900/20">
-                <div className="flex items-center gap-3">
-                  <FileText className="w-5 h-5 text-purple-400" />
-                  <div>
-                    <span className="text-white font-medium">{editingFile.name}</span>
-                    <p className="text-xs text-gray-400">{editingFile.path}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={saveFile}
-                    disabled={isSaving}
-                    className="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:from-purple-800 disabled:to-blue-800 disabled:opacity-50 rounded-lg transition-all flex items-center gap-2 shadow-lg"
-                  >
-                    {isSaving ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Save className="w-4 h-4" />
-                    )}
-                    <span className="text-sm font-medium">Save</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!isSaving) {
-                        setEditingFile(null);
-                        setEditingContent(null);
-                      }
-                    }}
-                    disabled={isSaving}
-                    className="p-2 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
-                  >
-                    <X className="w-5 h-5 text-gray-400" />
-                  </button>
-                </div>
-              </div>
-              
-              {/* Editor content */}
-              <div className="flex-1 p-4 overflow-hidden">
-                <textarea
-                  value={editingContent || ''}
-                  onChange={(e) => setEditingContent(e.target.value)}
-                  className="w-full h-full bg-black/50 border border-white/10 rounded-lg p-4 text-sm text-white font-mono resize-none focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
-                  spellCheck={false}
-                  placeholder="File content will appear here..."
-                />
-              </div>
+              {/* CodeEditor Component */}
+              <CodeEditor
+                file={editingFile}
+                initialContent={editingContent}
+                onSave={saveFile}
+                onClose={closeEditor}
+                isSaving={isSaving}
+                saveError={error}
+                readOnly={false}
+                className="h-full"
+              />
             </motion.div>
           </motion.div>
         )}
