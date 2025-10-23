@@ -41,7 +41,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import CodeMirror from '@uiw/react-codemirror';
 import { vscodeDark } from '@uiw/codemirror-theme-vscode';
 import { githubLight } from '@uiw/codemirror-theme-github';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, X } from 'lucide-react';
+import clsx from 'clsx';
 
 import EditorToolbar from './EditorToolbar';
 import { detectLanguage, getLanguageExtension, isMarkdownFile } from './languageDetector';
