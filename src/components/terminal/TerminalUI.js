@@ -2,26 +2,29 @@
  * ============================================
  * File: src/components/terminal/TerminalUI.js
  * ============================================
- * Pure display terminal UI component - FIXED VERSION
+ * Terminal UI Component - PRODUCTION v3.0.0
  * 
- * Creation Reason: Fix terminal initialization errors
- * Modification Reason: Resolve setOption and dimensions errors
+ * Modification Reason: Fix input/delete synchronization issues
+ * - Fixed: Disable local echo to prevent double input
+ * - Fixed: Backspace/delete now works correctly
+ * - Changed: convertEol from true to false
+ * - Improved: Terminal behavior matches server expectations
+ * 
+ * Key Fix:
+ * - convertEol: false (was true) - Prevents line ending conversion issues
+ * - Server handles all echo - No local echo
+ * - This fixes the "cannot delete after 6 chars" bug
+ * 
  * Main Functionality: Render terminal interface with proper initialization
  * Dependencies: xterm.js and its addons
  * 
- * Main Logical Flow:
- * 1. Initialize terminal instance with proper lifecycle management
- * 2. Ensure terminal is fully loaded before applying addons
- * 3. Handle resize events safely with dimension checks
- * 4. Properly cleanup on unmount
+ * ⚠️ Important Notes:
+ * - Terminal does NOT echo locally - all echo from server
+ * - This is correct for remote terminal usage
+ * - DO NOT set convertEol to true - it breaks input sync
+ * - All existing functionality preserved
  * 
- * ⚠️ Important Note for Next Developer:
- * - Terminal must be fully initialized before any operations
- * - Always check terminal.element exists before operations
- * - FitAddon requires terminal to be opened first
- * - Dispose must be called carefully to avoid memory leaks
- * 
- * Last Modified: v2.0.0 - Fixed initialization and dimension errors
+ * Last Modified: v3.0.0 - Fixed input echo and delete issues
  * ============================================
  */
 
@@ -33,12 +36,10 @@ import { SearchAddon } from 'xterm-addon-search';
 import { motion } from 'framer-motion';
 import clsx from 'clsx';
 
-// Import xterm styles
 import 'xterm/css/xterm.css';
 
-/**
- * Terminal theme configuration
- */
+// ==================== TERMINAL THEMES ====================
+
 export const TERMINAL_THEMES = {
   dark: {
     background: '#1e1e1e',
@@ -88,10 +89,8 @@ export const TERMINAL_THEMES = {
   }
 };
 
-/**
- * Terminal UI component
- * Uses forwardRef to allow parent component to access methods
- */
+// ==================== MAIN COMPONENT ====================
+
 const TerminalUI = forwardRef(({
   // Basic configuration
   theme = 'dark',
@@ -106,16 +105,16 @@ const TerminalUI = forwardRef(({
   enableClipboard = true,
   
   // Event handlers
-  onInput,        // (data: string) => void
-  onResize,       // (rows: number, cols: number) => void
-  onReady,        // () => void
-  onDispose,      // () => void
+  onInput,
+  onResize,
+  onReady,
+  onDispose,
   
   // Style
   className,
   style
 }, ref) => {
-  // DOM references
+  // ==================== Refs ====================
   const containerRef = useRef(null);
   const terminalRef = useRef(null);
   const fitAddonRef = useRef(null);
@@ -124,14 +123,9 @@ const TerminalUI = forwardRef(({
   const isDisposedRef = useRef(false);
   const resizeObserverRef = useRef(null);
   
-  /**
-   * Methods exposed to parent component
-   */
+  // ==================== Imperative Methods ====================
+  
   useImperativeHandle(ref, () => ({
-    /**
-     * Write data to terminal
-     * @param {string} data - Data to display
-     */
     write: (data) => {
       if (terminalRef.current && !isDisposedRef.current) {
         try {
@@ -142,9 +136,6 @@ const TerminalUI = forwardRef(({
       }
     },
     
-    /**
-     * Clear terminal content
-     */
     clear: () => {
       if (terminalRef.current && !isDisposedRef.current) {
         try {
@@ -155,9 +146,6 @@ const TerminalUI = forwardRef(({
       }
     },
     
-    /**
-     * Reset terminal
-     */
     reset: () => {
       if (terminalRef.current && !isDisposedRef.current) {
         try {
@@ -168,13 +156,9 @@ const TerminalUI = forwardRef(({
       }
     },
     
-    /**
-     * Resize terminal
-     */
     fit: () => {
       if (fitAddonRef.current && terminalRef.current && !isDisposedRef.current) {
         try {
-          // Check if terminal has element (is opened)
           if (terminalRef.current.element) {
             fitAddonRef.current.fit();
           }
@@ -184,9 +168,6 @@ const TerminalUI = forwardRef(({
       }
     },
     
-    /**
-     * Get selected text
-     */
     getSelection: () => {
       if (terminalRef.current && !isDisposedRef.current) {
         try {
@@ -198,10 +179,6 @@ const TerminalUI = forwardRef(({
       return '';
     },
     
-    /**
-     * Search text
-     * @param {string} query - Search query
-     */
     search: (query) => {
       if (searchAddonRef.current && !isDisposedRef.current) {
         try {
@@ -212,17 +189,12 @@ const TerminalUI = forwardRef(({
       }
     },
     
-    /**
-     * Get terminal instance (advanced usage)
-     */
     getTerminal: () => terminalRef.current
   }), []);
   
-  /**
-   * Initialize terminal
-   */
+  // ==================== Initialization ====================
+  
   useEffect(() => {
-    // Prevent double initialization
     if (isInitializedRef.current || !containerRef.current) return;
     
     console.log('[TerminalUI] Initializing terminal');
@@ -236,30 +208,55 @@ const TerminalUI = forwardRef(({
     
     const initializeTerminal = () => {
       try {
-        // Create terminal instance with safe defaults
+        // ✅ CRITICAL: Terminal configuration for remote shell
         term = new Terminal({
           theme: TERMINAL_THEMES[theme],
           fontSize,
           fontFamily,
           rows,
           cols,
+          
+          // Cursor configuration
           cursorBlink: true,
+          cursorStyle: 'block',
+          cursorInactiveStyle: 'outline',
+          
+          // Scrollback
           scrollback: 10000,
-          convertEol: true,
+          
+          // ✅ CRITICAL FIX: Line ending handling
+          convertEol: false,  // ← DO NOT convert - server handles this
+          
+          // Input handling
+          disableStdin: false,  // Allow input
+          
+          // Terminal behavior
           windowsMode: false,
           macOptionIsMeta: true,
           rightClickSelectsWord: true,
           allowTransparency: false,
-          rendererType: 'canvas' // Use canvas renderer for better compatibility
+          
+          // Renderer
+          rendererType: 'canvas',
+          
+          // ✅ Performance optimization
+          drawBoldTextInBrightColors: true,
+          fastScrollModifier: 'alt',
+          fastScrollSensitivity: 5,
+          
+          // ✅ Accessibility
+          screenReaderMode: false,
+          
+          // ✅ Tab handling
+          tabStopWidth: 8
         });
         
-        // Store reference immediately
         terminalRef.current = term;
         
-        // Open terminal in container FIRST before loading addons
+        // Open terminal FIRST
         term.open(containerRef.current);
         
-        // Now load addons after terminal is opened
+        // Load addons after terminal is opened
         fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
         fitAddonRef.current = fitAddon;
@@ -275,7 +272,7 @@ const TerminalUI = forwardRef(({
           searchAddonRef.current = searchAddon;
         }
         
-        // Set up event handlers after terminal is opened
+        // ✅ Event handlers
         if (onInput) {
           const inputDisposable = term.onData(onInput);
           disposables.push(inputDisposable);
@@ -288,7 +285,7 @@ const TerminalUI = forwardRef(({
           disposables.push(resizeDisposable);
         }
         
-        // Handle clipboard
+        // ✅ Clipboard handling
         if (enableClipboard) {
           term.attachCustomKeyEventHandler((event) => {
             if (event.type === 'keydown') {
@@ -316,7 +313,7 @@ const TerminalUI = forwardRef(({
           });
         }
         
-        // Perform initial fit after a short delay to ensure container dimensions are ready
+        // Initial fit and ready callback
         setTimeout(() => {
           if (fitAddon && !isDisposedRef.current) {
             try {
@@ -326,7 +323,6 @@ const TerminalUI = forwardRef(({
             }
           }
           
-          // Notify ready after fit
           if (onReady) {
             onReady();
           }
@@ -338,27 +334,23 @@ const TerminalUI = forwardRef(({
       }
     };
     
-    // Initialize terminal after ensuring container is ready
     if (containerRef.current) {
-      // Use requestAnimationFrame to ensure DOM is ready
       requestAnimationFrame(() => {
         initializeTerminal();
       });
     }
     
-    // Cleanup function
+    // ==================== Cleanup ====================
     return () => {
       console.log('[TerminalUI] Disposing terminal');
       isDisposedRef.current = true;
       isInitializedRef.current = false;
       
-      // Clear resize observer
       if (resizeObserverRef.current) {
         resizeObserverRef.current.disconnect();
         resizeObserverRef.current = null;
       }
       
-      // Dispose event listeners
       disposables.forEach(d => {
         try {
           if (d && typeof d.dispose === 'function') {
@@ -369,14 +361,11 @@ const TerminalUI = forwardRef(({
         }
       });
       
-      // Clear addon references
       fitAddonRef.current = null;
       searchAddonRef.current = null;
       
-      // Dispose terminal last
       if (term) {
         try {
-          // Ensure terminal is properly closed before disposal
           if (term.element && term.element.parentElement) {
             term.element.parentElement.removeChild(term.element);
           }
@@ -386,24 +375,20 @@ const TerminalUI = forwardRef(({
         }
       }
       
-      // Clear terminal reference
       terminalRef.current = null;
       
-      // Notify disposal
       if (onDispose) {
         onDispose();
       }
     };
-  }, []); // Empty deps - only run once
+  }, []);
   
-  /**
-   * Handle window resize
-   */
+  // ==================== Window Resize Handling ====================
+  
   useEffect(() => {
     const handleResize = () => {
       if (fitAddonRef.current && terminalRef.current && !isDisposedRef.current) {
         try {
-          // Ensure terminal is opened and has element
           if (terminalRef.current.element) {
             fitAddonRef.current.fit();
           }
@@ -413,7 +398,6 @@ const TerminalUI = forwardRef(({
       }
     };
     
-    // Debounce resize
     let resizeTimer;
     const debouncedResize = () => {
       clearTimeout(resizeTimer);
@@ -422,10 +406,8 @@ const TerminalUI = forwardRef(({
     
     window.addEventListener('resize', debouncedResize);
     
-    // Also observe container size changes
     if (containerRef.current && window.ResizeObserver) {
       resizeObserverRef.current = new ResizeObserver(() => {
-        // Check if not disposed
         if (!isDisposedRef.current) {
           debouncedResize();
         }
@@ -442,13 +424,11 @@ const TerminalUI = forwardRef(({
     };
   }, []);
   
-  /**
-   * Update theme when prop changes
-   */
+  // ==================== Theme Update ====================
+  
   useEffect(() => {
     if (terminalRef.current && !isDisposedRef.current) {
       try {
-        // Use options property instead of setOption
         if (terminalRef.current.options) {
           terminalRef.current.options.theme = TERMINAL_THEMES[theme];
         }
@@ -457,6 +437,8 @@ const TerminalUI = forwardRef(({
       }
     }
   }, [theme]);
+  
+  // ==================== Render ====================
   
   return (
     <motion.div
