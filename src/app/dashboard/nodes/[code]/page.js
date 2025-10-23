@@ -38,6 +38,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useWallet } from '../../../../components/wallet/WalletProvider';
 import { useConnectionState } from '../../../../hooks/useConnectionState';
+import remoteAuthService from '../../../../services/RemoteAuthService';
 import RemoteManagement from '../../../../components/nodes/RemoteManagement';
 import { motion, AnimatePresence } from 'framer-motion';
 import Link from 'next/link';
@@ -356,6 +357,8 @@ export default function NodeDetailsPage({ params }) {
     status: connectionStatus,
     isReady,
     isNodeOnline,
+    isWebSocketConnected,
+    isWebSocketAuthenticated,
     nodeInfo: node,
     allNodes: nodes,
     jwtExpiryFormatted,
@@ -364,13 +367,16 @@ export default function NodeDetailsPage({ params }) {
     isReconnecting,
     canUseTerminal,
     canUseFileManager,
-    fullReconnect
+    fullReconnect,
+    ensureSignature
   } = useConnectionState(code);
   
   // Local state
   const [showRemoteManagement, setShowRemoteManagement] = useState(false);
   const [remoteManagementDefaultTab, setRemoteManagementDefaultTab] = useState('terminal');
   const [selectedTab, setSelectedTab] = useState('overview');
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [authError, setAuthError] = useState(null);
 
   // ✅ IMPROVED: Computed values from real data
   const healthScore = useMemo(() => calculateHealthScore(node), [node]);
@@ -425,6 +431,33 @@ export default function NodeDetailsPage({ params }) {
   const handleRetry = useCallback(() => {
     fullReconnect();
   }, [fullReconnect]);
+  
+  // ✅ NEW: Perform authentication manually
+  const performAuthentication = useCallback(async () => {
+    if (!wallet.connected || !wallet.address) {
+      throw new Error('Wallet not connected');
+    }
+    
+    const signatureData = await ensureSignature();
+    
+    if (!signatureData) {
+      throw new Error('Failed to get signature');
+    }
+    
+    const authResult = await remoteAuthService.authenticate({
+      nodeReference: code,
+      walletAddress: wallet.address,
+      signature: signatureData.signature,
+      message: signatureData.message,
+      walletType: 'okx'
+    });
+    
+    if (!authResult.success) {
+      throw new Error(authResult.error || 'Authentication failed');
+    }
+    
+    return true;
+  }, [wallet, code, ensureSignature]);
 
   // ==================== Loading State ====================
   
@@ -629,13 +662,15 @@ export default function NodeDetailsPage({ params }) {
                   </span>
                 </div>
 
-                {/* ✅ NEW: Reconnect button if needed */}
-                {isReconnecting ? (
+                {/* ✅ IMPROVED: Show reconnect status, removed redundant Remote Management button */}
+                {isReconnecting && (
                   <div className="flex items-center gap-2 px-4 py-2 bg-orange-500/10 rounded-xl border border-orange-500/20">
                     <Loader2 className="w-4 h-4 text-orange-400 animate-spin" />
                     <span className="text-sm text-orange-400">Reconnecting...</span>
                   </div>
-                ) : connectionError ? (
+                )}
+                
+                {connectionError && !isReconnecting && (
                   <button
                     onClick={handleRetry}
                     className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 rounded-xl border border-red-500/20 transition-all"
@@ -643,25 +678,6 @@ export default function NodeDetailsPage({ params }) {
                     <RefreshCw className="w-4 h-4 text-red-400" />
                     <span className="text-sm text-red-400">Retry</span>
                   </button>
-                ) : null}
-                
-                {/* Remote Management Button */}
-                {isNodeOnline ? (
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={() => openRemoteManagement('terminal')}
-                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl transition-all font-medium text-sm bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 shadow-lg shadow-purple-500/20"
-                  >
-                    <Terminal className="w-4 h-4" />
-                    Remote Management
-                  </motion.button>
-                ) : (
-                  <div className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gray-800 text-gray-400 cursor-not-allowed text-sm border border-gray-700">
-                    <Terminal className="w-4 h-4" />
-                    <span>Remote Management</span>
-                    <span className="text-xs">(Offline)</span>
-                  </div>
                 )}
               </div>
             </div>
@@ -844,9 +860,10 @@ export default function NodeDetailsPage({ params }) {
             </div>
           )}
 
-          {/* Remote Tools Tab */}
+          {/* Remote Tools Tab - ENHANCED with action buttons */}
           {selectedTab === 'remote' && (
             <div className="space-y-6">
+              {/* Quick Access to Remote Tools */}
               <div className="bg-white/5 rounded-xl p-6 border border-white/10">
                 <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
                   <Terminal className="w-5 h-5 text-purple-400" />
@@ -862,40 +879,98 @@ export default function NodeDetailsPage({ params }) {
                 />
               </div>
 
-              {/* Connection Status Info */}
+              {/* ✅ ENHANCED: Connection Status with Action Buttons */}
               <div className="bg-white/5 rounded-xl p-6 border border-white/10">
                 <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
                   <Network className="w-5 h-5 text-blue-400" />
                   Connection Status
                 </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 bg-black/30 rounded-lg">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Wifi className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-400">WebSocket</span>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* WebSocket Status */}
+                  <div className="p-4 bg-black/30 rounded-lg border border-white/10">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Wifi className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm text-gray-400">WebSocket</span>
+                      </div>
+                      <span className={clsx(
+                        "text-sm font-semibold",
+                        isWebSocketConnected ? "text-green-400" : "text-red-400"
+                      )}>
+                        {isWebSocketConnected ? 'Connected' : 'Disconnected'}
+                      </span>
                     </div>
-                    <span className={clsx(
-                      "text-lg font-semibold",
-                      isReady ? "text-green-400" : "text-gray-400"
-                    )}>
-                      {isReady ? 'Connected' : 'Disconnected'}
-                    </span>
+                    {!isWebSocketConnected && (
+                      <button
+                        onClick={fullReconnect}
+                        disabled={isReconnecting}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 disabled:opacity-50 rounded-lg transition-all text-sm"
+                      >
+                        {isReconnecting ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Reconnecting...
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="w-4 h-4" />
+                            Reconnect Now
+                          </>
+                        )}
+                      </button>
+                    )}
                   </div>
                   
-                  <div className="p-4 bg-black/30 rounded-lg">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Shield className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-400">Authentication</span>
+                  {/* Authentication Status */}
+                  <div className="p-4 bg-black/30 rounded-lg border border-white/10">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm text-gray-400">Authentication</span>
+                      </div>
+                      <span className={clsx(
+                        "text-sm font-semibold",
+                        jwtExpiryFormatted ? "text-green-400" : "text-yellow-400"
+                      )}>
+                        {jwtExpiryFormatted || 'Not authenticated'}
+                      </span>
                     </div>
-                    <span className={clsx(
-                      "text-lg font-semibold",
-                      jwtExpiryFormatted ? "text-green-400" : "text-gray-400"
-                    )}>
-                      {jwtExpiryFormatted || 'Not authenticated'}
-                    </span>
+                    {!jwtExpiryFormatted && isWebSocketConnected && (
+                      <button
+                        onClick={async () => {
+                          setAuthError('Authenticating...');
+                          try {
+                            await performAuthentication();
+                            setAuthError(null);
+                          } catch (err) {
+                            setAuthError(err.message);
+                          }
+                        }}
+                        disabled={isAuthenticating}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-800 disabled:opacity-50 rounded-lg transition-all text-sm"
+                      >
+                        {isAuthenticating ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Authenticating...
+                          </>
+                        ) : (
+                          <>
+                            <Shield className="w-4 h-4" />
+                            Authenticate Now
+                          </>
+                        )}
+                      </button>
+                    )}
+                    {jwtExpiryFormatted && (
+                      <div className="text-xs text-green-400/70 mt-2 text-center">
+                        Expires in {jwtExpiryFormatted}
+                      </div>
+                    )}
                   </div>
                   
-                  <div className="p-4 bg-black/30 rounded-lg">
+                  {/* Node Status */}
+                  <div className="p-4 bg-black/30 rounded-lg border border-white/10">
                     <div className="flex items-center gap-2 mb-2">
                       <Server className="w-4 h-4 text-gray-400" />
                       <span className="text-sm text-gray-400">Node Status</span>
@@ -906,19 +981,63 @@ export default function NodeDetailsPage({ params }) {
                     )}>
                       {isNodeOnline ? 'Online' : 'Offline'}
                     </span>
+                    {!isNodeOnline && (
+                      <p className="text-xs text-red-400/70 mt-2">
+                        Check your node's network connection
+                      </p>
+                    )}
                   </div>
                   
-                  <div className="p-4 bg-black/30 rounded-lg">
+                  {/* Capabilities */}
+                  <div className="p-4 bg-black/30 rounded-lg border border-white/10">
                     <div className="flex items-center gap-2 mb-2">
                       <Zap className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-400">Capabilities</span>
+                      <span className="text-sm text-gray-400">Remote Tools</span>
                     </div>
                     <span className={clsx(
                       "text-lg font-semibold",
                       canUseTerminal ? "text-green-400" : "text-gray-400"
                     )}>
-                      {canUseTerminal ? 'All Available' : 'Limited'}
+                      {canUseTerminal ? 'All Available' : 'Unavailable'}
                     </span>
+                    {!canUseTerminal && (
+                      <p className="text-xs text-gray-400 mt-2">
+                        {!isNodeOnline ? 'Node must be online' :
+                         !isWebSocketConnected ? 'Connect to WebSocket' :
+                         !jwtExpiryFormatted ? 'Authentication required' :
+                         'Please check connection'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                
+                {/* ✅ NEW: Overall Status Summary */}
+                <div className="mt-4 p-4 bg-gradient-to-r from-purple-500/10 to-blue-500/10 rounded-lg border border-purple-500/20">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      {canUseTerminal ? (
+                        <>
+                          <CheckCircle2 className="w-5 h-5 text-green-400" />
+                          <div>
+                            <p className="font-medium text-green-400">All Systems Ready</p>
+                            <p className="text-xs text-green-400/70">You can use all remote management tools</p>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="w-5 h-5 text-yellow-400" />
+                          <div>
+                            <p className="font-medium text-yellow-400">Action Required</p>
+                            <p className="text-xs text-yellow-400/70">
+                              {!isNodeOnline ? 'Waiting for node to come online' :
+                               !isWebSocketConnected ? 'Click "Reconnect Now" above' :
+                               !jwtExpiryFormatted ? 'Click "Authenticate Now" above' :
+                               'Some services may be unavailable'}
+                            </p>
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
