@@ -2,14 +2,17 @@
  * ============================================
  * File: src/components/nodes/FileManager.js
  * ============================================
- * File Manager Component - GOOGLE-GRADE UI/UX VERSION v8.0.0
+ * File Manager Component - SCROLL FIX VERSION v8.1.0
  * 
- * Modification Reason: Optimize UI/UX to Google-level standards
- * - Fixed: Scroll container visibility issues
- * - Added: File count display for clarity
- * - Added: Custom scrollbar styling
- * - Added: Visual feedback for scrollable content
- * - Improved: Overall layout and spacing
+ * Modification Reason: Fix scroll container height issue
+ * - Changed: Root container from h-full to absolute positioning
+ * - Fixed: Scroll container now properly fills available space
+ * - Reason: Parent flex-1 container doesn't provide explicit height
+ * 
+ * Technical Details:
+ * - Using absolute inset-0 to fill parent container
+ * - This bypasses flexbox height calculation issues
+ * - Ensures scroll container has proper constraints
  * 
  * Main Functionality:
  * - Browse remote file system
@@ -20,19 +23,13 @@
  * 
  * Dependencies: useRemoteManagement hook, lucide-react icons
  * 
- * Main Logical Flow:
- * 1. Load directory listing from remote node
- * 2. Display files with proper sorting (directories first)
- * 3. Handle file operations (read, write, delete)
- * 4. Show clear UI feedback for all states
- * 
  * ⚠️ Important Notes:
  * - All operations use remote_command API (not terminal)
  * - Must wait for isRemoteAuthenticated before any operations
- * - Gracefully handles backend configuration errors
  * - All existing functionality preserved
+ * - DO NOT change back to h-full - it breaks scrolling!
  * 
- * Last Modified: v8.0.0 - Google-grade UI/UX optimization
+ * Last Modified: v8.1.0 - Fixed scroll with absolute positioning
  * ============================================
  */
 
@@ -547,7 +544,7 @@ export default function FileManager({
   // Remote management not enabled state
   if (remoteNotEnabled) {
     return (
-      <div className="flex items-center justify-center h-full p-6">
+      <div className="absolute inset-0 flex items-center justify-center p-6">
         <div className="text-center max-w-2xl">
           <div className="w-20 h-20 bg-yellow-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
             <Settings className="w-10 h-10 text-yellow-400" />
@@ -618,7 +615,7 @@ export default function FileManager({
   // Waiting for authentication state
   if (!isRemoteAuthenticated) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="absolute inset-0 flex items-center justify-center">
         <div className="text-center">
           <Shield className="w-12 h-12 text-yellow-400 mx-auto mb-4 animate-pulse" />
           <p className="text-yellow-400 mb-2">Waiting for authentication...</p>
@@ -629,9 +626,9 @@ export default function FileManager({
   }
 
   return (
-    <div className="h-full flex flex-col bg-gradient-to-b from-[#0A0A0F] to-black">
+    <div className="absolute inset-0 flex flex-col bg-gradient-to-b from-[#0A0A0F] to-black">
       {/* Header with file count */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-black/20">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-black/20 flex-shrink-0">
         <div className="flex items-center gap-4">
           <h3 className="text-lg font-semibold text-white">File Manager</h3>
           {!isLoading && files.length > 0 && (
@@ -660,7 +657,7 @@ export default function FileManager({
       </div>
 
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 px-6 py-3 text-sm border-b border-white/10 bg-black/10">
+      <div className="flex items-center gap-2 px-6 py-3 text-sm border-b border-white/10 bg-black/10 flex-shrink-0">
         {breadcrumbs.map((crumb, index) => (
           <React.Fragment key={crumb.path}>
             {index > 0 && <ChevronRight className="w-4 h-4 text-gray-600" />}
@@ -686,7 +683,7 @@ export default function FileManager({
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="mx-6 mt-4 p-3 bg-green-500/20 border border-green-500/50 rounded-lg flex items-center gap-2"
+            className="mx-6 mt-4 p-3 bg-green-500/20 border border-green-500/50 rounded-lg flex items-center gap-2 flex-shrink-0"
           >
             <CheckCircle className="w-5 h-5 text-green-400" />
             <p className="text-green-400 text-sm">{successMessage}</p>
@@ -701,7 +698,7 @@ export default function FileManager({
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="mx-6 mt-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg flex items-center gap-2"
+            className="mx-6 mt-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg flex items-center gap-2 flex-shrink-0"
           >
             <AlertCircle className="w-5 h-5 text-red-400" />
             <p className="text-red-400 text-sm flex-1">{error}</p>
@@ -720,13 +717,11 @@ export default function FileManager({
         ref={scrollContainerRef}
         className="flex-1 overflow-y-auto px-6 py-4 min-h-0"
         style={{
-          // Custom scrollbar styling
           scrollbarWidth: 'thin',
           scrollbarColor: 'rgba(139, 92, 246, 0.3) rgba(255, 255, 255, 0.05)'
         }}
       >
         <style jsx>{`
-          /* Webkit browsers (Chrome, Safari, Edge) */
           div::-webkit-scrollbar {
             width: 8px;
           }
@@ -841,7 +836,7 @@ export default function FileManager({
 
       {/* Status bar at bottom */}
       {!isLoading && files.length > 0 && (
-        <div className="px-6 py-3 border-t border-white/10 bg-black/20 flex items-center justify-between text-xs">
+        <div className="px-6 py-3 border-t border-white/10 bg-black/20 flex items-center justify-between text-xs flex-shrink-0">
           <div className="flex items-center gap-2 text-gray-400">
             <Info className="w-3.5 h-3.5" />
             <span>
