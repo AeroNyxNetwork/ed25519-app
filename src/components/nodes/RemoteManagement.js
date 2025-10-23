@@ -368,9 +368,9 @@ export default function RemoteManagement({
   const handleTerminalUIReady = useCallback(() => {
     console.log('[RemoteManagement] Terminal UI onReady callback triggered');
     
-    // ✅ SIMPLIFIED: Always set UI ready when callback fires
-    // The conditional rendering ensures this only happens when session exists
+    // ✅ FIX: Set both state AND ref for immediate availability
     setTerminalUIReady(true);
+    terminalUIReadyRef.current = true;
     
     if (terminalSession && terminalRef.current) {
       console.log('[RemoteManagement] Writing welcome message to terminal');
@@ -391,15 +391,18 @@ export default function RemoteManagement({
   }, [nodeReference, terminalSession]);
 
   const handleTerminalInput = useCallback((data) => {
-    // ✅ FIX: Check both hook ready AND UI ready
-    if (terminalSession && terminalReady && terminalUIReady) {
+    // ✅ FIX: Use ref for immediate check (state might be stale in callback)
+    const isUIReady = terminalUIReadyRef.current;
+    
+    if (terminalSession && terminalReady && isUIReady) {
       console.log('[RemoteManagement] Sending input:', data.length, 'bytes');
       sendTerminalInput(data);
     } else {
       console.warn('[RemoteManagement] Cannot send input - terminal not ready', {
         hasSession: !!terminalSession,
         hookReady: terminalReady,
-        uiReady: terminalUIReady
+        uiReady: isUIReady,
+        uiReadyState: terminalUIReady
       });
     }
   }, [terminalSession, terminalReady, terminalUIReady, sendTerminalInput]);
@@ -512,6 +515,7 @@ export default function RemoteManagement({
   useEffect(() => {
     if (!isOpen) {
       setTerminalUIReady(false);
+      terminalUIReadyRef.current = false; // ✅ Reset ref too
       outputBufferRef.current = '';
       lastOutputRef.current = '';
       // ✅ FIX: Reset initialized flag when modal closes
