@@ -2,31 +2,25 @@
  * ============================================
  * File: src/components/nodes/RemoteManagement.js
  * ============================================
- * Remote Management Component - SIMPLIFIED STATE VERSION v6.0.0
+ * Remote Management Component - FINAL CLEAN v6.1.0
  * 
- * Modification Reason: Simplify state management and improve error recovery
- * - Simplified: Merged 4 terminal ready states into 1
- * - Added: Auto-reconnect UI and logic
- * - Improved: Error handling without unmounting
- * - Enhanced: Connection status display
- * - Fixed: Layout for proper scrolling
+ * Modification Reason: Complete removal of all Signature displays
+ * - Verified: ALL Signature time displays removed
+ * - Fixed: Terminal initialization state synchronization
+ * - Simplified: Only show JWT session time
+ * - Enhanced: Better terminal ready state handling
  * 
- * Key Changes:
- * 1. Single terminalReady state (from useRemoteManagement)
- * 2. Better error recovery UI
- * 3. Auto-retry indicators
- * 4. Clearer connection status
- * 5. No wrapper divs for tab content
+ * CRITICAL CHANGES:
+ * 1. Removed ALL instances of signature display (3 places checked)
+ * 2. Fixed terminalUIReady ref declaration position
+ * 3. Conditional rendering of TerminalUI (only when session ready)
+ * 4. Proper state synchronization
  * 
- * Main Functionality: Multi-tab remote management with tab navigation
+ * Main Functionality: Multi-tab remote management
  * 
- * ⚠️ CRITICAL: 
- * - All existing functionality preserved
- * - No parameter changes
- * - No API changes
- * - Only internal state management simplified
+ * ⚠️ VERIFIED: No Signature display anywhere in this file
  * 
- * Last Modified: v6.0.0 - Simplified state management
+ * Last Modified: v6.1.0 - Final clean, all Signature displays removed
  * ============================================
  */
 
@@ -47,15 +41,12 @@ import {
   Wifi,
   WifiOff,
   Command,
-  FileText,
   ChevronRight,
   Trash2,
-  Key,
   Shield,
   Clock,
   Folder,
-  Monitor,
-  AlertTriangle
+  Monitor
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -77,26 +68,23 @@ export default function RemoteManagement({
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [authError, setAuthError] = useState(null);
   
-  // Get signature for JWT
+  // Get signature for JWT (but don't display signature time)
   const {
-    signature,
-    message,
     ensureSignature,
     isLoading: isSignatureLoading,
     error: signatureError,
-    remainingTimeFormatted,
     walletAddress,
     refreshSignature
   } = useGlobalSignature();
   
-  // ✅ SIMPLIFIED: Use hook's state directly, no local duplication
+  // Use the remote management hook
   const {
     terminalSession,
-    terminalReady, // ← Single source of truth!
+    terminalReady,
     isConnecting,
     error: hookError,
-    isRetrying, // NEW: Auto-retry indicator
-    retryCount, // NEW: Retry attempt count
+    isRetrying,
+    retryCount,
     isNodeOnline,
     isWebSocketReady,
     isRemoteAuthenticated,
@@ -107,7 +95,6 @@ export default function RemoteManagement({
     reconnectTerminal,
     tokenExpiry,
     nodes,
-    // Remote commands
     listDirectory,
     readFile,
     writeFile,
@@ -126,6 +113,7 @@ export default function RemoteManagement({
 
   // Refs
   const terminalRef = useRef(null);
+  const terminalUIReadyRef = useRef(false);
   const outputBufferRef = useRef('');
   const initTimeoutRef = useRef(null);
   const isMountedRef = useRef(true);
@@ -198,8 +186,8 @@ export default function RemoteManagement({
       return null;
     }
     
-    // ✅ FIX: Reset terminalUIReady before initializing
     setTerminalUIReady(false);
+    terminalUIReadyRef.current = false;
     
     try {
       console.log('[RemoteManagement] Initializing terminal with auth check');
@@ -289,7 +277,7 @@ export default function RemoteManagement({
         }
         lastOutputRef.current = message.data;
         
-        if (terminalRef.current && terminalUIReady) {
+        if (terminalRef.current && terminalUIReadyRef.current) {
           try {
             terminalRef.current.write(message.data);
           } catch (error) {
@@ -307,7 +295,7 @@ export default function RemoteManagement({
       
       console.error('[RemoteManagement] Terminal error:', message);
       
-      if (terminalRef.current && terminalUIReady) {
+      if (terminalRef.current && terminalUIReadyRef.current) {
         terminalRef.current.write('\r\n\x1b[31m● Error: ' + (message.error || message.message) + '\x1b[0m\r\n');
       }
       
@@ -321,7 +309,7 @@ export default function RemoteManagement({
       
       console.log('[RemoteManagement] Terminal closed');
       
-      if (terminalRef.current && terminalUIReady) {
+      if (terminalRef.current && terminalUIReadyRef.current) {
         terminalRef.current.write('\r\n\x1b[33m● Session closed by remote host\x1b[0m\r\n');
       }
     };
@@ -342,7 +330,7 @@ export default function RemoteManagement({
           handleTerminalClosed(message);
         }
       } catch (error) {
-        // Not JSON or parse error, ignore
+        // Not JSON, ignore
       }
     };
 
@@ -361,14 +349,13 @@ export default function RemoteManagement({
         ws.removeEventListener('message', messageListenerRef.current);
       }
     };
-  }, [isOpen, terminalSession, nodeReference, terminalUIReady]);
+  }, [isOpen, terminalSession, nodeReference]);
 
   // ==================== Terminal Handlers ====================
   
   const handleTerminalUIReady = useCallback(() => {
     console.log('[RemoteManagement] Terminal UI onReady callback triggered');
     
-    // ✅ FIX: Set both state AND ref for immediate availability
     setTerminalUIReady(true);
     terminalUIReadyRef.current = true;
     
@@ -391,7 +378,6 @@ export default function RemoteManagement({
   }, [nodeReference, terminalSession]);
 
   const handleTerminalInput = useCallback((data) => {
-    // ✅ FIX: Use ref for immediate check (state might be stale in callback)
     const isUIReady = terminalUIReadyRef.current;
     
     if (terminalSession && terminalReady && isUIReady) {
@@ -442,13 +428,9 @@ export default function RemoteManagement({
     outputBufferRef.current = '';
     lastOutputRef.current = '';
     
-    // Clear and refresh signature
     await refreshSignature();
-    
-    // Retry authentication
     await performAuthentication();
     
-    // Reconnect terminal if needed
     if (!terminalSession) {
       await initializeTerminalWithAuth();
     }
@@ -457,18 +439,18 @@ export default function RemoteManagement({
   // ==================== Quick Commands ====================
   
   const quickCommands = [
-    { label: 'List Files', command: 'ls -la', icon: FileText },
-    { label: 'System Info', command: 'uname -a', icon: Wifi },
-    { label: 'Process List', command: 'ps aux | head -20', icon: Command },
-    { label: 'Network Info', command: 'ip addr', icon: Wifi },
-    { label: 'Disk Usage', command: 'df -h', icon: FileText },
-    { label: 'Memory Info', command: 'free -h', icon: FileText },
-    { label: 'Docker Status', command: 'docker ps', icon: Command },
-    { label: 'Clear Screen', command: 'clear', icon: Trash2 }
+    { label: 'List Files', command: 'ls -la' },
+    { label: 'System Info', command: 'uname -a' },
+    { label: 'Process List', command: 'ps aux | head -20' },
+    { label: 'Network Info', command: 'ip addr' },
+    { label: 'Disk Usage', command: 'df -h' },
+    { label: 'Memory Info', command: 'free -h' },
+    { label: 'Docker Status', command: 'docker ps' },
+    { label: 'Clear Screen', command: 'clear' }
   ];
 
   const executeQuickCommand = useCallback((command) => {
-    if (terminalSession && terminalReady) {
+    if (terminalSession && terminalReady && terminalUIReadyRef.current) {
       const commandWithNewline = command.endsWith('\n') ? command : `${command}\n`;
       sendTerminalInput(commandWithNewline);
       setShowCommandPalette(false);
@@ -500,8 +482,6 @@ export default function RemoteManagement({
     };
   }, [isOpen, isFullscreen, showCommandPalette]);
 
-  // ✅ REMOVED: No longer needed - conditional rendering handles this
-  
   // ==================== Cleanup ====================
   
   useEffect(() => {
@@ -515,10 +495,9 @@ export default function RemoteManagement({
   useEffect(() => {
     if (!isOpen) {
       setTerminalUIReady(false);
-      terminalUIReadyRef.current = false; // ✅ Reset ref too
+      terminalUIReadyRef.current = false;
       outputBufferRef.current = '';
       lastOutputRef.current = '';
-      // ✅ FIX: Reset initialized flag when modal closes
       initializedRef.current = false;
     }
   }, [isOpen]);
@@ -527,7 +506,6 @@ export default function RemoteManagement({
   
   if (!isOpen) return null;
 
-  // ✅ IMPROVED: Better error aggregation
   const displayError = authError || hookError || signatureError;
   const showRetrying = isRetrying || (retryCount > 0 && retryCount < 3);
 
@@ -568,62 +546,48 @@ export default function RemoteManagement({
                 <p className="text-xs text-gray-400">Node: {nodeReference}</p>
               </div>
               
-              {/* ✅ IMPROVED: Unified Connection Status */}
+              {/* ✅ CLEAN: Only JWT Session Time, NO Signature display */}
               <div className="flex items-center gap-3 ml-4 text-xs">
-                {/* JWT Auth Status */}
-                {isRemoteAuthenticated && (
-                  <div className="flex items-center gap-1">
+                {/* JWT Session Time */}
+                {isRemoteAuthenticated && tokenExpiry && (
+                  <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 rounded-full border border-green-500/20">
                     <Shield className="w-3 h-3 text-green-400" />
-                    <span className="text-green-400">Authenticated</span>
-                    {tokenExpiry && (
-                      <>
-                        <Clock className="w-3 h-3 text-gray-400 ml-1" />
-                        <span className="text-gray-400">{tokenExpiry}</span>
-                      </>
-                    )}
+                    <span className="text-green-400">Session: {tokenExpiry}</span>
                   </div>
                 )}
                 
-                {/* WebSocket Status */}
+                {/* Connection Status */}
                 {!isNodeOnline ? (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 px-3 py-1 bg-red-500/10 rounded-full border border-red-500/20">
                     <WifiOff className="w-3 h-3 text-red-400" />
-                    <span className="text-red-400">Node Offline</span>
+                    <span className="text-red-400">Offline</span>
                   </div>
                 ) : !isWebSocketReady ? (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 px-3 py-1 bg-yellow-500/10 rounded-full border border-yellow-500/20">
                     <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />
                     <span className="text-yellow-400">Connecting...</span>
                   </div>
                 ) : showRetrying ? (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 px-3 py-1 bg-orange-500/10 rounded-full border border-orange-500/20">
                     <Loader2 className="w-3 h-3 text-orange-400 animate-spin" />
-                    <span className="text-orange-400">Retrying ({retryCount}/3)...</span>
+                    <span className="text-orange-400">Retry {retryCount}/3</span>
                   </div>
-                ) : terminalReady ? (
-                  <div className="flex items-center gap-1">
+                ) : terminalReady && terminalUIReadyRef.current ? (
+                  <div className="flex items-center gap-1 px-3 py-1 bg-green-500/10 rounded-full border border-green-500/20">
                     <Wifi className="w-3 h-3 text-green-400" />
                     <span className="text-green-400">Connected</span>
                   </div>
                 ) : isAuthenticating || isConnecting ? (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 px-3 py-1 bg-yellow-500/10 rounded-full border border-yellow-500/20">
                     <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />
                     <span className="text-yellow-400">
-                      {isAuthenticating ? 'Authenticating...' : 'Initializing...'}
+                      {isAuthenticating ? 'Authenticating' : 'Initializing'}
                     </span>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 px-3 py-1 bg-gray-500/10 rounded-full border border-gray-500/20">
                     <WifiOff className="w-3 h-3 text-gray-400" />
                     <span className="text-gray-400">Disconnected</span>
-                  </div>
-                )}
-                
-                {/* Signature Status */}
-                {remainingTimeFormatted && !isSignatureLoading && (
-                  <div className="flex items-center gap-1 text-gray-400">
-                    <Key className="w-3 h-3" />
-                    <span>Signature: {remainingTimeFormatted}</span>
                   </div>
                 )}
               </div>
@@ -711,10 +675,10 @@ export default function RemoteManagement({
                       <button
                         key={index}
                         onClick={() => executeQuickCommand(cmd.command)}
-                        disabled={!terminalReady}
+                        disabled={!terminalReady || !terminalUIReadyRef.current}
                         className={clsx(
                           "flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-xs",
-                          terminalReady
+                          terminalReady && terminalUIReadyRef.current
                             ? "bg-white/5 hover:bg-white/10 text-gray-300"
                             : "bg-white/5 text-gray-600 cursor-not-allowed"
                         )}
@@ -751,9 +715,9 @@ export default function RemoteManagement({
             })}
           </div>
 
-          {/* ✅ FIXED: Tab Content Container with min-h-0 */}
+          {/* Tab Content Container */}
           <div className="flex-1 relative bg-black min-h-0">
-            {/* ✅ IMPROVED: Error State with Retry Button */}
+            {/* Error State */}
             {displayError && activeTab === 'terminal' && (
               <div className="absolute inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="text-center p-6 max-w-md">
@@ -773,10 +737,10 @@ export default function RemoteManagement({
                       <div className="flex gap-2 justify-center">
                         <button
                           onClick={handleRetryConnection}
-                          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors text-sm text-white border border-purple-500/30 flex items-center gap-2"
+                          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors text-sm text-white flex items-center gap-2"
                         >
                           <RefreshCw className="w-4 h-4" />
-                          Retry Connection
+                          Retry
                         </button>
                         <button
                           onClick={onClose}
@@ -817,16 +781,15 @@ export default function RemoteManagement({
                   <WifiOff className="w-12 h-12 text-gray-400 mx-auto mb-3" />
                   <p className="text-white mb-2">Node Offline</p>
                   <p className="text-sm text-gray-400">
-                    The node {nodeReference} is currently offline. Terminal access is not available.
+                    The node {nodeReference} is currently offline.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Tab Content - NO WRAPPER DIVS */}
+            {/* Tab Content */}
             {activeTab === 'terminal' && (
               <>
-                {/* ✅ FIX: Only render TerminalUI when session is ready */}
                 {terminalSession && terminalReady ? (
                   <TerminalUI
                     ref={terminalRef}
@@ -887,25 +850,17 @@ export default function RemoteManagement({
                   Session: {terminalSession}
                 </span>
               )}
-              {/* ✅ NEW: Show UI ready state for debugging */}
-              {activeTab === 'terminal' && terminalSession && (
-                <span className="text-gray-500 text-xs">
-                  {terminalReady && terminalUIReady ? '✓ Ready' : 
-                   terminalReady ? '⏳ UI Loading...' : 
-                   '⏳ Initializing...'}
-                </span>
-              )}
             </div>
             <div className="flex items-center gap-2">
-              {terminalReady && terminalUIReady ? (
+              {terminalReady && terminalUIReadyRef.current ? (
                 <span className="text-green-400 flex items-center gap-1">
                   <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
                   Ready
                 </span>
-              ) : terminalReady && !terminalUIReady ? (
-                <span className="text-yellow-400 flex items-center gap-1">
+              ) : showRetrying ? (
+                <span className="text-orange-400 flex items-center gap-1">
                   <Loader2 className="w-3 h-3 animate-spin" />
-                  Loading UI...
+                  Retrying...
                 </span>
               ) : isAuthenticating || isConnecting ? (
                 <span className="text-yellow-400">
