@@ -198,6 +198,9 @@ export default function RemoteManagement({
       return null;
     }
     
+    // ✅ FIX: Reset terminalUIReady before initializing
+    setTerminalUIReady(false);
+    
     try {
       console.log('[RemoteManagement] Initializing terminal with auth check');
       
@@ -364,9 +367,16 @@ export default function RemoteManagement({
   
   const handleTerminalUIReady = useCallback(() => {
     console.log('[RemoteManagement] Terminal UI is ready');
+    
+    // ✅ FIX: Only set UI ready if terminal session exists
+    if (!terminalSession) {
+      console.log('[RemoteManagement] UI ready but no session yet, will set ready after session creation');
+      return;
+    }
+    
     setTerminalUIReady(true);
     
-    if (terminalSession && terminalRef.current) {
+    if (terminalRef.current) {
       terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
       terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
       terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
@@ -490,6 +500,29 @@ export default function RemoteManagement({
     };
   }, [isOpen, isFullscreen, showCommandPalette]);
 
+  // ✅ NEW: Watch for session creation, then mark UI as ready
+  useEffect(() => {
+    if (terminalSession && terminalRef.current && !terminalUIReady) {
+      console.log('[RemoteManagement] Session created, marking UI as ready');
+      setTerminalUIReady(true);
+      
+      // Write welcome message
+      terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
+      terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
+      terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
+      terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
+      
+      if (outputBufferRef.current) {
+        try {
+          terminalRef.current.write(outputBufferRef.current);
+          outputBufferRef.current = '';
+        } catch (error) {
+          console.error('[RemoteManagement] Error writing buffered output:', error);
+        }
+      }
+    }
+  }, [terminalSession, nodeReference, terminalUIReady]);
+  
   // ==================== Cleanup ====================
   
   useEffect(() => {
@@ -855,17 +888,25 @@ export default function RemoteManagement({
                   Session: {terminalSession}
                 </span>
               )}
+              {/* ✅ NEW: Show UI ready state for debugging */}
+              {activeTab === 'terminal' && terminalSession && (
+                <span className="text-gray-500 text-xs">
+                  {terminalReady && terminalUIReady ? '✓ Ready' : 
+                   terminalReady ? '⏳ UI Loading...' : 
+                   '⏳ Initializing...'}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2">
-              {terminalReady ? (
+              {terminalReady && terminalUIReady ? (
                 <span className="text-green-400 flex items-center gap-1">
                   <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
                   Ready
                 </span>
-              ) : showRetrying ? (
-                <span className="text-orange-400 flex items-center gap-1">
+              ) : terminalReady && !terminalUIReady ? (
+                <span className="text-yellow-400 flex items-center gap-1">
                   <Loader2 className="w-3 h-3 animate-spin" />
-                  Retrying...
+                  Loading UI...
                 </span>
               ) : isAuthenticating || isConnecting ? (
                 <span className="text-yellow-400">
