@@ -44,6 +44,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeRaw from 'rehype-raw';
+import clsx from 'clsx';
 import {
   Eye,
   EyeOff,
@@ -62,7 +63,6 @@ import {
   X,
   AlertCircle
 } from 'lucide-react';
-import clsx from 'clsx';
 
 import EditorToolbar from './EditorToolbar';
 
