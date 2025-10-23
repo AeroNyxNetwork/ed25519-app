@@ -2,7 +2,14 @@
  * ============================================
  * File: src/components/nodes/FileManager.js
  * ============================================
- * File Manager Component - PRODUCTION VERSION v7.0.0
+ * File Manager Component - GOOGLE-GRADE UI/UX VERSION v8.0.0
+ * 
+ * Modification Reason: Optimize UI/UX to Google-level standards
+ * - Fixed: Scroll container visibility issues
+ * - Added: File count display for clarity
+ * - Added: Custom scrollbar styling
+ * - Added: Visual feedback for scrollable content
+ * - Improved: Overall layout and spacing
  * 
  * Main Functionality:
  * - Browse remote file system
@@ -13,12 +20,19 @@
  * 
  * Dependencies: useRemoteManagement hook, lucide-react icons
  * 
+ * Main Logical Flow:
+ * 1. Load directory listing from remote node
+ * 2. Display files with proper sorting (directories first)
+ * 3. Handle file operations (read, write, delete)
+ * 4. Show clear UI feedback for all states
+ * 
  * ⚠️ Important Notes:
  * - All operations use remote_command API (not terminal)
  * - Must wait for isRemoteAuthenticated before any operations
  * - Gracefully handles backend configuration errors
+ * - All existing functionality preserved
  * 
- * Last Modified: v7.0.0 - Production complete with error handling
+ * Last Modified: v8.0.0 - Google-grade UI/UX optimization
  * ============================================
  */
 
@@ -49,7 +63,8 @@ import {
   Settings,
   Terminal,
   Shield,
-  Server
+  Server,
+  Info
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -172,6 +187,7 @@ export default function FileManager({
   const isLoadingRef = useRef(false);
   const hasInitialLoadRef = useRef(false);
   const isMountedRef = useRef(true);
+  const scrollContainerRef = useRef(null);
 
   // ==================== DIRECTORY LOADING ====================
   
@@ -236,6 +252,11 @@ export default function FileManager({
         
         setFiles(items);
         setCurrentPath(path);
+        
+        // Scroll to top after loading
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = 0;
+        }
       } else {
         console.log('[FileManager] No entries in result');
         setFiles([]);
@@ -264,6 +285,8 @@ export default function FileManager({
           errorMessage = 'Directory not found';
         } else if (errorMessage.includes('permission')) {
           errorMessage = 'Permission denied';
+        } else if (errorMessage.includes('forbidden')) {
+          errorMessage = errorMessage; // Keep the original message for forbidden paths
         }
       }
       
@@ -511,6 +534,14 @@ export default function FileManager({
     }))
   ];
 
+  // ==================== FILE STATISTICS ====================
+  
+  const fileStats = {
+    total: files.length,
+    directories: files.filter(f => f.type === 'directory').length,
+    files: files.filter(f => f.type === 'file').length
+  };
+
   // ==================== RENDER ====================
   
   // Remote management not enabled state
@@ -539,7 +570,7 @@ export default function FileManager({
                 <div className="flex-1">
                   SSH into your node server:
                   <code className="block mt-2 bg-black/60 px-3 py-2 rounded text-xs text-gray-300 font-mono">
-                    ssh user@{node?.ip_address || 'your-node-ip'}
+                    ssh user@{nodeReference || 'your-node-ip'}
                   </code>
                 </div>
               </li>
@@ -598,10 +629,26 @@ export default function FileManager({
   }
 
   return (
-    <div className="h-full flex flex-col p-6">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-xl font-semibold text-white">File Manager</h3>
+    <div className="h-full flex flex-col bg-gradient-to-b from-[#0A0A0F] to-black">
+      {/* Header with file count */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-black/20">
+        <div className="flex items-center gap-4">
+          <h3 className="text-lg font-semibold text-white">File Manager</h3>
+          {!isLoading && files.length > 0 && (
+            <div className="flex items-center gap-3 text-sm">
+              <div className="flex items-center gap-1.5 px-3 py-1 bg-purple-500/10 rounded-full border border-purple-500/20">
+                <Folder className="w-3.5 h-3.5 text-purple-400" />
+                <span className="text-purple-400 font-medium">{fileStats.directories}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/20">
+                <File className="w-3.5 h-3.5 text-blue-400" />
+                <span className="text-blue-400 font-medium">{fileStats.files}</span>
+              </div>
+              <span className="text-gray-500">•</span>
+              <span className="text-gray-400">{fileStats.total} total</span>
+            </div>
+          )}
+        </div>
         <button
           onClick={() => loadDirectory(currentPath)}
           disabled={isLoading}
@@ -613,15 +660,20 @@ export default function FileManager({
       </div>
 
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 mb-4 text-sm">
+      <div className="flex items-center gap-2 px-6 py-3 text-sm border-b border-white/10 bg-black/10">
         {breadcrumbs.map((crumb, index) => (
           <React.Fragment key={crumb.path}>
-            {index > 0 && <ChevronRight className="w-4 h-4 text-gray-500" />}
+            {index > 0 && <ChevronRight className="w-4 h-4 text-gray-600" />}
             <button
               onClick={() => navigateToDirectory(crumb.path)}
-              className="text-gray-400 hover:text-white transition-colors"
+              className={clsx(
+                "px-2 py-1 rounded transition-colors",
+                index === breadcrumbs.length - 1
+                  ? "text-white bg-white/10"
+                  : "text-gray-400 hover:text-white hover:bg-white/5"
+              )}
             >
-              {crumb.name}
+              {index === 0 ? <Home className="w-4 h-4" /> : crumb.name}
             </button>
           </React.Fragment>
         ))}
@@ -634,7 +686,7 @@ export default function FileManager({
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="mb-4 p-3 bg-green-500/20 border border-green-500/50 rounded-lg flex items-center gap-2"
+            className="mx-6 mt-4 p-3 bg-green-500/20 border border-green-500/50 rounded-lg flex items-center gap-2"
           >
             <CheckCircle className="w-5 h-5 text-green-400" />
             <p className="text-green-400 text-sm">{successMessage}</p>
@@ -649,13 +701,13 @@ export default function FileManager({
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg flex items-center gap-2"
+            className="mx-6 mt-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg flex items-center gap-2"
           >
             <AlertCircle className="w-5 h-5 text-red-400" />
-            <p className="text-red-400 text-sm">{error}</p>
+            <p className="text-red-400 text-sm flex-1">{error}</p>
             <button
               onClick={() => setError(null)}
-              className="ml-auto p-1 hover:bg-white/10 rounded transition-colors"
+              className="p-1 hover:bg-white/10 rounded transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -663,16 +715,46 @@ export default function FileManager({
         )}
       </AnimatePresence>
 
-      {/* File list */}
-      <div className="flex-1 overflow-auto">
+      {/* File list - OPTIMIZED SCROLL CONTAINER */}
+      <div 
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto px-6 py-4 min-h-0"
+        style={{
+          // Custom scrollbar styling
+          scrollbarWidth: 'thin',
+          scrollbarColor: 'rgba(139, 92, 246, 0.3) rgba(255, 255, 255, 0.05)'
+        }}
+      >
+        <style jsx>{`
+          /* Webkit browsers (Chrome, Safari, Edge) */
+          div::-webkit-scrollbar {
+            width: 8px;
+          }
+          div::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+          }
+          div::-webkit-scrollbar-thumb {
+            background: rgba(139, 92, 246, 0.3);
+            border-radius: 4px;
+          }
+          div::-webkit-scrollbar-thumb:hover {
+            background: rgba(139, 92, 246, 0.5);
+          }
+        `}</style>
+
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
-            <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+            <div className="text-center">
+              <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-3" />
+              <p className="text-gray-400 text-sm">Loading directory...</p>
+            </div>
           </div>
         ) : files.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-gray-400">
-            <Folder className="w-12 h-12 mb-2" />
-            <p>Empty directory</p>
+            <Folder className="w-12 h-12 mb-3 opacity-50" />
+            <p className="text-lg font-medium">Empty directory</p>
+            <p className="text-sm text-gray-500">No files or folders to display</p>
           </div>
         ) : (
           <div className="space-y-1">
@@ -680,10 +762,11 @@ export default function FileManager({
             {currentPath !== '/' && (
               <button
                 onClick={navigateUp}
-                className="w-full flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg transition-colors"
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 rounded-lg transition-colors group"
               >
                 <Folder className="w-5 h-5 text-blue-400" />
-                <span className="text-gray-400">..</span>
+                <span className="text-gray-400 group-hover:text-white transition-colors">..</span>
+                <span className="text-xs text-gray-500 ml-auto">Parent directory</span>
               </button>
             )}
             
@@ -696,23 +779,27 @@ export default function FileManager({
                 <div
                   key={file.path}
                   className={clsx(
-                    "flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg transition-colors cursor-pointer group",
+                    "flex items-center gap-3 px-4 py-2.5 hover:bg-white/5 rounded-lg transition-all cursor-pointer group",
                     isSelected && "bg-white/10"
                   )}
                   onClick={() => handleFileClick(file)}
                 >
                   <Icon className={clsx(
-                    "w-5 h-5 flex-shrink-0",
+                    "w-5 h-5 flex-shrink-0 transition-colors",
                     file.type === 'directory' ? "text-blue-400" : "text-gray-400"
                   )} />
                   
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-white truncate">{file.name}</span>
-                      {file.isSymlink && <Link className="w-3 h-3 text-gray-500" />}
+                      <span className="text-white truncate group-hover:text-purple-300 transition-colors">
+                        {file.name}
+                      </span>
+                      {file.isSymlink && (
+                        <Link className="w-3 h-3 text-gray-500 flex-shrink-0" />
+                      )}
                     </div>
                     <div className="flex items-center gap-4 text-xs text-gray-500">
-                      <span>{file.permissions}</span>
+                      <span className="font-mono">{file.permissions}</span>
                       {file.type === 'file' && <span>{formatBytes(file.size)}</span>}
                     </div>
                   </div>
@@ -729,7 +816,7 @@ export default function FileManager({
                             className="p-1.5 hover:bg-white/10 rounded transition-colors"
                             title="Edit"
                           >
-                            <Edit className="w-4 h-4 text-gray-400" />
+                            <Edit className="w-4 h-4 text-gray-400 hover:text-white transition-colors" />
                           </button>
                         )}
                         <button
@@ -737,10 +824,10 @@ export default function FileManager({
                             e.stopPropagation();
                             handleDeleteFile(file);
                           }}
-                          className="p-1.5 hover:bg-white/10 rounded transition-colors"
+                          className="p-1.5 hover:bg-red-500/20 rounded transition-colors"
                           title="Delete"
                         >
-                          <Trash2 className="w-4 h-4 text-gray-400" />
+                          <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-400 transition-colors" />
                         </button>
                       </>
                     )}
@@ -751,6 +838,21 @@ export default function FileManager({
           </div>
         )}
       </div>
+
+      {/* Status bar at bottom */}
+      {!isLoading && files.length > 0 && (
+        <div className="px-6 py-3 border-t border-white/10 bg-black/20 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2 text-gray-400">
+            <Info className="w-3.5 h-3.5" />
+            <span>
+              Showing {fileStats.total} {fileStats.total === 1 ? 'item' : 'items'} in {currentPath}
+            </span>
+          </div>
+          <div className="text-gray-500">
+            Scroll for more
+          </div>
+        </div>
+      )}
 
       {/* File editor modal */}
       <AnimatePresence>
@@ -771,28 +873,30 @@ export default function FileManager({
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-black/90 border border-white/10 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col"
+              className="bg-black/90 border border-white/10 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Editor header */}
-              <div className="flex items-center justify-between p-4 border-b border-white/10">
+              <div className="flex items-center justify-between p-4 border-b border-white/10 bg-gradient-to-r from-purple-900/20 to-blue-900/20">
                 <div className="flex items-center gap-3">
                   <FileText className="w-5 h-5 text-purple-400" />
-                  <span className="text-white font-medium">{editingFile.name}</span>
-                  <span className="text-xs text-gray-500">{editingFile.path}</span>
+                  <div>
+                    <span className="text-white font-medium">{editingFile.name}</span>
+                    <p className="text-xs text-gray-400">{editingFile.path}</p>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={saveFile}
                     disabled={isSaving}
-                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-2"
+                    className="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:from-purple-800 disabled:to-blue-800 disabled:opacity-50 rounded-lg transition-all flex items-center gap-2 shadow-lg"
                   >
                     {isSaving ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
                       <Save className="w-4 h-4" />
                     )}
-                    Save
+                    <span className="text-sm font-medium">Save</span>
                   </button>
                   <button
                     onClick={() => {
@@ -814,7 +918,7 @@ export default function FileManager({
                 <textarea
                   value={editingContent || ''}
                   onChange={(e) => setEditingContent(e.target.value)}
-                  className="w-full h-full bg-black/50 border border-white/10 rounded-lg p-4 text-sm text-white font-mono resize-none focus:outline-none focus:border-purple-500"
+                  className="w-full h-full bg-black/50 border border-white/10 rounded-lg p-4 text-sm text-white font-mono resize-none focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
                   spellCheck={false}
                   placeholder="File content will appear here..."
                 />
