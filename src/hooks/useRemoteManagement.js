@@ -713,9 +713,9 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * ✅ FIXED: Write file - now uses 'upload' command
+   * ✅ FIXED: Write file - now uses 'upload' command with overwrite support
    */
-  const writeFile = useCallback(async (path, content) => {
+  const writeFile = useCallback(async (path, content, options = {}) => {
     console.log('[useRemoteManagement] writeFile:', path, content.length, 'bytes');
     
     let base64Content;
@@ -728,7 +728,8 @@ export function useRemoteManagement(nodeReference) {
     
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.WRITE_FILE, { 
       path, 
-      content: base64Content 
+      content: base64Content,
+      overwrite: options.overwrite !== false // Default to true for editing existing files
     });
   }, [sendRemoteCommand]);
   
@@ -753,9 +754,9 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * ✅ FIXED: Upload file - uses 'upload' command
+   * ✅ FIXED: Upload file - uses 'upload' command with overwrite support
    */
-  const uploadFile = useCallback(async (path, content, isBase64 = false) => {
+  const uploadFile = useCallback(async (path, content, isBase64 = false, options = {}) => {
     console.log('[useRemoteManagement] uploadFile:', path, 'isBase64:', isBase64);
     
     let base64Content = content;
@@ -770,7 +771,8 @@ export function useRemoteManagement(nodeReference) {
     
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.WRITE_FILE, { 
       path, 
-      content: base64Content 
+      content: base64Content,
+      overwrite: options.overwrite !== false // Default to true
     });
   }, [sendRemoteCommand]);
   
