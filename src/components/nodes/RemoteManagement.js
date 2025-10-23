@@ -119,6 +119,7 @@ export default function RemoteManagement({
   const isMountedRef = useRef(true);
   const messageListenerRef = useRef(null);
   const lastOutputRef = useRef('');
+  const lastOutputTimeRef = useRef(0); // ✅ NEW: Track time for better duplicate detection
   const initializedRef = useRef(false);
 
   // ==================== Authentication ====================
@@ -271,11 +272,18 @@ export default function RemoteManagement({
       console.log('[RemoteManagement] Received terminal output:', message.data?.length || 0, 'bytes');
       
       if (message.data) {
-        if (lastOutputRef.current === message.data) {
-          console.log('[RemoteManagement] Skipping duplicate output');
+        const now = Date.now();
+        
+        // ✅ IMPROVED: Only skip duplicates within 50ms window
+        // This prevents legitimate repeated characters from being filtered
+        if (lastOutputRef.current === message.data && 
+            (now - lastOutputTimeRef.current) < 50) {
+          console.log('[RemoteManagement] Skipping duplicate output (within 50ms)');
           return;
         }
+        
         lastOutputRef.current = message.data;
+        lastOutputTimeRef.current = now;
         
         if (terminalRef.current && terminalUIReadyRef.current) {
           try {
@@ -498,6 +506,7 @@ export default function RemoteManagement({
       terminalUIReadyRef.current = false;
       outputBufferRef.current = '';
       lastOutputRef.current = '';
+      lastOutputTimeRef.current = 0; // ✅ Reset time too
       initializedRef.current = false;
     }
   }, [isOpen]);
