@@ -2,7 +2,12 @@
  * ============================================
  * File: src/hooks/useRemoteManagement.js
  * ============================================
- * Remote Management Hook - COMPLETE FIXED & OPTIMIZED VERSION v8.0.0
+ * Remote Management Hook - COMMAND FIX VERSION v8.1.1
+ * 
+ * Modification Reason: Fix command names to match backend
+ * - Changed: 'read' → 'download' (matches Rust backend)
+ * - Changed: 'write' → 'upload' (matches Rust backend)
+ * - Reason: Backend uses 'download'/'upload' not 'read'/'write'
  * 
  * ✅ FIXED CRITICAL ISSUES:
  * 1. WebSocket message listener memory leak
@@ -11,17 +16,7 @@
  * 4. Promise handler cleanup on unmount
  * 5. Proper error handling with user-friendly messages
  * 6. Dependency array corrections
- * 
- * ✅ OPTIMIZATIONS:
- * 1. Promise caching to prevent concurrent initialization
- * 2. Dynamic WebSocket reference to handle reconnections
- * 3. Improved timeout handling
- * 4. Better error messages
- * 5. Comprehensive cleanup logic
- * 
- * ✨ NEW in v8.1.0:
- * - Added 12 new remote commands (rename, copy, move, etc.)
- * - All new commands follow same pattern as existing ones
+ * 7. Command name mismatch with backend ← NEW FIX!
  * 
  * Main Functionality:
  * - Terminal session management (for Terminal tab - interactive shell)
@@ -39,11 +34,10 @@
  * ⚠️ CRITICAL NOTES:
  * - Terminal sessions use 'term_input' message type
  * - Remote commands use 'remote_command' message type
+ * - Command names MUST match backend: 'download'/'upload' not 'read'/'write'
  * - These are SEPARATE systems - do not mix them!
- * - Always cleanup handlers and timeouts on unmount
- * - WebSocket reference must be dynamic (window.globalWebSocket)
  * 
- * Last Modified: v8.1.0 - Added new commands, preserved all original logic
+ * Last Modified: v8.1.1 - Fixed command names to match backend
  * ============================================
  */
 
@@ -61,26 +55,27 @@ import { useAeroNyxWebSocket } from './useAeroNyxWebSocket';
 /**
  * Remote Command Types
  * ✅ CRITICAL: These MUST match the backend Rust code!
- * Backend: remote_command_handler.rs line 212-221
+ * Backend: remote_command_handler.rs
+ * Python Middleware: node_consumer.py REMOTE_COMMAND_TYPES
  */
 const REMOTE_COMMAND_TYPES = {
   LIST_FILES: 'list',
-  READ_FILE: 'read',
-  WRITE_FILE: 'write',
+  READ_FILE: 'download',              // ✅ FIXED: Changed from 'read' to 'download'
+  WRITE_FILE: 'upload',               // ✅ FIXED: Changed from 'write' to 'upload'
   DELETE_FILE: 'delete',
-  RENAME_FILE: 'rename',         // ✨ NEW
-  COPY_FILE: 'copy',             // ✨ NEW
-  MOVE_FILE: 'move',             // ✨ NEW
-  CREATE_DIRECTORY: 'create_directory',  // ✨ NEW
-  DELETE_DIRECTORY: 'delete_directory',  // ✨ NEW
-  SEARCH_FILES: 'search',        // ✨ NEW
-  COMPRESS_FILES: 'compress',    // ✨ NEW
-  EXTRACT_FILE: 'extract',       // ✨ NEW
-  CHMOD: 'chmod',                // ✨ NEW
-  CHOWN: 'chown',                // ✨ NEW
-  BATCH_DELETE: 'batch_delete',  // ✨ NEW
-  BATCH_MOVE: 'batch_move',      // ✨ NEW
-  BATCH_COPY: 'batch_copy',      // ✨ NEW
+  RENAME_FILE: 'rename',
+  COPY_FILE: 'copy',
+  MOVE_FILE: 'move',
+  CREATE_DIRECTORY: 'create_directory',
+  DELETE_DIRECTORY: 'delete_directory',
+  SEARCH_FILES: 'search',
+  COMPRESS_FILES: 'compress',
+  EXTRACT_FILE: 'extract',
+  CHMOD: 'chmod',
+  CHOWN: 'chown',
+  BATCH_DELETE: 'batch_delete',
+  BATCH_MOVE: 'batch_move',
+  BATCH_COPY: 'batch_copy',
   SYSTEM_INFO: 'system_info',
   EXECUTE: 'execute'
 };
@@ -97,7 +92,7 @@ const TIMEOUTS = {
   WS_AUTH: 10000,
   WS_CHECK_INTERVAL: 500,
   TERMINAL_READY: 2000,
-  COMMAND_DEFAULT: 90000, // 90 seconds
+  COMMAND_DEFAULT: 90000,
   RECONNECT_DELAY: 500
 };
 
@@ -110,7 +105,6 @@ const TERMINAL_CONFIG = {
 
 /**
  * ✅ FIXED: Proper Unicode encoding using TextEncoder
- * Replaces deprecated unescape() function
  */
 const encodeToBase64 = (text) => {
   try {
@@ -128,7 +122,6 @@ const encodeToBase64 = (text) => {
 
 /**
  * ✅ FIXED: Proper Unicode decoding with binary fallback
- * Handles both text and binary files correctly
  */
 const decodeFromBase64 = (base64, allowBinary = false) => {
   try {
@@ -139,12 +132,10 @@ const decodeFromBase64 = (base64, allowBinary = false) => {
       uint8Array[i] = binaryString.charCodeAt(i);
     }
     
-    // Try UTF-8 decode
     try {
       const decoder = new TextDecoder('utf-8', { fatal: true });
       return decoder.decode(uint8Array);
     } catch (utf8Error) {
-      // Not valid UTF-8
       if (allowBinary) {
         console.warn('[encoding] Content is not valid UTF-8, returning binary');
         return binaryString;
@@ -163,9 +154,6 @@ const decodeFromBase64 = (base64, allowBinary = false) => {
 /**
  * Remote Management Hook
  * Provides both terminal session management AND remote command execution
- * 
- * @param {string} nodeReference - Node reference or code
- * @returns {Object} Remote management API
  */
 export function useRemoteManagement(nodeReference) {
   // ==================== State ====================
@@ -179,10 +167,10 @@ export function useRemoteManagement(nodeReference) {
   const sessionRef = useRef(null);
   const isInitializedRef = useRef(false);
   const isMountedRef = useRef(true);
-  const initPromiseRef = useRef(null); // ✅ FIX: Prevent race conditions
+  const initPromiseRef = useRef(null);
   const eventHandlersRef = useRef({});
-  const commandHandlersRef = useRef(new Map()); // For remote command responses
-  const wsMessageListenerRef = useRef(null); // ✅ FIX: Track listener reference
+  const commandHandlersRef = useRef(new Map());
+  const wsMessageListenerRef = useRef(null);
   
   // ==================== Store & WebSocket ====================
   const { 
@@ -202,40 +190,27 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== Helper Functions ====================
   
-  /**
-   * ✅ FIX: Get WebSocket with dynamic reference
-   * Prevents stale closure issues
-   */
   const getWebSocket = useCallback(() => {
     return window.globalWebSocket || webSocketService.ws;
   }, []);
   
-  /**
-   * Determine if WebSocket is ready
-   */
   const isWebSocketReady = wsState?.authenticated || wsConnectionState?.authenticated;
   
-  /**
-   * Get node and check online status
-   */
   const getNodeInfo = useCallback(() => {
     let node = null;
     
-    // Try to find node in wsNodes
     if (Array.isArray(wsNodes)) {
       node = wsNodes.find(n => n.code === nodeReference || n.reference === nodeReference);
     } else if (wsNodes && typeof wsNodes === 'object') {
       node = wsNodes[nodeReference];
     }
     
-    // Fallback to storeNodes
     if (!node && Array.isArray(storeNodes)) {
       node = storeNodes.find(n => n.code === nodeReference || n.reference === nodeReference);
     } else if (!node && storeNodes && typeof storeNodes === 'object') {
       node = storeNodes[nodeReference];
     }
     
-    // Check if node is online
     const isNodeOnline = node ? (
       node.status === 'online' || 
       node.status === 'active' ||
@@ -250,9 +225,6 @@ export function useRemoteManagement(nodeReference) {
   
   const { node, isNodeOnline } = getNodeInfo();
   
-  /**
-   * Generate unique request ID
-   */
   const generateRequestId = useCallback(() => {
     return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }, []);
@@ -301,9 +273,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== WebSocket Connection Helpers ====================
   
-  /**
-   * ✅ OPTIMIZED: Smart wait for WebSocket connection
-   */
   const waitForWebSocketReady = useCallback(async (maxWaitTime = TIMEOUTS.WS_CONNECTION) => {
     console.log('[useRemoteManagement] 🔄 Waiting for WebSocket to be ready...');
     
@@ -336,11 +305,7 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== Terminal Management ====================
   
-  /**
-   * ✅ FIXED: Initialize terminal with race condition prevention
-   */
   const initializeTerminal = useCallback(async () => {
-    // ✅ FIX: Return existing Promise if initialization in progress
     if (initPromiseRef.current) {
       console.log('[useRemoteManagement] Init already in progress, waiting...');
       return initPromiseRef.current;
@@ -357,13 +322,11 @@ export function useRemoteManagement(nodeReference) {
       return null;
     }
     
-    // ✅ FIX: Cache initialization Promise
     initPromiseRef.current = (async () => {
       try {
         setIsConnecting(true);
         setError(null);
         
-        // Wait for WebSocket
         if (!isWebSocketReady) {
           console.log('[useRemoteManagement] Waiting for WebSocket...');
           setError('Connecting to server, please wait...');
@@ -376,7 +339,6 @@ export function useRemoteManagement(nodeReference) {
           setError(null);
         }
         
-        // Wait for authentication
         const currentAuthState = remoteAuthService.isAuthenticated(nodeReference);
         if (!currentAuthState) {
           console.log('[useRemoteManagement] Waiting for authentication...');
@@ -521,7 +483,6 @@ export function useRemoteManagement(nodeReference) {
         if (isMountedRef.current) {
           let errorMessage = error.message || 'Failed to initialize terminal';
           
-          // Map technical errors to user-friendly messages
           if (errorMessage.includes('not connected') || errorMessage.includes('send')) {
             errorMessage = 'Connection lost. Please refresh the page and try again.';
           } else if (errorMessage.includes('authentication') || errorMessage.includes('auth')) {
@@ -540,7 +501,6 @@ export function useRemoteManagement(nodeReference) {
         
         return null;
       } finally {
-        // ✅ FIX: Clear Promise cache after completion
         initPromiseRef.current = null;
       }
     })();
@@ -548,9 +508,6 @@ export function useRemoteManagement(nodeReference) {
     return initPromiseRef.current;
   }, [nodeReference, isWebSocketReady, createSession, waitForWebSocketReady]);
   
-  /**
-   * Terminal state ref for stable access
-   */
   const terminalStateRef = useRef({ session: null, ready: false });
   
   useEffect(() => {
@@ -560,9 +517,6 @@ export function useRemoteManagement(nodeReference) {
     };
   }, [terminalSession, terminalReady]);
   
-  /**
-   * Send terminal input (for Terminal tab only)
-   */
   const sendTerminalInput = useCallback((data) => {
     const { session: currentSession } = terminalStateRef.current;
     
@@ -592,21 +546,14 @@ export function useRemoteManagement(nodeReference) {
     }
     
     return success;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // terminalStateRef is a ref, doesn't need dependency
+  }, []);
   
-  /**
-   * Execute terminal command (convenience method)
-   */
   const executeTerminalCommand = useCallback((command) => {
     if (!command) return false;
     const commandWithNewline = command.endsWith('\n') ? command : `${command}\n`;
     return sendTerminalInput(commandWithNewline);
   }, [sendTerminalInput]);
   
-  /**
-   * Close terminal session
-   */
   const closeTerminal = useCallback(() => {
     const currentSession = terminalSession || sessionRef.current;
     
@@ -632,9 +579,6 @@ export function useRemoteManagement(nodeReference) {
     eventHandlersRef.current = {};
   }, [terminalSession, closeSession]);
   
-  /**
-   * Reconnect terminal
-   */
   const reconnectTerminal = useCallback(async () => {
     console.log('[useRemoteManagement] Reconnecting terminal...');
     
@@ -668,9 +612,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== Remote Commands ====================
   
-  /**
-   * ✅ FIXED: Send remote command with proper Promise handling
-   */
   const sendRemoteCommand = useCallback((commandType, commandData = {}, timeout = TIMEOUTS.COMMAND_DEFAULT) => {
     if (!isRemoteAuthenticated) {
       console.error('[useRemoteManagement] Not authenticated for remote commands');
@@ -720,16 +661,13 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [nodeReference, isRemoteAuthenticated, generateRequestId]);
   
-  /**
-   * List directory
-   */
   const listDirectory = useCallback(async (path) => {
     console.log('[useRemoteManagement] listDirectory:', path);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.LIST_FILES, { path });
   }, [sendRemoteCommand]);
   
   /**
-   * ✅ FIXED: Read file with proper validation and error handling
+   * ✅ FIXED: Read file - now uses 'download' command
    */
   const readFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] readFile:', path);
@@ -762,7 +700,6 @@ export function useRemoteManagement(nodeReference) {
     } catch (error) {
       console.error('[useRemoteManagement] readFile error:', error);
       
-      // User-friendly error messages
       if (error.message.includes('timeout')) {
         throw new Error('Request timeout. Please try again.');
       } else if (error.message.includes('not found')) {
@@ -776,7 +713,7 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * ✅ FIXED: Write file with proper encoding
+   * ✅ FIXED: Write file - now uses 'upload' command
    */
   const writeFile = useCallback(async (path, content) => {
     console.log('[useRemoteManagement] writeFile:', path, content.length, 'bytes');
@@ -795,25 +732,16 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * Delete file
-   */
   const deleteFile = useCallback(async (path) => {
     console.log('[useRemoteManagement] deleteFile:', path);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.DELETE_FILE, { path });
   }, [sendRemoteCommand]);
   
-  /**
-   * Get system info
-   */
   const getSystemInfo = useCallback(async () => {
     console.log('[useRemoteManagement] getSystemInfo');
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.SYSTEM_INFO);
   }, [sendRemoteCommand]);
   
-  /**
-   * Execute command
-   */
   const executeCommand = useCallback(async (command, args = []) => {
     console.log('[useRemoteManagement] executeCommand:', command, args);
     
@@ -825,7 +753,7 @@ export function useRemoteManagement(nodeReference) {
   }, [sendRemoteCommand]);
   
   /**
-   * Upload file (alias for writeFile)
+   * ✅ FIXED: Upload file - uses 'upload' command
    */
   const uploadFile = useCallback(async (path, content, isBase64 = false) => {
     console.log('[useRemoteManagement] uploadFile:', path, 'isBase64:', isBase64);
@@ -846,11 +774,8 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  // ==================== NEW REMOTE COMMANDS (✨ ADDED in v8.1.0) ====================
+  // ==================== NEW REMOTE COMMANDS ====================
   
-  /**
-   * ✨ NEW: Rename file or directory
-   */
   const renameFile = useCallback(async (oldPath, newPath, options = {}) => {
     console.log('[useRemoteManagement] renameFile:', oldPath, '->', newPath);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.RENAME_FILE, {
@@ -860,9 +785,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Copy file or directory
-   */
   const copyFile = useCallback(async (sourcePath, destPath, options = {}) => {
     console.log('[useRemoteManagement] copyFile:', sourcePath, '->', destPath);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.COPY_FILE, {
@@ -873,9 +795,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Move file or directory
-   */
   const moveFile = useCallback(async (sourcePath, destPath, options = {}) => {
     console.log('[useRemoteManagement] moveFile:', sourcePath, '->', destPath);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.MOVE_FILE, {
@@ -885,9 +804,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Create directory
-   */
   const createDirectory = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] createDirectory:', path);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.CREATE_DIRECTORY, {
@@ -896,9 +812,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Delete directory
-   */
   const deleteDirectory = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] deleteDirectory:', path);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.DELETE_DIRECTORY, {
@@ -907,9 +820,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Search files
-   */
   const searchFiles = useCallback(async (path, query, options = {}) => {
     console.log('[useRemoteManagement] searchFiles:', path, query);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.SEARCH_FILES, {
@@ -921,9 +831,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Compress files
-   */
   const compressFiles = useCallback(async (paths, destination, options = {}) => {
     console.log('[useRemoteManagement] compressFiles:', paths, '->', destination);
     
@@ -939,9 +846,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Extract archive
-   */
   const extractFile = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] extractFile:', path);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.EXTRACT_FILE, {
@@ -951,9 +855,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Change file permissions
-   */
   const changePermissions = useCallback(async (path, mode, options = {}) => {
     console.log('[useRemoteManagement] changePermissions:', path, mode);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.CHMOD, {
@@ -963,9 +864,6 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Change file owner
-   */
   const changeOwner = useCallback(async (path, options = {}) => {
     console.log('[useRemoteManagement] changeOwner:', path);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.CHOWN, {
@@ -976,25 +874,16 @@ export function useRemoteManagement(nodeReference) {
     });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Batch delete files
-   */
   const batchDelete = useCallback(async (paths) => {
     console.log('[useRemoteManagement] batchDelete:', paths.length, 'files');
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.BATCH_DELETE, { paths });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Batch move files
-   */
   const batchMove = useCallback(async (paths, destination) => {
     console.log('[useRemoteManagement] batchMove:', paths.length, 'files ->', destination);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.BATCH_MOVE, { paths, destination });
   }, [sendRemoteCommand]);
   
-  /**
-   * ✨ NEW: Batch copy files
-   */
   const batchCopy = useCallback(async (paths, destination) => {
     console.log('[useRemoteManagement] batchCopy:', paths.length, 'files ->', destination);
     return sendRemoteCommand(REMOTE_COMMAND_TYPES.BATCH_COPY, { paths, destination });
@@ -1002,9 +891,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== WebSocket Message Handling ====================
   
-  /**
-   * ✅ CRITICAL FIX: Handle remote_command_response with proper cleanup
-   */
   useEffect(() => {
     const handleMessage = (event) => {
       try {
@@ -1044,7 +930,6 @@ export function useRemoteManagement(nodeReference) {
       }
     };
     
-    // ✅ FIX: Use dynamic WebSocket reference and track listener
     const ws = getWebSocket();
     if (ws?.addEventListener) {
       console.log('[useRemoteManagement] 🎧 Adding message listener');
@@ -1052,7 +937,6 @@ export function useRemoteManagement(nodeReference) {
       wsMessageListenerRef.current = handleMessage;
       
       return () => {
-        // ✅ FIX: Get current WebSocket for cleanup
         const currentWs = getWebSocket();
         if (currentWs?.removeEventListener && wsMessageListenerRef.current) {
           console.log('[useRemoteManagement] 🔇 Removing message listener');
@@ -1061,11 +945,8 @@ export function useRemoteManagement(nodeReference) {
         }
       };
     }
-  }, [getWebSocket]); // ✅ FIX: Added dependency
+  }, [getWebSocket]);
   
-  /**
-   * Handle WebSocket errors
-   */
   useEffect(() => {
     const handleWebSocketError = (message) => {
       if (message.type === 'error') {
@@ -1100,9 +981,6 @@ export function useRemoteManagement(nodeReference) {
   
   // ==================== Lifecycle Management ====================
   
-  /**
-   * Mount/unmount tracking
-   */
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -1110,14 +988,10 @@ export function useRemoteManagement(nodeReference) {
     };
   }, []);
   
-  /**
-   * ✅ FIX: Cleanup on unmount
-   */
   useEffect(() => {
     return () => {
       console.log('[useRemoteManagement] Hook unmounting');
       
-      // ✅ FIX: Clean up pending command handlers
       commandHandlersRef.current.forEach(handler => {
         handler.reject(new Error('Component unmounted'));
       });
@@ -1128,9 +1002,6 @@ export function useRemoteManagement(nodeReference) {
     };
   }, []);
   
-  /**
-   * Close terminal when node goes offline
-   */
   useEffect(() => {
     if (terminalSession && !isNodeOnline) {
       console.log('[useRemoteManagement] Node offline, closing terminal');
@@ -1138,9 +1009,6 @@ export function useRemoteManagement(nodeReference) {
     }
   }, [isNodeOnline, terminalSession, closeTerminal]);
   
-  /**
-   * Mark terminal not ready when WebSocket disconnects
-   */
   useEffect(() => {
     if (terminalSession && !isWebSocketReady) {
       console.log('[useRemoteManagement] WebSocket disconnected');
@@ -1148,9 +1016,6 @@ export function useRemoteManagement(nodeReference) {
     }
   }, [isWebSocketReady, terminalSession]);
   
-  /**
-   * Close terminal when authentication is lost
-   */
   useEffect(() => {
     if (terminalSession && !isRemoteAuthenticated) {
       console.log('[useRemoteManagement] Auth lost, closing terminal');
@@ -1158,9 +1023,6 @@ export function useRemoteManagement(nodeReference) {
     }
   }, [isRemoteAuthenticated, terminalSession, closeTerminal]);
   
-  /**
-   * Debug logging
-   */
   useEffect(() => {
     if (process.env.NODE_ENV === 'development') {
       console.log('[useRemoteManagement] State:', {
@@ -1178,7 +1040,7 @@ export function useRemoteManagement(nodeReference) {
   // ==================== Return API ====================
   
   return {
-    // Terminal State (for Terminal tab only)
+    // Terminal State
     terminalSession: terminalSession || sessionRef.current,
     terminalReady,
     isConnecting,
@@ -1189,46 +1051,46 @@ export function useRemoteManagement(nodeReference) {
     isNodeOnline,
     isWebSocketReady,
     
-    // Terminal Actions (ONLY for Terminal tab!)
+    // Terminal Actions
     initializeTerminal,
     sendTerminalInput,
     executeTerminalCommand,
     closeTerminal,
     reconnectTerminal,
     
-    // File Operations (Original)
+    // File Operations
     listDirectory,
     readFile,
     writeFile,
     deleteFile,
     uploadFile,
     
-    // ✨ NEW: File Operations
+    // File Operations (New)
     renameFile,
     copyFile,
     moveFile,
     
-    // ✨ NEW: Directory Operations
+    // Directory Operations
     createDirectory,
     deleteDirectory,
     
-    // ✨ NEW: Search
+    // Search
     searchFiles,
     
-    // ✨ NEW: Compression
+    // Compression
     compressFiles,
     extractFile,
     
-    // ✨ NEW: Permissions
+    // Permissions
     changePermissions,
     changeOwner,
     
-    // ✨ NEW: Batch Operations
+    // Batch Operations
     batchDelete,
     batchMove,
     batchCopy,
     
-    // System & Execution (Original)
+    // System & Execution
     getSystemInfo,
     executeCommand,
     
