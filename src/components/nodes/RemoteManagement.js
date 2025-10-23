@@ -500,28 +500,37 @@ export default function RemoteManagement({
     };
   }, [isOpen, isFullscreen, showCommandPalette]);
 
-  // ✅ NEW: Watch for session creation, then mark UI as ready
+  // ✅ FIXED: Watch for session creation, then mark UI as ready
   useEffect(() => {
     if (terminalSession && terminalRef.current && !terminalUIReady) {
-      console.log('[RemoteManagement] Session created, marking UI as ready');
-      setTerminalUIReady(true);
+      console.log('[RemoteManagement] Session exists and terminal UI mounted, marking as ready');
       
-      // Write welcome message
-      terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
-      terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
-      terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
-      terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
-      
-      if (outputBufferRef.current) {
-        try {
-          terminalRef.current.write(outputBufferRef.current);
-          outputBufferRef.current = '';
-        } catch (error) {
-          console.error('[RemoteManagement] Error writing buffered output:', error);
+      // Small delay to ensure terminal is fully rendered
+      const timer = setTimeout(() => {
+        if (isMountedRef.current && terminalRef.current) {
+          setTerminalUIReady(true);
+          
+          // Write welcome message
+          try {
+            terminalRef.current.write('\x1b[32m● Terminal Connected\x1b[0m\r\n');
+            terminalRef.current.write('\x1b[90mNode: ' + nodeReference + '\x1b[0m\r\n');
+            terminalRef.current.write('\x1b[90mSession: ' + terminalSession + '\x1b[0m\r\n');
+            terminalRef.current.write('\x1b[90m─────────────────────────────────────────\x1b[0m\r\n');
+            
+            if (outputBufferRef.current) {
+              terminalRef.current.write(outputBufferRef.current);
+              outputBufferRef.current = '';
+            }
+          } catch (error) {
+            console.error('[RemoteManagement] Error writing welcome message:', error);
+          }
         }
-      }
+      }, 100);
+      
+      return () => clearTimeout(timer);
     }
-  }, [terminalSession, nodeReference, terminalUIReady]);
+  }, [terminalSession, nodeReference]);
+  // ✅ CRITICAL: Remove terminalUIReady from dependencies to avoid re-triggering
   
   // ==================== Cleanup ====================
   
@@ -538,6 +547,8 @@ export default function RemoteManagement({
       setTerminalUIReady(false);
       outputBufferRef.current = '';
       lastOutputRef.current = '';
+      // ✅ FIX: Reset initialized flag when modal closes
+      initializedRef.current = false;
     }
   }, [isOpen]);
 
